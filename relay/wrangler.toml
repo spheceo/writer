@@ -1,0 +1,45 @@
+# Writer's relay: the only place the ElevenLabs key lives. The desktop app
+# sends audio here; the key never ships in the binary.
+# Deploy with `bunx wrangler deploy` from relay/.
+name = "writer-relay"
+main = "src/index.ts"
+compatibility_date = "2026-10-13"
+workers_dev = true
+preview_urls = false
+
+[vars]
+# Daily audio per client IP and across everyone, in bytes of 32 kbps Opus
+# (~14.4 MB per hour). A long interview is a few hours, heard in pieces.
+DAILY_BYTES_PER_IP = "115200000"  # ~8 hours
+DAILY_BYTES_TOTAL = "345600000"   # ~24 hours
+MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
+
+# Bursts: requests a minute per IP. Writer hears three pieces at once and can
+# run imports side by side, so a busy minute is about a dozen. The daily byte
+# caps above still bound the spend. Namespace is not Edit's (7701).
+[[ratelimits]]
+name = "BURST"
+namespace_id = "7702"
+
+[ratelimits.simple]
+limit = 12
+period = 60
+
+# The watcher: Gemini windows a minute per IP. An import watches a few
+# minutes of footage at a time, four at once.
+[[ratelimits]]
+name = "WATCH_BURST"
+namespace_id = "7703"
+
+[ratelimits.simple]
+limit = 40
+period = 60
+
+# Atomic daily reservations, including requests still in flight.
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "TranscriptionBudget"
+
+[[migrations]]
+tag = "v1-budget"
+new_sqlite_classes = ["TranscriptionBudget"]

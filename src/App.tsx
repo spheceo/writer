@@ -1,0 +1,135 @@
+import { useEffect, useState } from "react";
+import { claudeStatus, getProgress, getScript, listScripts, message } from "./api";
+import { CommentaryEditor } from "./commentary-view";
+import { Editor } from "./editor";
+import { Library } from "./library";
+import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
+
+type Route = { name: "library" } | { name: "script"; id: string };
+
+// The route lives in the URL, so a reload (a phone or laptop on the tailnet
+// does that often) comes back to the same script.
+function parse(hash: string): Route {
+  const script = /^#\/script\/([0-9a-f-]+)$/i.exec(hash);
+  if (script) return { name: "script", id: script[1] };
+  return { name: "library" };
+}
+
+const hashOf = (route: Route) => (route.name === "script" ? `#/script/${route.id}` : "#/");
+
+export function App() {
+  const [route, setRouteState] = useState<Route>(() => parse(window.location.hash));
+  const [ready, setReady] = useState(false);
+  const [scripts, setScripts] = useState<Summary[]>([]);
+  const [claude, setClaude] = useState<ClaudeStatus | null>(null);
+  const [progress, setProgress] = useState<ImportProgress[]>([]);
+  const [open, setOpen] = useState<Script | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const setRoute = (next: Route) => {
+    setRouteState(next);
+    const hash = hashOf(next);
+    if (window.location.hash !== hash) window.history.pushState(null, "", hash);
+  };
+
+  useEffect(() => {
+    const onPop = () => setRouteState(parse(window.location.hash));
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  const refresh = () => {
+    void listScripts().then(setScripts).catch((cause) => setError(message(cause)));
+  };
+
+  useEffect(() => {
+    // `just dev` serves the page before the Rust API is listening. Keep
+    // asking until it answers rather than showing the refused request.
+    let waiting: number | undefined;
+    const connect = () => {
+      void listScripts()
+        .then((rows) => {
+          setScripts(rows);
+          setError(null);
+          setReady(true);
+          void claudeStatus().then(setClaude).catch(() => setClaude(null));
+        })
+        .catch(() => {
+          setError("Starting Writer…");
+          waiting = window.setTimeout(connect, 1500);
+        });
+    };
+    connect();
+    // Hidden windows stop asking; the next look catches up.
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void getProgress()
+        .then((list) => setProgress(Array.isArray(list) ? list : []))
+        .catch(() => {});
+    }, 800);
+    return () => {
+      window.clearTimeout(waiting);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (route.name !== "script" || !ready) return;
+    void getScript(route.id).then(setOpen).catch((cause) => setError(message(cause)));
+  }, [route, ready]);
+
+  // While something imports or Claude is writing, keep the list current. The
+  // request that started it may have been dropped on the way.
+  const working = progress.length > 0 || scripts.some((row) => row.status === "processing" || row.building);
+  useEffect(() => {
+    if (!working || route.name !== "library") return;
+    const timer = window.setInterval(() => !document.hidden && refresh(), 4000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [working, route.name]);
+
+  if (route.name === "script" && open && open.id === route.id && open.commentary) {
+    return (
+      <CommentaryEditor
+        script={open}
+        onChange={setOpen}
+        onBack={() => {
+          setRoute({ name: "library" });
+          refresh();
+        }}
+      />
+    );
+  }
+  if (route.name === "script" && open && open.id === route.id) {
+    return (
+      <Editor
+        script={open}
+        onChange={setOpen}
+        onBack={() => {
+          setRoute({ name: "library" });
+          refresh();
+        }}
+      />
+    );
+  }
+  if (route.name === "script") {
+    return (
+      <div className="app">
+        <header className="top" data-tauri-drag-region>
+          <button type="button" className="ghost sm" onClick={() => setRoute({ name: "library" })}>← Library</button>
+        </header>
+        <p className={error ? "notice" : "empty"}>{error ?? "Opening…"}</p>
+      </div>
+    );
+  }
+  return (
+    <Library
+      scripts={scripts}
+      claude={claude}
+      progress={progress}
+      loadError={error}
+      onOpen={(id) => setRoute({ name: "script", id })}
+      onChanged={refresh}
+    />
+  );
+}
