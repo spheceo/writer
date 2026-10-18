@@ -10,6 +10,16 @@ A commentary script is an investigative video essay told by one narrator, the In
 
 **Ending.** A last section headed "Ending". It brings back the opening question and answers it from what the video showed, in a few short, pointed paragraphs. No new evidence here.
 
+## Following the brief
+
+- The brief's order is the video's order. When it lays the video out in acts or numbered sections, each becomes a chapter in that order, still numbered and titled in the channel's way ("3. The Interview"), not with the brief's own labels. A section the brief leaves unnumbered becomes its own chapter or joins the act it supports.
+- When the brief sets up a running thread ("Coffeezilla asked for evidence and got a statement. Ray asked for proof and got 'go to Africa'"), the intro plants it, the chapters return to it, and the ending pays it off.
+- Claim, then proof. When the brief ties new evidence to an earlier claim ("Proves CZ: 'mostly MrBeast's decisions' (14:50-15:59)"), show the claim first, then the new clip that bears it out, and say in one plain line what the new clip settles. Play the original claim's clip the first time it matters; after that, narration can bring it back in a few words. The callback is the point of the video, so never leave the viewer to work it out.
+- The brief's words in quotation marks are the producer's notes, not a transcript. Take every clip's words and times from the recording's own transcript. Where the transcript puts a moment somewhere else, or the brief's link opens a different recording than its label says, follow the transcript and say so in the report.
+- The fair points the brief gives ("out of fairness", "it was an editor, not Jimmy", "most of the cut minutes are harmless") go in where the brief puts them, in the narrator's voice. They make the rest land harder.
+- A note on how long a part runs ("keep it quick") is followed.
+- An item the brief marks "link needed", or names without a link (an article, a screenshot, a video only known by its initials), is never given a link or a quote that no source holds. Say only what the sources support, put what to show in an editor note, and list the missing link in the checks.
+
 ## Clips
 
 - A clip follows its lead-in, which ends on an ellipsis: "And this is how long the video stays on that…" then the clip. The lead-in says what to watch for; it never repeats what the clip says.
@@ -17,6 +27,8 @@ A commentary script is an investigative video essay told by one narrator, the In
 - Show, don't tell: when a source has the moment on video, cite the clip instead of describing it.
 - Before and after. When something changed (a cut, a deleted post, a reversed statement), show both: the original first, then where it is now.
 - Every clip names its source and exact times. Take times from the source as written; never estimate.
+- A clip that only a past script or the brief gives, with its time and link but no transcript, keeps that time and link. Its quote stays empty and its verify says where it came from and that it needs a listen before recording. Never write a quote from narration.
+- Screenshots, articles, posts and documents are not clips: they have no times. Name them and give their link in an editor note.
 
 ## Voice
 
@@ -24,6 +36,7 @@ A commentary script is an investigative video essay told by one narrator, the In
 - Pointed, never hysterical. Let the evidence make the accusation; the narration joins the dots. Irony lands harder than insults.
 - Attribute every claim to where it comes from: "according to the lawsuit", "she says", "the archive uploader claims". What a source alleges is said as alleged.
 - Give the other side when one exists: a denial, a statement, an explanation. "Beast Industries denies all of it." Then move on.
+- Keep separate things separate: an employee's act is not the boss's, a company's investment fund is not its charity, and an old joke is a joke, not an admission. Say what it was, then why it still matters.
 - Never invent facts, quotes, dates, motives or thoughts. If the evidence can't show something (who made an edit, why, when), say that plainly; it can be part of the point.
 
 ## Advertiser-friendly wording

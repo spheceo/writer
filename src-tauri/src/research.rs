@@ -372,7 +372,7 @@ fn strip_tags(html: &str) -> String {
     out
 }
 
-fn decode_entities(text: &str) -> String {
+pub(crate) fn decode_entities(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find('&') {
@@ -394,6 +394,7 @@ fn decode_entities(text: &str) -> String {
             "rsquo" | "lsquo" => Some('\''),
             "rdquo" | "ldquo" => Some('"'),
             "mdash" | "ndash" => Some('-'),
+            "hellip" => Some('…'),
             _ if entity.starts_with("#x") || entity.starts_with("#X") => u32::from_str_radix(&entity[2..], 16).ok().and_then(char::from_u32),
             _ if entity.starts_with('#') => entity[1..].parse().ok().and_then(char::from_u32),
             _ => None,

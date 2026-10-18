@@ -381,10 +381,13 @@ pub fn fetch(url: &str, settings: &Settings) -> Result<(String, String), String>
     let host = url.split("://").nth(1).unwrap_or("").split(['/', '?', '#']).next().unwrap_or("");
     if host == "docs.google.com" && url.contains("/document/d/") {
         let id = google_id(url, "/document/d/").ok_or("That Google Docs link is not complete.")?;
-        let public = format!("https://docs.google.com/document/d/{id}/export?format=txt");
+        // As HTML, so the Doc's links come with it: a brief's "(3:15-3:47)"
+        // is often a link to the recording it means.
+        let public = format!("https://docs.google.com/document/d/{id}/export?format=html");
         return match get_text(&public) {
-            Ok(found) => Ok((found.name.map(|name| strip_ext(&name)).unwrap_or_else(|| "Google Doc".into()), found.text)),
-            Err(_) => drive_api(&id, true, settings),
+            // The export comes as an attachment; a Doc that isn't public answers with Google's sign-in page.
+            Err(Refused::Html(html, Some(name))) => Ok((strip_ext(&name), doc_text(&html))),
+            Ok(_) | Err(_) => drive_api(&id, true, settings),
         };
     }
     if host == "drive.google.com" {
@@ -402,7 +405,7 @@ pub fn fetch(url: &str, settings: &Settings) -> Result<(String, String), String>
     }
     match get_text(url) {
         Ok(found) => Ok((found.name.unwrap_or_else(|| url.to_string()), found.text)),
-        Err(Refused::Html(html)) => {
+        Err(Refused::Html(html, _)) => {
             let text = crate::research::page_text(&html);
             if text.trim().len() < 200 {
                 return Err("That page has too little text to use. Copy its text and paste it instead.".into());
@@ -422,8 +425,9 @@ struct Fetched {
 }
 
 enum Refused {
-    /// A web page, or Google's sign-in page for a file that isn't public.
-    Html(String),
+    /// A web page, or Google's sign-in page for a file that isn't public,
+    /// and the file name it came with, if any.
+    Html(String, Option<String>),
     NotText,
     Failed(String),
 }
@@ -451,7 +455,7 @@ fn get_text(url: &str) -> Result<Fetched, Refused> {
     }
     let text = String::from_utf8(bytes).map_err(|_| Refused::NotText)?;
     if kind.contains("html") {
-        return Err(Refused::Html(text));
+        return Err(Refused::Html(text, name));
     }
     if text.contains('\0') {
         return Err(Refused::NotText);
@@ -472,8 +476,9 @@ fn drive_api(id: &str, doc: bool, settings: &Settings) -> Result<(String, String
         .into_json()
         .map_err(|_| NOT_SHARED.to_string())?;
     let mime = meta["mimeType"].as_str().unwrap_or("");
-    let url = if doc || mime == "application/vnd.google-apps.document" {
-        format!("{api}/{id}/export?mimeType=text/plain")
+    let doc = doc || mime == "application/vnd.google-apps.document";
+    let url = if doc {
+        format!("{api}/{id}/export?mimeType=text/html")
     } else {
         format!("{api}/{id}?alt=media&supportsAllDrives=true")
     };
@@ -493,7 +498,7 @@ fn drive_api(id: &str, doc: bool, settings: &Settings) -> Result<(String, String
     }
     let text = String::from_utf8(bytes).map_err(|_| NOT_TEXT.to_string())?;
     let name = meta["name"].as_str().unwrap_or("Drive file");
-    Ok((if doc { strip_ext(name) } else { name.to_string() }, text))
+    Ok(if doc { (strip_ext(name), doc_text(&text)) } else { (name.to_string(), text) })
 }
 
 fn google_id(url: &str, marker: &str) -> Option<String> {
@@ -513,7 +518,93 @@ fn file_name(header: &str) -> Option<String> {
 }
 
 fn strip_ext(name: &str) -> String {
-    name.strip_suffix(".txt").unwrap_or(name).to_string()
+    name.strip_suffix(".txt").or_else(|| name.strip_suffix(".html")).unwrap_or(name).to_string()
+}
+
+/// A Google Doc's HTML export as plain text, one line per paragraph or list
+/// item, with each link's address after its words: "(3:15-3:47
+/// <https://youtu.be/x?t=195>)". Google's redirect is taken off, and a link
+/// Docs split in two (where the formatting changes) is written once.
+fn doc_text(html: &str) -> String {
+    let body = html.split_once("<body").and_then(|(_, rest)| rest.split_once('>')).map(|(_, rest)| rest).unwrap_or(html);
+    let mut out = String::new();
+    // The open link: its address and where its words start in `out`.
+    let mut open: Option<(String, usize)> = None;
+    // The last link written: its address, where its words start, and where its "<…>" starts and ends.
+    let mut last: Option<(String, usize, usize, usize)> = None;
+    let mut rest = body;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&crate::research::decode_entities(&rest[..at]));
+        let Some(end) = rest[at..].find('>') else { break };
+        let tag = &rest[at + 1..at + end];
+        rest = &rest[at + end + 1..];
+        let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let closing = tag.starts_with('/');
+        match name.as_str() {
+            "style" | "script" | "title" if !closing => {
+                let close = format!("</{name}>");
+                rest = rest.find(&close).map(|end| &rest[end + close.len()..]).unwrap_or("");
+            }
+            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "tr" | "div" | "br" | "ul" | "ol" | "table" => {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            "li" if !closing => {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("* ");
+            }
+            "td" if closing => out.push(' '),
+            "a" if !closing => {
+                let href = tag.split("href=\"").nth(1).and_then(|value| value.split('"').next()).map(crate::research::decode_entities);
+                open = href.map(|href| link_target(&href)).filter(|href| href.starts_with("http")).map(|href| {
+                    // The same link carried on from the last one: write them as one.
+                    match &last {
+                        Some((url, words, mark, mark_end)) if *url == href && *mark_end == out.len() => {
+                            out.truncate(*mark);
+                            (href, *words)
+                        }
+                        _ => (href, out.len()),
+                    }
+                });
+            }
+            "a" => {
+                if let Some((url, words)) = open.take() {
+                    let label = out[words..].trim();
+                    if label.is_empty() {
+                        continue;
+                    }
+                    if label == url {
+                        last = None;
+                        continue;
+                    }
+                    let mark = out.len();
+                    out.push_str(&format!(" <{url}>"));
+                    last = Some((url, words, mark, out.len()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out.lines()
+        .map(|line| line.replace('\u{a0}', " ").split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Where a Doc's link goes, without Google's "google.com/url?q=" redirect.
+fn link_target(href: &str) -> String {
+    let Some(query) = href.strip_prefix("https://www.google.com/url?").or_else(|| href.strip_prefix("http://www.google.com/url?")) else {
+        return href.to_string();
+    };
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("q="))
+        .map(crate::research::percent_decode)
+        .unwrap_or_else(|| href.to_string())
 }
 
 fn from_file(path: &Path) -> Result<(String, String), String> {
@@ -1173,6 +1264,15 @@ mod tests {
     }
 
     #[test]
+    fn keeps_a_docs_links() {
+        let html = r##"<html><head><style>.c1{color:red}</style></head><body class="c5 doc-content"><p class="c1"><span>The MrBeast Files doc:</span></p><ul><li><span>SUPER: a $100K presale (</span><span class="c3"><a href="https://www.google.com/url?q=https://youtu.be/dslLBsHkVzE?t%3D195&amp;sa=D&amp;source=editors">3:15-3:47</a></span><span>)</span></li><li><span>Burger (</span><a href="https://www.google.com/url?q=https://youtu.be/IkTH9ZTKsls?t%3D606&amp;sa=D"> </a><a href="https://www.google.com/url?q=https://youtu.be/IkTH9ZTKsls?t%3D606&amp;sa=D">10:07</a><a href="https://www.google.com/url?q=https://youtu.be/IkTH9ZTKsls?t%3D606&amp;sa=D">-10:34</a><span>) &ldquo;no&rdquo;<sup><a href="#cmnt1" id="cmnt_ref1">[a]</a></sup></span></li></ul><p><a href="https://x.com/a">https://x.com/a</a></p></body></html>"##;
+        assert_eq!(
+            doc_text(html),
+            "The MrBeast Files doc:\n* SUPER: a $100K presale (3:15-3:47 <https://youtu.be/dslLBsHkVzE?t=195>)\n* Burger ( 10:07-10:34 <https://youtu.be/IkTH9ZTKsls?t=606>) \"no\"[a]\nhttps://x.com/a"
+        );
+    }
+
+    #[test]
     fn reads_a_file_name_header() {
         assert_eq!(file_name("attachment; filename=\"Report (1).txt\"").as_deref(), Some("Report (1).txt"));
         assert_eq!(file_name("attachment; filename=\"x\"; filename*=UTF-8''Caf%C3%A9.txt").as_deref(), Some("Café.txt"));
@@ -1220,5 +1320,14 @@ mod live {
         script.updated_at = now_ms();
         store::write(&dir, &script).unwrap();
         println!("REPORT {}\nCOST {}", built.report, built.cost_usd);
+    }
+
+    /// WRITER_LIVE_DOC: a Google Doc link, printed as Writer reads it.
+    #[test]
+    #[ignore]
+    fn reads_a_live_doc() {
+        let url = std::env::var("WRITER_LIVE_DOC").expect("WRITER_LIVE_DOC");
+        let (name, text) = fetch(&url, &crate::settings::Settings::default()).unwrap();
+        println!("NAME {name}\n{text}");
     }
 }
