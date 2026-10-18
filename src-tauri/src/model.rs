@@ -194,6 +194,12 @@ pub struct Summary {
     pub decision: Option<Decision>,
     /// A commentary script's narration words, once written.
     pub draft_words: usize,
+    pub compilation: bool,
+    /// When the last full Google Doc export was made, and whether the script changed since.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_exported_at: Option<i64>,
+    pub doc_behind: bool,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -224,6 +230,10 @@ impl Script {
             source_kind: self.source_kind.clone(),
             decision: self.decision.clone(),
             draft_words: self.commentary.as_ref().and_then(|c| c.draft.as_ref()).map_or(0, |draft| draft.words()),
+            compilation: self.compilation,
+            doc_exported_at: self.doc_export.as_ref().map(|doc| doc.exported_at),
+            doc_behind: self.doc_export.as_ref().is_some_and(|doc| doc.revision < self.revision),
+            created_at: self.created_at,
         }
     }
 }

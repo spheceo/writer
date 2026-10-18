@@ -211,3 +211,40 @@ export function lines(words: Word[]): Line[] {
   flush();
   return out;
 }
+
+/** A cut-in card as builds make them: three seconds, holding its narration. */
+export const CUT_IN_MS = 3000;
+export const cutInCard = (narration = ""): Clip => ({ id: crypto.randomUUID(), kind: "cut-in", startMs: 0, endMs: CUT_IN_MS, narration });
+
+/** Splits item `index` at a moment of its footage. Edges closer than 100 ms stay put. */
+export function splitClip(clips: Clip[], index: number, sourceMs: number): Clip[] {
+  const clip = clips[index];
+  const ms = Math.round(sourceMs);
+  if (!clip || isCutIn(clip) || ms < clip.startMs + 100 || ms > clip.endMs - 100) return clips;
+  return [...clips.slice(0, index), { ...clip, endMs: ms }, { id: crypto.randomUUID(), startMs: ms, endMs: clip.endMs }, ...clips.slice(index + 1)];
+}
+
+/** Puts an item in after `index`, or first for -1. */
+export const insertAfter = (clips: Clip[], index: number, clip: Clip) => [...clips.slice(0, index + 1), clip, ...clips.slice(index + 1)];
+
+/** Moves one edge of a footage clip, keeping it at least 200 ms long and inside the footage. */
+export function trimClip(clips: Clip[], id: string, edge: "in" | "out", sourceMs: number, durationMs: number): Clip[] {
+  return clips.map((clip) => {
+    if (clip.id !== id || isCutIn(clip)) return clip;
+    const ms = Math.round(sourceMs);
+    return edge === "in"
+      ? { ...clip, startMs: Math.max(0, Math.min(ms, clip.endMs - 200)) }
+      : { ...clip, endMs: Math.min(durationMs || Number.MAX_SAFE_INTEGER, Math.max(ms, clip.startMs + 200)) };
+  });
+}
+
+/** The word nearest a footage moment, for edges that land between words. */
+export function nearestEdge(words: Word[], ms: number, edge: "in" | "out", reach = 400) {
+  let best: number | null = null;
+  for (const word of words) {
+    const at = edge === "in" ? word.startMs : word.endMs;
+    if (Math.abs(at - ms) <= reach && (best === null || Math.abs(at - ms) < Math.abs(best - ms))) best = at;
+    if (word.startMs > ms + reach) break;
+  }
+  return best;
+}

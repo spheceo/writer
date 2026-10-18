@@ -1,10 +1,17 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
 import { addSource, buildStatus, getScript, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, updateSource } from "./api";
 import { clock } from "./clips";
-import { commentaryDocument, cue, narrationWords, timing } from "./commentary";
+import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
+import { useSplit, useView, type View, ViewTabs } from "./editor";
+import { Monitor } from "./monitor";
+import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
+import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
 import type { Adding, BuildStatus, Cite, Draft, Paragraph, Role, Script, Source, Summary } from "./types";
 import { DocsDialog } from "./docs-dialog";
+import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const ROLES: { value: Role; label: string; hint: string }[] = [
@@ -17,6 +24,82 @@ const size = (chars: number) => (chars >= 1_000_000 ? `${(chars / 1e6).toFixed(1
 
 /** About four characters a token: what Opus reads, for a rough sense of size. */
 const tokens = (chars: number) => Math.round(chars / 4);
+
+/** A paragraph of narration takes as long to read as its words, at the app's pace. */
+const readMs = (text: string) => Math.max(1500, Math.round((text.split(/\s+/).filter(Boolean).length * 60_000) / WORDS_PER_MINUTE));
+
+type Shown = { title: string; text: string };
+
+/**
+ * The script as a cut to preview: the montage, then each paragraph in order,
+ * its narration as a card held for as long as it takes to read and its clips
+ * from their recordings. A clip whose footage is not in Writer shows as a card
+ * with its words. Item IDs match the page's anchors, so the page follows it.
+ */
+function previewCut(draft: Draft | null, sources: Source[], srcOf: Map<string, string>) {
+  const items: Item[] = [];
+  const cards = new Map<string, Shown>();
+  let clips = 0;
+  let playable = 0;
+  if (!draft) return { items, cards, clips, playable };
+  const clip = (cite: Cite, id: string) => {
+    const src = srcOf.get(cite.source);
+    clips += 1;
+    if (src) {
+      playable += 1;
+      items.push({ id, startMs: cite.startMs, endMs: cite.endMs, src });
+      return;
+    }
+    const source = sources.find((item) => item.id === cite.source);
+    items.push({ id, kind: "cut-in", startMs: 0, endMs: Math.max(1000, cite.endMs - cite.startMs) });
+    cards.set(id, {
+      title: `${cite.source} · ${cite.video || source?.title} · not in Writer`,
+      text: cite.quote.trim() ? `“${cite.quote.trim()}”` : "No speech. Import the recording into Writer to see it here.",
+    });
+  };
+  draft.open.forEach((cite, index) => clip(cite, `o${index}`));
+  draft.sections.forEach((section, s) =>
+    section.paragraphs.forEach((paragraph, p) =>
+      paragraph.pieces.forEach((piece, i) => {
+        const id = piece.kind === "clip" ? `c${s}-${p}-${i}` : `s${s}-${p}-${i}`;
+        if (piece.kind === "clip") return clip(piece, id);
+        if (!piece.text.trim()) return;
+        items.push({ id, kind: "cut-in", startMs: 0, endMs: readMs(piece.text) });
+        cards.set(id, { title: `Narration · ${section.heading}`, text: piece.text.trim() });
+      }),
+    ),
+  );
+  return { items, cards, clips, playable };
+}
+
+/** Where each Writer transcript among the sources can be played from. */
+function useSourceVideos(sources: Source[]) {
+  const [srcOf, setSrcOf] = useState(new Map<string, string>());
+  const key = sources.map((source) => `${source.id}:${source.origin}`).join("|");
+  useEffect(() => {
+    let live = true;
+    const writer = sources.filter((source) => source.origin.startsWith("writer:"));
+    void Promise.all(
+      writer.map(async (source) => {
+        const id = source.origin.slice("writer:".length);
+        if (!inTauri()) return [source.id, `/api/scripts/${id}/proxy`] as const;
+        // The Mac's window plays the file itself, so it needs the file's place.
+        const script = await getScript(id).catch(() => null);
+        return script?.proxyPath ? ([source.id, convertFileSrc(script.proxyPath)] as const) : null;
+      }),
+    ).then((found) => live && setSrcOf(new Map(found.filter((item): item is readonly [string, string] => !!item))));
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return srcOf;
+}
+
+const VIEWS: { value: View; label: string }[] = [
+  { value: "script", label: "Script" },
+  { value: "split", label: "Split" },
+];
 
 export function CommentaryEditor({
   script,
@@ -37,12 +120,48 @@ export function CommentaryEditor({
   const [started, setStarted] = useState<number | null>(null);
   const [stage, setStage] = useState("");
   const [report, setReport] = useState<{ text: string; costUsd: number } | null>(null);
-  const [rewriting, setRewriting] = useState(false);
   const [docsOpen, setDocsOpen] = useState(false);
-  // Comments read back from the Doc, waiting in a rewrite's notes.
-  const [noteSeed, setNoteSeed] = useState("");
+  const [tab, setTab] = useState<"claude" | "sources">(() => (script.commentary?.draft ? "claude" : "sources"));
+  const [note, setNote] = useState("");
+  // What was asked of the build that is running, shown as the producer's message.
+  const [sent, setSent] = useState<string | null>(null);
+  const [savedView, setView] = useView("commentary", "script");
+  const view: View = savedView === "video" ? "split" : savedView;
+  const [agentShown, setAgentShown] = useState(() => window.localStorage.getItem("writer.agent") !== "closed");
+  useEffect(() => window.localStorage.setItem("writer.agent", agentShown ? "open" : "closed"), [agentShown]);
+  const split = useSplit();
   const latest = useRef(script);
   latest.current = script;
+
+  // The preview: the script as a cut, played from the recordings Writer has.
+  const srcOf = useSourceVideos(sources);
+  const cut = useMemo(() => previewCut(draft, sources, srcOf), [draft, sources, srcOf]);
+  const [{ player, playhead }] = useState(() => {
+    const playhead = new Playhead();
+    return { playhead, player: new CutPlayer(null, cut.items, playhead) };
+  });
+  useEffect(() => () => player.dispose(), [player]);
+  useEffect(() => player.update(cut.items), [player, cut.items]);
+  const onVideo = useCallback((video: HTMLVideoElement | null) => player.attach(video), [player]);
+  const preview = (id: string) => {
+    const index = cut.items.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    const at = clipStarts(cut.items)[index];
+    if (view !== "split") setView("split");
+    void player.play(at);
+  };
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT")) return;
+      if (event.code === "Space" && view === "split") {
+        event.preventDefault();
+        player.toggle();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [player, view]);
 
   // A build runs on the Mac; the page asks after it every few seconds.
   const alive = useRef(true);
@@ -70,12 +189,12 @@ export function CommentaryEditor({
       }
       watching.current = false;
       setStarted(null);
+      setSent(null);
       if (!job) return;
       if (job.error) {
         setError(job.error);
         return;
       }
-      setRewriting(false);
       try {
         onChange(await getScript(script.id));
       } catch (cause) {
@@ -97,12 +216,13 @@ export function CommentaryEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.id]);
 
-  const build = async (note: string) => {
+  const build = async (text: string) => {
     setReport(null);
     setError(null);
     setStage("Starting");
     try {
-      const job = await startBuild(script.id, note);
+      const job = await startBuild(script.id, text);
+      setSent(text.trim() || (draft ? "Rewrite the script." : "Write the script."));
       follow(job.startedAt);
       return true;
     } catch (cause) {
@@ -160,6 +280,7 @@ export function CommentaryEditor({
   const ready = sources.some((source) => source.role !== "style");
   const total = sources.reduce((sum, source) => sum + source.chars, 0);
   const times = draft ? timing(draft) : null;
+  const said = (report && !busy ? report.text : draft?.report) ?? "";
 
   const editParagraph = (section: number, index: number, next: Paragraph | null) => {
     if (!draft) return;
@@ -171,25 +292,50 @@ export function CommentaryEditor({
     void persist({ ...draft, sections });
   };
 
+  const send = () => {
+    if (busy || !ready || (draft && !note.trim())) return;
+    void build(note).then((done) => done && setNote(""));
+  };
+
   return (
-    <div className="app">
-      <header className="top" data-tauri-drag-region>
-        <button type="button" className="ghost sm" onClick={onBack}>← Library</button>
-        <h1 data-tauri-drag-region>{script.title}</h1>
-        <span className="spacer" data-tauri-drag-region />
-        {saving && <span className={saving === "saved" ? "ok" : "muted"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
-        <button type="button" className="sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
-          Google Doc
+    <div className="studio">
+      <header className="topbar" data-tauri-drag-region>
+        <button type="button" className="icon-tool" aria-label="All scripts" title="All scripts" onClick={onBack}>
+          <Icon name="back" />
         </button>
-        <button
-          type="button"
-          className={draft ? "primary sm" : "sm"}
-          disabled={!draft}
-          title="Copies the script in the channel's Doc layout: sections, clips inline, editor notes, total time, sources and checks"
-          onClick={() => void copy()}
-        >
-          {copied ? "Copied" : "Copy script"}
-        </button>
+        <div className="title-block" data-tauri-drag-region>
+          <span>Scripts</span>
+          <span>/</span>
+          <h1>{script.title}</h1>
+          {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
+        </div>
+        <div className="top-actions">
+          {busy && (
+            <span className="agent-working">
+              <span className="dot live" />
+              Claude writing · <Elapsed since={started} />
+            </span>
+          )}
+          <ViewTabs view={view} views={VIEWS} onChange={setView} />
+          <Shortcuts groups={COMMENTARY_SHORTCUTS} />
+          <button type="button" className="icon-tool" disabled={!draft} aria-label="Copy script" title="Copy the script in the channel's Doc layout" onClick={() => void copy()}>
+            <Icon name={copied ? "check" : "copy"} />
+          </button>
+          <button
+            type="button"
+            className="icon-tool"
+            aria-pressed={agentShown}
+            aria-label={agentShown ? "Hide Claude" : "Show Claude"}
+            title={agentShown ? "Hide Claude and the sources" : "Show Claude and the sources"}
+            onClick={() => setAgentShown(!agentShown)}
+          >
+            <Icon name="panel" />
+          </button>
+          <button type="button" className="secondary sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
+            <Icon name="doc" size={14} />
+            Google Doc
+          </button>
+        </div>
       </header>
       {error && (
         <div className="notice">
@@ -197,137 +343,158 @@ export function CommentaryEditor({
           <button type="button" className="ghost sm" onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
-      <div className="editor commentary">
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Sources</h2>
-            <span className="faint">
-              {sources.length} · about {size(tokens(total))} tokens
-            </span>
-            <span className="spacer" />
-            <button type="button" className="sm" disabled={busy} onClick={() => setAdding(true)}>
-              <Icon name="plus" size={14} />
-              Add
-            </button>
-          </div>
-          <div className="sources">
-            {sources.length === 0 && (
-              <div className="empty">
-                <p>No sources yet.</p>
-                <p className="hint">Add the producer's brief, the evidence, and a past script or two for the style.</p>
-              </div>
-            )}
-            {sources.map((source) => (
-              <div className="source-row" key={source.id}>
-                <span className="badge mono">{source.id}</span>
-                <button type="button" className="open" title="Read it" onClick={() => setReading(source)}>
-                  <strong>{source.title}</strong>
-                  <span className="meta">
-                    {size(source.chars)} characters{source.timed ? " · timed transcript" : ""} · {origin(source)}
-                  </span>
-                </button>
-                <select
-                  value={source.role}
-                  disabled={busy}
-                  title={ROLES.find((role) => role.value === source.role)?.hint}
-                  onChange={(event) => void change(updateSource(script.id, source.id, { role: event.target.value as Role }))}
-                >
-                  {ROLES.map((role) => (
-                    <option key={role.value} value={role.value}>{role.label}</option>
-                  ))}
-                </select>
-                <Menu
-                  label={`More for ${source.title}`}
-                  items={[
-                    { label: "Read", onSelect: () => setReading(source) },
-                    ...(source.origin.startsWith("http") ? [{ label: "Open link", onSelect: () => window.open(source.origin, "_blank") }] : []),
-                    { label: "Remove", danger: true, disabled: busy, onSelect: () => void change(removeSource(script.id, source.id)) },
-                  ]}
-                />
-              </div>
-            ))}
-          </div>
-          <div className="builder-dock">
-            {(!draft || rewriting || busy) && (
-              <Builder
-                key={noteSeed}
-                ready={ready}
-                started={started}
-                stage={stage}
-                rewrite={!!draft}
-                seed={noteSeed}
-                onBuild={(note) => build(note).then((done) => (done && setNoteSeed(""), done))}
-                onCancel={draft ? () => setRewriting(false) : undefined}
-              />
-            )}
-          </div>
-        </section>
+      <div className="editor-grid" data-view={view} data-agent={agentShown || undefined} data-resizing={split.resizing || undefined} style={split.style}>
+        <CommentaryDoc
+          key={view}
+          draft={draft}
+          items={cut.items}
+          playhead={playhead}
+          follow={view === "split"}
+          zoomKey={`commentary-${view}`}
+          disabled={saving === "saving" || busy}
+          onParagraph={editParagraph}
+          onPreview={preview}
+          stats={draft && times ? `${clock(times.totalMs)} · ${narrationWords(draft).toLocaleString()} words · ${clock(times.clipsMs)} of clips` : ""}
+          statsTitle={draft ? commentaryTotal(draft) : ""}
+        />
+        {view === "split" && (
+          <>
+            {split.gutter("video")}
+            {agentShown && split.gutter("agent")}
+          </>
+        )}
+        <Monitor
+          src=""
+          multi
+          clips={cut.items}
+          labels={[]}
+          playhead={playhead}
+          player={player}
+          seekBar
+          onVideo={onVideo}
+          describe={(clip) => cut.cards.get(clip.id) ?? null}
+        />
 
-        <section className="panel">
-          <div className="panel-head">
-            <h2>Script</h2>
-            {draft && times && (
-              <span className="faint">
-                {clock(times.totalMs)} · {narrationWords(draft)} words of narration · {clock(times.clipsMs)} of clips
-              </span>
-            )}
-            <span className="spacer" />
-            {draft && !rewriting && !busy && (
-              <button type="button" className="ghost sm" onClick={() => setRewriting(true)}>Rewrite…</button>
+        <section className="agent" aria-label={tab === "claude" ? "Claude" : "Sources"}>
+          <div className="agent-head">
+            <div className="panel-tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={tab === "claude"} onClick={() => setTab("claude")}>
+                Claude
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "sources"} onClick={() => setTab("sources")}>
+                Sources <small>{sources.length}</small>
+              </button>
+            </div>
+            {tab === "sources" && (
+              <button type="button" className="tool" disabled={busy} onClick={() => setAdding(true)}>
+                <Icon name="plus" size={13} />
+                Add
+              </button>
             )}
           </div>
-          {draft ? (
-            <div className="doc essay">
-              {report && !busy && (
-                <div className="report">
-                  <p>{report.text || "Script written."}</p>
-                  {report.costUsd > 0 && <small>About ${report.costUsd.toFixed(2)} at API prices, covered by your Claude plan.</small>}
-                  <button type="button" className="ghost sm" onClick={() => setReport(null)}>Dismiss</button>
+          {tab === "claude" ? (
+            <>
+              <ChatLog trigger={`${said}${sent}${busy}${stage}`}>
+                {!draft && !busy ? (
+                  <div className="agent-empty">
+                    <h2>Write the script</h2>
+                    <p>
+                      Claude Opus reads every source: the brief for the angle, the evidence to quote from, and past scripts for the
+                      voice. It writes the whole script, and Writer checks every quote and link against the sources.
+                    </p>
+                    {!ready && (
+                      <p>
+                        <button type="button" className="link-button" onClick={() => setTab("sources")}>Add the brief or some evidence</button> first.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    {said && !(busy && !draft) && <Said text={said} costUsd={report && !busy ? report.costUsd : 0} />}
+                    {draft && !busy && cut.items.length > 0 && (
+                      <div className="turn">
+                        <p className="muted">
+                          Split previews the script: {cut.playable} of {cut.clips} clips play from recordings in Writer, the rest show
+                          their words, and narration is held for as long as it takes to read. Click a timestamp to play from it.
+                        </p>
+                      </div>
+                    )}
+                    {draft && draft.checks.length > 0 && !busy && (
+                      <div className="turn">
+                        <p><strong>Checks before recording</strong></p>
+                        <ul>
+                          {draft.checks.map((check, index) => (
+                            <li key={index}>{check}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {sent && busy && (
+                      <div className="user">
+                        <div className="bubble">{sent}</div>
+                      </div>
+                    )}
+                    {busy && <Working stage={stage} since={started} hint="A full script from long sources takes 10 to 20 minutes. You can close this window; it keeps going." />}
+                  </>
+                )}
+              </ChatLog>
+              <Composer
+                value={note}
+                disabled={busy}
+                canSend={!busy && ready && (!draft || !!note.trim())}
+                label={draft ? "Rewrite the script" : "Write the script"}
+                placeholder={busy ? "Claude is writing…" : draft ? "Ask for a rewrite. It replaces the whole script…" : "Notes for the first draft (optional), e.g. aim for 15 minutes…"}
+                hint={!ready ? "Add a brief or evidence first" : undefined}
+                onChange={setNote}
+                onSend={send}
+              />
+            </>
+          ) : (
+            <div className="sources">
+              <p className="sources-sum faint">About {size(tokens(total))} tokens in all</p>
+              {sources.length === 0 && (
+                <div className="empty">
+                  <p>No sources yet.</p>
+                  <p className="hint">Add the producer's brief, the evidence, and a past script or two for the style.</p>
                 </div>
               )}
-              {!report && draft.report && <p className="claude-says">{draft.report}</p>}
-              <h3>{script.title}</h3>
-              {draft.sections.map((section, sectionIndex) => (
-                <div className="chapter" key={`${sectionIndex}-${section.heading}`}>
-                  <h4>{section.heading}</h4>
-                  {sectionIndex === 0 && draft.open.length > 0 && (
-                    <div className="montage">
-                      <span className="label">Montage</span>
-                      {draft.open.map((cite, index) => (
-                        <ClipChip key={index} cite={cite} sources={sources} />
-                      ))}
+              {sources.map((source) => (
+                <div className="source-row" key={source.id}>
+                  <span className="badge mono">{source.id}</span>
+                  <div className="source-body">
+                    <button type="button" className="open" title={`${source.title}\nRead it`} onClick={() => setReading(source)}>
+                      {source.title}
+                    </button>
+                    <div className="source-meta">
+                      <label className={`role-chip ${source.role}`} title={ROLES.find((role) => role.value === source.role)?.hint}>
+                        <select
+                          value={source.role}
+                          disabled={busy}
+                          aria-label={`Use ${source.id} as`}
+                          onChange={(event) => void change(updateSource(script.id, source.id, { role: event.target.value as Role }))}
+                        >
+                          {ROLES.map((role) => (
+                            <option key={role.value} value={role.value}>{role.label}</option>
+                          ))}
+                        </select>
+                        <Icon name="chevron" size={12} />
+                      </label>
+                      <span className="meta">
+                        {size(source.chars)} characters{source.timed ? " · timed" : ""}
+                        {srcOf.has(source.id) ? " · plays" : ""} · {origin(source)}
+                      </span>
                     </div>
-                  )}
-                  {section.paragraphs.map((paragraph, index) => (
-                    <ParagraphBlock
-                      key={`${sectionIndex}-${index}-${draft.writtenAt}`}
-                      paragraph={paragraph}
-                      sources={sources}
-                      disabled={saving === "saving" || busy}
-                      onChange={(next) => editParagraph(sectionIndex, index, next)}
-                    />
-                  ))}
+                  </div>
+                  <Menu
+                    label={`More for ${source.title}`}
+                    items={[
+                      { label: "Read", onSelect: () => setReading(source) },
+                      ...(source.origin.startsWith("http") ? [{ label: "Open link", onSelect: () => window.open(source.origin, "_blank") }] : []),
+                      { label: "Remove", danger: true, disabled: busy, onSelect: () => void change(removeSource(script.id, source.id)) },
+                    ]}
+                  />
                 </div>
               ))}
-              {times && <p className="length total">{commentaryTotal(draft)}</p>}
-              {draft.checks.length > 0 && (
-                <div className="checks-before">
-                  <h4>Checks before recording</h4>
-                  <ul>
-                    {draft.checks.map((check, index) => (
-                      <li key={index}>{check}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="start">
-              <h3>Write the script</h3>
-              <p className="muted">
-                Claude Opus reads every source: the brief for the angle, the evidence to quote from, and past scripts for
-                the voice. It writes the whole script, and Writer checks every quote and link against the sources.
-              </p>
             </div>
           )}
         </section>
@@ -347,9 +514,10 @@ export function CommentaryEditor({
         script={script}
         onClose={() => setDocsOpen(false)}
         onChange={onChange}
-        onUseComments={(note) => {
-          setNoteSeed(`Apply these comments from the producer on the exported Doc, and keep everything else as it is:\n${note}`);
-          setRewriting(true);
+        onUseComments={(text) => {
+          setNote(`Apply these comments from the producer on the exported Doc, and keep everything else as it is:\n${text}`);
+          setTab("claude");
+          setAgentShown(true);
         }}
       />
     </div>
@@ -374,184 +542,245 @@ function origin(source: Source) {
   return source.origin.split("/").pop() ?? source.origin;
 }
 
-function ClipChip({ cite, sources }: { cite: Cite; sources: Source[] }) {
-  const source = sources.find((item) => item.id === cite.source);
-  const title = [cite.quote ? `“${cite.quote}”` : "No speech", `From ${cite.source}${source ? ` · ${source.title}` : ""}`, cite.link ?? ""]
-    .filter(Boolean)
-    .join("\n");
-  const body = (
-    <>
-      <span className="mono">{clock(cite.startMs)}-{clock(cite.endMs)}</span>
-      <span>{cite.video}</span>
-      {cite.verify && <span className="verify" title={cite.verify}>verify</span>}
-    </>
-  );
-  return cite.link ? (
-    <a className="clip-chip" href={cite.link} target="_blank" rel="noreferrer" title={title}>
-      {body}
-    </a>
-  ) : (
-    <span className="clip-chip" title={title}>
-      {body}
-    </span>
-  );
-}
+/** A note beside the page, as Docs shows a comment. */
+type Card =
+  | { id: string; kind: "clip"; cite: Cite }
+  | { id: string; kind: "note"; section: number; index: number; paragraph: Paragraph };
 
-function ParagraphBlock({
-  paragraph,
-  sources,
+/**
+ * The script as the exported Doc: A4 sheets, Arial, the bold section headings,
+ * clips as linked timestamps, and every clip's words, what to verify and the
+ * editor's notes as comments beside the page. In Split it follows the
+ * preview: what plays is underlined in red, and a timestamp clicked plays.
+ */
+function CommentaryDoc({
+  draft,
+  items,
+  playhead,
+  follow,
+  zoomKey,
   disabled,
-  onChange,
+  stats,
+  statsTitle,
+  onParagraph,
+  onPreview,
 }: {
-  paragraph: Paragraph;
-  sources: Source[];
+  draft: Draft | null;
+  items: Item[];
+  playhead: Playhead;
+  follow: boolean;
+  zoomKey: string;
   disabled: boolean;
-  onChange: (next: Paragraph | null) => void;
+  stats: string;
+  statsTitle: string;
+  onParagraph: (section: number, index: number, next: Paragraph | null) => void;
+  onPreview: (id: string) => void;
 }) {
-  const setPiece = (index: number, text: string) =>
-    onChange({ ...paragraph, pieces: paragraph.pieces.map((piece, at) => (at === index && piece.kind === "say" ? { ...piece, text } : piece)) });
-  const clips = paragraph.pieces.filter((piece) => piece.kind === "clip") as Cite[];
-  return (
-    <div className="para">
-      {paragraph.pieces.map((piece, index) =>
-        piece.kind === "say" ? (
-          <Grow key={index} value={piece.text} disabled={disabled} onCommit={(text) => setPiece(index, text)} />
-        ) : (
-          <div className="clip-line" key={index}>
-            <ClipChip cite={piece} sources={sources} />
-            {piece.quote && <q>{piece.quote}</q>}
-          </div>
-        ),
-      )}
-      {clips.filter((clip) => clip.verify).map((clip, index) => (
-        <p className="editor-note verify-note" key={`v${index}`}>
-          Verify {cue(clip)}: {clip.verify}
-        </p>
-      ))}
-      {paragraph.note !== undefined && (
-        <div className="editor-note">
-          <span>For editor</span>
-          <Grow
-            value={paragraph.note}
-            disabled={disabled}
-            placeholder="What to show, blur or bleep"
-            onCommit={(note) => onChange({ ...paragraph, note: note.trim() ? note : undefined })}
-          />
-        </div>
-      )}
-      <div className="para-tools">
-        {paragraph.note === undefined && (
-          <button type="button" className="ghost sm" disabled={disabled} onClick={() => onChange({ ...paragraph, note: "" })}>
-            + Editor note
-          </button>
-        )}
-        <button type="button" className="ghost sm danger-text" disabled={disabled} onClick={() => onChange(null)}>
-          Remove paragraph
-        </button>
-      </div>
-    </div>
-  );
-}
+  const canvas = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useZoom(zoomKey);
+  // Comments are kept per view: on beside the Script view's page, off in Split, where the page is narrow.
+  const [comments, setComments] = useState(() => {
+    const saved = window.localStorage.getItem(`writer.comments.${zoomKey}`);
+    return saved ? saved === "on" : !zoomKey.endsWith("split");
+  });
+  useEffect(() => window.localStorage.setItem(`writer.comments.${zoomKey}`, comments ? "on" : "off"), [zoomKey, comments]);
+  const scale = useScale(canvas, zoom, A4, comments);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [active, setActive] = useState<string | null>(null);
+  const nowId = usePlayheadValue(playhead, (p) => (follow ? (editedPosition(items, p.ms)?.clip.id ?? null) : null));
 
-/** A textarea that grows with its text and saves when it loses focus. */
-function Grow({
-  value,
-  disabled,
-  placeholder,
-  onCommit,
-}: {
-  value: string;
-  disabled: boolean;
-  placeholder?: string;
-  onCommit: (text: string) => void;
-}) {
-  const [text, setText] = useState(value);
-  const area = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => setText(value), [value]);
+  // The playing timestamp's red line fills as its clip runs out.
   useLayoutEffect(() => {
-    const node = area.current;
+    if (!nowId) return;
+    const node = canvas.current?.querySelector<HTMLElement>(`[data-anchor="${nowId}"]`);
     if (!node) return;
-    node.style.height = "auto";
-    node.style.height = `${node.scrollHeight}px`;
-  }, [text]);
-  return (
-    <textarea
-      ref={area}
-      rows={1}
-      value={text}
-      spellCheck
-      disabled={disabled}
-      placeholder={placeholder}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={() => text !== value && onCommit(text)}
-    />
-  );
-}
+    const paint = () => {
+      const at = editedPosition(items, playhead.ms);
+      if (at?.clip.id === nowId) node.style.setProperty("--progress", String((at.sourceMs - at.clip.startMs) / Math.max(1, at.clip.endMs - at.clip.startMs)));
+    };
+    paint();
+    // Kept a third of the way down while it plays.
+    const scroller = canvas.current;
+    if (scroller && playhead.playing) {
+      const top = node.getBoundingClientRect().bottom - scroller.getBoundingClientRect().top + scroller.scrollTop - scroller.clientHeight / 3;
+      scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }
+    return playhead.subscribe(paint);
+  }, [nowId, items, playhead]);
 
-function Builder({
-  ready,
-  started,
-  stage,
-  rewrite,
-  seed = "",
-  onBuild,
-  onCancel,
-}: {
-  ready: boolean;
-  started: number | null;
-  stage: string;
-  rewrite: boolean;
-  /** Notes to start from, such as comments read back from the Doc. */
-  seed?: string;
-  onBuild: (note: string) => Promise<boolean>;
-  onCancel?: () => void;
-}) {
-  const [note, setNote] = useState(seed);
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (started === null) return;
-    setNow(Date.now());
-    const tick = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(tick);
-  }, [started]);
-  if (started !== null) {
-    return (
-      <div className="builder busy">
-        <div className="thinking">
-          <span className="dot live" />
-          <span>{stage && stage !== "Writing the script" ? `${stage}…` : "Opus is writing the script"}</span>
-          <span className="mono faint">{clock(Math.max(0, now - started))}</span>
-        </div>
-        <span className="faint">A full script from long sources takes 10 to 20 minutes. You can close this window; it keeps going.</span>
-      </div>
+  const cards: Card[] = [];
+  if (draft) {
+    draft.open.forEach((cite, index) => cards.push({ id: `o${index}`, kind: "clip", cite }));
+    draft.sections.forEach((section, s) =>
+      section.paragraphs.forEach((paragraph, p) => {
+        if (paragraph.note !== undefined) cards.push({ id: `n${s}-${p}`, kind: "note", section: s, index: p, paragraph });
+        paragraph.pieces.forEach((piece, i) => piece.kind === "clip" && cards.push({ id: `c${s}-${p}-${i}`, kind: "clip", cite: piece }));
+      }),
     );
   }
-  return (
-    <div className="builder">
-      {rewrite && <strong>Rewrite the script</strong>}
-      <textarea
-        value={note}
-        rows={seed ? 8 : 2}
-        maxLength={8000}
-        placeholder="Optional notes for Claude, e.g. aim for 15 minutes of narration, open on the Christian line"
-        onChange={(event) => setNote(event.target.value)}
-      />
-      <div className="row">
-        <span className="faint">
-          {!ready ? "Add the brief or some evidence first." : rewrite ? "This replaces the whole script." : "Runs on Opus through your Claude login."}
-        </span>
-        <span className="spacer" />
-        {onCancel && <button type="button" className="ghost sm" onClick={onCancel}>Cancel</button>}
-        <button
-          type="button"
-          className={rewrite ? "sm danger" : "primary"}
-          disabled={!ready}
-          onClick={() => void onBuild(note).then((done) => done && setNote(""))}
-        >
-          {rewrite ? "Replace script" : "Write script"}
+
+  const range = (cite: Cite, id: string) => {
+    const times = `${clock(cite.startMs)}-${clock(cite.endMs)}`;
+    const title = [cite.video, cite.quote ? `“${cite.quote}”` : "", cite.verify ? `Verify: ${cite.verify}` : "", "Click to play it"].filter(Boolean).join("\n");
+    return (
+      <span
+        className="range"
+        key={id}
+        data-anchor={id}
+        data-now={nowId === id || undefined}
+        data-state={active === id ? "active" : undefined}
+        data-plain={comments ? undefined : ""}
+        title={title}
+        onMouseEnter={() => setActive(id)}
+        onMouseLeave={() => setActive(null)}
+      >
+        (
+        <button type="button" onClick={() => onPreview(id)}>
+          {times}
         </button>
+        )
+      </span>
+    );
+  };
+  const ranges = (cites: { cite: Cite; id: string }[], key: string) => (
+    <p className="ranges" key={key}>
+      {cites.map(({ cite, id }, index) => (
+        <Fragment key={id}>
+          {index > 0 && <span className="plus">+</span>}
+          {range(cite, id)}
+        </Fragment>
+      ))}
+    </p>
+  );
+
+  const rail = comments
+    ? cards.map((card) =>
+        card.kind === "clip" ? (
+          <button
+            type="button"
+            className="comment"
+            key={card.id}
+            data-card={card.id}
+            data-state={active === card.id ? "active" : undefined}
+            onMouseEnter={() => setActive(card.id)}
+            onMouseLeave={() => setActive(null)}
+            onClick={() => onPreview(card.id)}
+          >
+            <span className="card-head">
+              <span className="avatar mono">{card.cite.source.replace(/^S/, "")}</span>
+              <span className="comment-author">{card.cite.video}</span>
+            </span>
+            <span className="card-text">{card.cite.quote.trim() ? `“${card.cite.quote.trim()}”` : "Confirm speech and context by ear."}</span>
+            {card.cite.verify && <span className="card-verify">Verify: {card.cite.verify}</span>}
+          </button>
+        ) : (
+          <div
+            className="comment human"
+            key={card.id}
+            data-card={card.id}
+            data-state={active === card.id ? "active" : undefined}
+            onMouseEnter={() => setActive(card.id)}
+            onMouseLeave={() => setActive(null)}
+          >
+            <span className="card-head">
+              <span className="avatar"><Icon name="note" size={12} /></span>
+              <span className="comment-author">For editor</span>
+            </span>
+            <Grow
+              className="card-field"
+              value={card.paragraph.note ?? ""}
+              disabled={disabled}
+              placeholder="What to show, blur or bleep"
+              onCommit={(text) => onParagraph(card.section, card.index, { ...card.paragraph, note: text.trim() ? text : undefined })}
+            />
+          </div>
+        ),
+      )
+    : null;
+
+  return (
+    <section className="document" aria-label="Script document">
+      <header className="doc-toolbar">
+        <ZoomTools zoom={zoom} scale={scale} page={page} pages={pages} onZoom={setZoom} />
+        <div className="doc-actions">
+          {stats && <span className="doc-stats" title={statsTitle}>{stats}</span>}
+          <button
+            type="button"
+            className="icon-tool"
+            aria-pressed={comments}
+            aria-label={comments ? "Hide comments" : "Show comments"}
+            title={comments ? "Hide comments" : "Show comments"}
+            onClick={() => setComments(!comments)}
+          >
+            <Icon name="note" size={15} />
+          </button>
+        </div>
+      </header>
+      <div className="canvas" ref={canvas} onScroll={(event) => setPage(pageInView(event.currentTarget, scale, A4))}>
+        <Paper sheet={A4} scale={scale} className="a4" rail={rail} version={comments} onPages={setPages}>
+          {!draft && (
+            <p className="doc-empty" data-block>
+              The script appears here once Claude writes it, laid out as its Google Doc will be.
+            </p>
+          )}
+          {draft?.sections.map((section, s) => (
+            <Fragment key={`${s}-${section.heading}`}>
+              <h2 className="doc-heading" data-block>
+                {section.heading.replace(/^(\d+\.) /, "$1 ")}
+              </h2>
+              {s === 0 && draft.open.length > 0 && (
+                <div className="block" data-block>
+                  {ranges(draft.open.map((cite, index) => ({ cite, id: `o${index}` })), "open")}
+                </div>
+              )}
+              {section.paragraphs.map((paragraph, p) => {
+                // Clips that follow one another share a line, joined with "+".
+                const lines: ({ kind: "say"; text: string; index: number } | { kind: "clips"; cites: { cite: Cite; id: string }[] })[] = [];
+                paragraph.pieces.forEach((piece, i) => {
+                  if (piece.kind === "say") return lines.push({ kind: "say", text: piece.text, index: i });
+                  const last = lines[lines.length - 1];
+                  const item = { cite: piece, id: `c${s}-${p}-${i}` };
+                  if (last?.kind === "clips") last.cites.push(item);
+                  else lines.push({ kind: "clips", cites: [item] });
+                });
+                const noteId = `n${s}-${p}`;
+                const setSay = (index: number, text: string) =>
+                  onParagraph(s, p, {
+                    ...paragraph,
+                    pieces: paragraph.pieces.map((piece, at) => (at === index && piece.kind === "say" ? { ...piece, text } : piece)),
+                  });
+                return (
+                  <div className="block" data-block data-anchor={noteId} data-state={active === noteId ? "active" : undefined} key={`${s}-${p}-${draft.writtenAt}`}>
+                    {lines.map((line, index) =>
+                      line.kind === "clips" ? (
+                        ranges(line.cites, `r${index}`)
+                      ) : (
+                        <div className="said" key={`s${line.index}`} data-anchor={`s${s}-${p}-${line.index}`} data-now={nowId === `s${s}-${p}-${line.index}` || undefined}>
+                          <Grow className="narration" value={line.text} disabled={disabled} onCommit={(text) => setSay(line.index, text)} />
+                        </div>
+                      ),
+                    )}
+                    <div className="block-tools">
+                      {paragraph.note === undefined && (
+                        <button type="button" disabled={disabled} title="Add a note for the editor" onClick={() => onParagraph(s, p, { ...paragraph, note: "" })}>
+                          <Icon name="note" size={14} />
+                          Note
+                        </button>
+                      )}
+                      <button type="button" className="danger-text" disabled={disabled} title="Remove this paragraph" onClick={() => onParagraph(s, p, null)}>
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </Fragment>
+          ))}
+          {draft && <p className="doc-total" data-block>{totalLine(draft)}</p>}
+        </Paper>
       </div>
-    </div>
+    </section>
   );
 }
 

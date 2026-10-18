@@ -1,5 +1,5 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   createCommentary,
   deleteScript,
@@ -13,7 +13,6 @@ import {
   resumeImport,
 } from "./api";
 import { clock } from "./clips";
-import { SettingsDialog } from "./settings";
 import type { Choice, ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
 
@@ -30,25 +29,83 @@ function ago(at: number) {
   return new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-function Status({ script, progress }: { script: Summary; progress: ImportProgress[] }) {
-  if (script.status === "processing") {
-    const percent = progress.find((item) => item.id === script.id)?.percent ?? script.progress;
-    return <span className="status busy"><i />Importing {percent}%</span>;
-  }
-  if (script.building) return <span className="status busy"><i />Writing…</span>;
-  if (script.status === "needs_choice") return <span className="status ask"><i />Needs your choice</span>;
-  if (script.status === "error") return <span className="status bad"><i />Failed</span>;
-  if (script.sourceKind === "commentary") {
-    return script.draftWords > 0 ? <span className="status done"><i />Script</span> : <span className="status ready"><i />Sources</span>;
-  }
-  if (script.cutInCount > 0) return <span className="status done"><i />Script</span>;
-  if (script.wordCount > 0) return <span className="status ready"><i />Transcribed</span>;
-  return <span className="status"><i />No transcript</span>;
+/** How long ago a script was made, as Repack's library divides it. */
+function madeLabel(at: number, now = new Date()) {
+  const made = new Date(at);
+  const day = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const days = Math.round((day(now) - day(made)) / 86_400_000);
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+  if (days < 14) return "Last week";
+  const months = (now.getFullYear() - made.getFullYear()) * 12 + now.getMonth() - made.getMonth();
+  if (months < 1 || days < 30) return `${Math.floor(days / 7)} weeks ago`;
+  if (months === 1) return "Last month";
+  if (months < 12) return `${months} months ago`;
+  const years = now.getFullYear() - made.getFullYear();
+  return years <= 1 ? "Last year" : `${years} years ago`;
 }
+
+type Tone = "busy" | "idle" | "draft" | "done" | "stale" | "error";
+
+const day = (at: number) => new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+/**
+ * Where a script has got to, as one step of its life, the way Repack says it:
+ * importing, being written, a draft, then handed over as a Google Doc. The
+ * hover says what the step is made of.
+ */
+function scriptStatus(script: Summary, progress: ImportProgress[]): { tone: Tone; label: string; title?: string } {
+  if (script.status === "processing") {
+    const live = progress.find((item) => item.id === script.id);
+    return { tone: "busy", label: `Importing · ${live?.percent ?? script.progress}%`, title: live?.detail };
+  }
+  if (script.building) return { tone: "busy", label: "Claude writing" };
+  if (script.status === "needs_choice") return { tone: "stale", label: "Needs your choice", title: script.decision?.summary };
+  if (script.status === "error") return { tone: "error", label: "Import failed", title: script.error ?? undefined };
+  const made =
+    script.sourceKind === "commentary"
+      ? script.draftWords
+        ? `${script.draftWords} words of narration`
+        : ""
+      : [script.durationMs ? `${clock(script.durationMs)} of footage` : "", script.cutInCount ? `${script.cutInCount} cut-ins` : ""]
+          .filter(Boolean)
+          .join(" · ");
+  const written = script.sourceKind === "commentary" ? script.draftWords > 0 : script.cutInCount > 0;
+  if (!written) {
+    if (script.sourceKind !== "commentary" && !script.wordCount) return { tone: "idle", label: "No transcript", title: made || undefined };
+    return { tone: "idle", label: "Not started", title: made || undefined };
+  }
+  if (!script.docExportedAt) return { tone: "draft", label: "Draft", title: made };
+  return script.docBehind
+    ? { tone: "stale", label: "Edited since Doc", title: `Changed after its Google Doc of ${day(script.docExportedAt)} · ${made}` }
+    : { tone: "done", label: "In Google Docs", title: `Exported ${day(script.docExportedAt)} · ${made}` };
+}
+
+function Status({ tone, label, title }: { tone: Tone; label: string; title?: string }) {
+  return (
+    <span className={`script-status ${tone}`} title={title}>
+      <i aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+/**
+ * A YouTube import's title carries its channel and link: "Title (Channel,
+ * https://…)". The list shows the title, the channel quietly after it.
+ */
+export function splitTitle(title: string) {
+  const found = /^(.*)\s\((.+),\s*https?:\/\/[^\s)]+\)\s*$/.exec(title);
+  return found ? { name: found[1], from: found[2] } : { name: title, from: "" };
+}
+
+const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc" };
 
 export function Library({
   scripts,
   claude,
+  onSettings,
   progress,
   loadError,
   onOpen,
@@ -56,18 +113,31 @@ export function Library({
 }: {
   scripts: Summary[];
   claude: ClaudeStatus | null;
+  onSettings: () => void;
   progress: ImportProgress[];
   loadError: string | null;
   onOpen: (id: string) => void;
   onChanged: () => void;
 }) {
   const [creating, setCreating] = useState(false);
-  const [settings, setSettings] = useState(false);
   const [renaming, setRenaming] = useState<Summary | null>(null);
   const [deleting, setDeleting] = useState<Summary | null>(null);
   const [recovering, setRecovering] = useState<Summary | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const next = useRef(0);
+  const [query, setQuery] = useState("");
+  const search = useRef<HTMLInputElement>(null);
+  // "/" finds a script from anywhere on the page, as in Repack's lists.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (event.key !== "/" || (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA"))) return;
+      event.preventDefault();
+      search.current?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const toast = (text: ToastMessage["text"], action?: ToastMessage["action"]) =>
     setToasts((list) => [...list, { id: ++next.current, text, action }]);
@@ -76,107 +146,172 @@ export function Library({
   // An import whose script the list hasn't caught up with yet.
   const importing = progress.filter((item) => !scripts.some((script) => script.id === item.id));
   const empty = scripts.length === 0 && !importing.length;
+  // Newest first, under a divider for each stretch of time, as Repack lists them.
+  const needle = query.trim().toLowerCase();
+  const rows = [...scripts]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .filter((script) => !needle || script.title.toLowerCase().includes(needle));
+  const open = (script: Summary) => (stuck(script) ? setRecovering(script) : onOpen(script.id));
 
   return (
-    <div className="app">
-      <header className="top home" data-tauri-drag-region>
-        <span className="brand" data-tauri-drag-region><i />Writer</span>
-        <span className="spacer" data-tauri-drag-region />
-        <span className="claude" title={claude?.message}>
-          <span className={claude?.loggedIn ? "dot on" : "dot"} />
-          Claude
-        </span>
-        <button type="button" className="icon-button" aria-label="Settings" title="Settings" onClick={() => setSettings(true)}>
-          <Icon name="settings" />
-        </button>
-        <button type="button" className="primary sm" onClick={() => setCreating(true)}>
-          <Icon name="plus" size={14} />
-          New script
-        </button>
-      </header>
-      {loadError && <div className="notice">{loadError}</div>}
-      <main className="page">
-        {empty ? (
-          <div className="welcome">
-            <img src="/favicon.svg" alt="" width={44} height={44} />
-            <h2>No scripts yet</h2>
-            <p>Bring in an interrogation from YouTube, Google Drive or this Mac, or start a commentary from its sources, and Claude writes the script.</p>
-            <button type="button" className="primary" onClick={() => setCreating(true)}>
-              <Icon name="plus" size={14} />
+    <div className="library">
+      <div className="page-heading" data-tauri-drag-region>
+        <div data-tauri-drag-region>
+          <h1>Scripts</h1>
+          <p>Write from footage or sources, with Claude alongside you.</p>
+        </div>
+        <div className="heading-actions">
+          {!empty && (
+            <label className="list-search">
+              <Icon name="search" size={14} />
+              <input
+                ref={search}
+                value={query}
+                placeholder="Search scripts"
+                aria-label="Search scripts"
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setQuery("");
+                  if (event.key === "Enter" && rows[0]) open(rows[0]);
+                }}
+              />
+              {query ? (
+                <button type="button" className="clear" aria-label="Clear search" onClick={() => setQuery("")}>
+                  ×
+                </button>
+              ) : (
+                <kbd>/</kbd>
+              )}
+            </label>
+          )}
+          <button type="button" className="claude-status" title={claude?.message ?? "Checking Claude…"} onClick={onSettings}>
+            <span className={claude?.loggedIn ? "dot on" : "dot"} />
+            Claude{claude?.subscription ? ` · ${claude.subscription[0].toUpperCase()}${claude.subscription.slice(1)}` : ""}
+          </button>
+          <button type="button" className="icon-button" aria-label="Setup" title="Setup" onClick={onSettings}>
+            <Icon name="settings" size={17} />
+          </button>
+          {!empty && (
+            <button type="button" className="primary lg" onClick={() => setCreating(true)}>
+              <Icon name="plus" size={15} />
               New script
             </button>
-          </div>
-        ) : (
-          <div className="column">
-            <div className="list-head">
-              <h2>Scripts</h2>
-              <span className="faint">{scripts.length}</span>
-            </div>
-            <div className="list">
-              {importing.map((item) => (
-                <div className="item" key={item.id} style={{ ["--i" as string]: 0 }}>
-                  <div className="open">
-                    <strong>{item.title}</strong>
-                    <span className="meta">{item.detail}</span>
-                    <div className="bar"><span style={{ width: `${item.percent}%` }} /></div>
+          )}
+        </div>
+      </div>
+      {loadError && <div className="notice">{loadError}</div>}
+      {empty ? (
+        <div className="welcome">
+          <img src="/favicon.svg" alt="" width={44} height={44} />
+          <h2>No scripts yet</h2>
+          <p>Bring in an interrogation from YouTube, Google Drive or this Mac, or start a commentary from its sources, and Claude writes the script.</p>
+          <button type="button" className="primary lg" onClick={() => setCreating(true)}>
+            <Icon name="plus" size={15} />
+            New script
+          </button>
+        </div>
+      ) : (
+        <table className="table" aria-label="Scripts">
+          <thead>
+            <tr className="table-row table-head">
+              <th className="cell" scope="col">Name</th>
+              <th className="cell" scope="col">Status</th>
+              <th className="cell" scope="col">Updated</th>
+              <th className="cell" scope="col"><span className="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {importing.map((item) => (
+              <tr className="table-row" key={item.id}>
+                <td className="cell cell-primary">
+                  <div className="script-title">
+                    <span className="kind-mark"><Icon name="youtube" size={13} /></span>
+                    <span className="row-link truncate" title={item.title}>{item.title}</span>
                   </div>
-                  <span className="status busy"><i />Importing {item.percent}%</span>
-                  <span className="menu-spacer" />
-                </div>
-              ))}
-              {scripts.map((script, index) => {
-                const live = script.status === "processing" ? progress.find((item) => item.id === script.id) ?? null : null;
-                const locked = script.status === "processing" || script.building;
-                return (
-                  <div className="item" key={script.id} style={{ ["--i" as string]: Math.min(index, 12) }}>
-                    <button type="button" className="open" onClick={() => (stuck(script) ? setRecovering(script) : onOpen(script.id))}>
-                      <strong>{script.title}</strong>
-                      <span className="meta">
-                        {live ? (
-                          live.detail
-                        ) : script.status === "needs_choice" && script.decision ? (
-                          <span className="ask">{script.decision.summary}</span>
-                        ) : script.status === "error" ? (
-                          <span className="bad">{script.error}</span>
-                        ) : (
-                          [
-                            script.sourceKind === "commentary" ? "Commentary" : null,
-                            script.durationMs ? clock(script.durationMs) : null,
-                            script.cutInCount ? `${script.cutInCount} cut-ins` : null,
-                            script.draftWords ? `${script.draftWords} words` : null,
-                            `updated ${ago(script.updatedAt)}`,
-                          ]
-                            .filter(Boolean)
-                            .join("  ·  ")
-                        )}
-                      </span>
-                      {live && <div className="bar"><span style={{ width: `${live.percent}%` }} /></div>}
-                    </button>
-                    <Status script={script} progress={progress} />
-                    <Menu
-                      label={`More for ${script.title}`}
-                      items={[
-                        ...(stuck(script)
-                          ? [{ label: script.status === "needs_choice" ? "Answer…" : "Retry import…", onSelect: () => setRecovering(script) }]
-                          : []),
-                        { label: "Open", onSelect: () => onOpen(script.id) },
-                        { label: "Rename…", onSelect: () => setRenaming(script) },
-                        {
-                          label: "Delete…",
-                          danger: true,
-                          disabled: locked,
-                          hint: locked ? "busy" : undefined,
-                          onSelect: () => setDeleting(script),
-                        },
-                      ]}
-                    />
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-      </main>
+                </td>
+                <td className="cell"><Status tone="busy" label={`Importing · ${item.percent}%`} title={item.detail} /></td>
+                <td className="cell">just now</td>
+                <td className="cell cell-end" />
+              </tr>
+            ))}
+            {rows.map((script, index) => {
+              const made = madeLabel(script.createdAt);
+              const locked = script.status === "processing" || script.building;
+              return (
+                <Fragment key={script.id}>
+                  {/* Today needs no heading; older scripts get one per stretch of time. */}
+                  {made !== "Today" && (index === 0 || madeLabel(rows[index - 1].createdAt) !== made) && (
+                    <tr className="script-group">
+                      <th colSpan={4} scope="rowgroup">{made}</th>
+                    </tr>
+                  )}
+                  <tr className="table-row openable" onClick={() => open(script)}>
+                    <td className="cell cell-primary">
+                      <div className="script-title">
+                        <span className="kind-mark" title={script.sourceKind === "commentary" ? "Commentary" : "Footage"}>
+                          <Icon name={script.compilation ? "stack" : (KIND_ICON[script.sourceKind] ?? "file")} size={13} />
+                        </span>
+                        <button
+                          type="button"
+                          className="row-link"
+                          title={script.title}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            open(script);
+                          }}
+                        >
+                          {splitTitle(script.title).name}
+                          {splitTitle(script.title).from && <span className="from"> · {splitTitle(script.title).from}</span>}
+                        </button>
+                        {script.compilation ? (
+                          <span className="script-kind">Compilation</span>
+                        ) : script.sourceKind === "commentary" ? (
+                          <span className="script-kind">Commentary</span>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="cell">
+                      <Status {...scriptStatus(script, progress)} />
+                    </td>
+                    <td className="cell">
+                      <time title={new Date(script.updatedAt).toLocaleString()}>{ago(script.updatedAt)}</time>
+                    </td>
+                    <td className="cell cell-end">
+                      <Menu
+                        label={`Manage ${script.title}`}
+                        items={[
+                          ...(stuck(script)
+                            ? [{ label: script.status === "needs_choice" ? "Answer…" : "Retry import…", onSelect: () => setRecovering(script) }]
+                            : []),
+                          { label: "Open script", onSelect: () => onOpen(script.id) },
+                          { label: "Rename…", onSelect: () => setRenaming(script) },
+                          {
+                            label: "Delete…",
+                            danger: true,
+                            disabled: locked,
+                            hint: locked ? "busy" : undefined,
+                            onSelect: () => setDeleting(script),
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                </Fragment>
+              );
+            })}
+            {needle && rows.length === 0 && (
+              <tr className="table-row empty-row">
+                <td className="cell" colSpan={4}>
+                  Nothing matches “{query.trim()}”.{" "}
+                  <button type="button" className="link-button" onClick={() => setQuery("")}>
+                    Show all
+                  </button>
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      )}
 
       <ImportDialog
         open={creating}
@@ -229,7 +364,6 @@ export function Library({
           toast(<span className="bad">{reason}</span>);
         }}
       />
-      <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <Toasts toasts={toasts} onDismiss={dismiss} />
     </div>
   );
@@ -578,7 +712,7 @@ function ImportDialog({
       onClose={onClose}
       title="New script"
       description="Bring in the footage. Writer transcribes it, then Claude can write the script."
-      width={500}
+      width={620}
       footer={
         <>
           {error && <span className="bad dialog-error">{error}</span>}

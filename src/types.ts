@@ -96,6 +96,11 @@ export type Summary = {
   decision?: Decision;
   /** A commentary script's narration words, once written. */
   draftWords: number;
+  compilation: boolean;
+  /** When the last full Google Doc export was made, and whether the script changed since. */
+  docExportedAt?: number;
+  docBehind: boolean;
+  createdAt: number;
 };
 
 export type ImportProgress = {

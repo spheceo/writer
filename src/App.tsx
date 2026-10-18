@@ -3,6 +3,8 @@ import { claudeStatus, getProgress, getScript, listScripts, message } from "./ap
 import { CommentaryEditor } from "./commentary-view";
 import { Editor } from "./editor";
 import { Library } from "./library";
+import { Icon } from "./ui";
+import { SettingsDialog } from "./settings";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
 type Route = { name: "library" } | { name: "script"; id: string };
@@ -25,6 +27,7 @@ export function App() {
   const [progress, setProgress] = useState<ImportProgress[]>([]);
   const [open, setOpen] = useState<Script | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [settings, setSettings] = useState(false);
 
   const setRoute = (next: Route) => {
     setRouteState(next);
@@ -88,48 +91,39 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [working, route.name]);
 
-  if (route.name === "script" && open && open.id === route.id && open.commentary) {
-    return (
-      <CommentaryEditor
-        script={open}
-        onChange={setOpen}
-        onBack={() => {
-          setRoute({ name: "library" });
-          refresh();
-        }}
-      />
-    );
-  }
-  if (route.name === "script" && open && open.id === route.id) {
-    return (
-      <Editor
-        script={open}
-        onChange={setOpen}
-        onBack={() => {
-          setRoute({ name: "library" });
-          refresh();
-        }}
-      />
-    );
-  }
-  if (route.name === "script") {
-    return (
-      <div className="app">
-        <header className="top" data-tauri-drag-region>
-          <button type="button" className="ghost sm" onClick={() => setRoute({ name: "library" })}>← Library</button>
-        </header>
-        <p className={error ? "notice" : "empty"}>{error ?? "Opening…"}</p>
-      </div>
-    );
-  }
+  const home = () => {
+    setRoute({ name: "library" });
+    refresh();
+  };
+  const opened = route.name === "script" && open && open.id === route.id ? open : null;
   return (
-    <Library
-      scripts={scripts}
-      claude={claude}
-      progress={progress}
-      loadError={error}
-      onOpen={(id) => setRoute({ name: "script", id })}
-      onChanged={refresh}
-    />
+    <>
+      {opened?.commentary ? (
+        <CommentaryEditor script={opened} onChange={setOpen} onBack={home} />
+      ) : opened ? (
+        <Editor script={opened} onChange={setOpen} onBack={home} />
+      ) : route.name === "script" ? (
+        <div className="studio">
+          <header className="topbar" data-tauri-drag-region>
+            <button type="button" className="icon-tool" aria-label="All scripts" title="All scripts" onClick={home}>
+              <Icon name="back" />
+            </button>
+            <div className="title-block" data-tauri-drag-region>Scripts</div>
+          </header>
+          <p className={error ? "notice" : "empty"}>{error ?? "Opening…"}</p>
+        </div>
+      ) : (
+        <Library
+          scripts={scripts}
+          claude={claude}
+          onSettings={() => setSettings(true)}
+          progress={progress}
+          loadError={error}
+          onOpen={(id) => setRoute({ name: "script", id })}
+          onChanged={refresh}
+        />
+      )}
+      <SettingsDialog open={settings} onClose={() => setSettings(false)} />
+    </>
   );
 }

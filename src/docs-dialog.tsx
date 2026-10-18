@@ -126,6 +126,9 @@ export function DocsDialog({
         <>
           {problem && <span className="bad dialog-error">{problem}</span>}
           <span className="spacer" />
+          <button type="button" className="ghost" onClick={onClose}>
+            Close
+          </button>
           <button
             type="button"
             disabled={!exportable || !!exporting}
