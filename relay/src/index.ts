@@ -1,3 +1,5 @@
+import { type CloudEnv, cloud } from "./cloud";
+
 declare const FixedLengthStream: {
   new (size: number): {
     readable: ReadableStream<Uint8Array>;
@@ -25,6 +27,9 @@ declare const FixedLengthStream: {
  *   GET  /v1/docs/exports?script=ID → every Doc exported from that script
  *   GET  /v1/docs/comments?script=ID&doc=DOC → the comments people left on
  *                           one of that script's Docs
+ *   POST /v1/cloud/*      scripts and their files, synced between Macs:
+ *                         presigned R2 URLs and Writer's Convex functions
+ *                         (cloud.ts)
  *   GET  /health
  *
  * Spend is bounded three ways: a burst limit per IP, a daily byte quota per
@@ -34,7 +39,7 @@ declare const FixedLengthStream: {
  * are not a guaranteed money cap for arbitrary uploaded audio.
  */
 
-export interface Env {
+export interface Env extends CloudEnv {
   ELEVENLABS_API_KEY?: string;
   GOOGLE_DRIVE_CLIENT_ID?: string;
   GOOGLE_DRIVE_CLIENT_SECRET?: string;
@@ -74,12 +79,14 @@ export default {
         proxy: Boolean(env.PROXY_URL),
         docs: docsReady(env),
         watch: Boolean(env.AI_GATEWAY_API_KEY),
+        cloud: Boolean(env.CLIENT_TOKEN && env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
       });
     }
     if (!url.pathname.startsWith("/v1/")) return json(404, { error: "not found" });
     if (env.CLIENT_TOKEN && request.headers.get("authorization") !== `Bearer ${env.CLIENT_TOKEN}`) {
       return json(401, { error: "This relay needs a client token." });
     }
+    if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env);
     if (url.pathname === "/v1/drive/token") {
       if (request.method !== "GET") return json(405, { error: "GET a Drive token." });
       return driveToken(env);

@@ -12,6 +12,7 @@ import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayhead
 import type { Adding, BuildStatus, Cite, Draft, Paragraph, Role, Script, Source, Summary } from "./types";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
+import { CloudBadge } from "./cloud-badge";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const ROLES: { value: Role; label: string; hint: string }[] = [
@@ -310,6 +311,7 @@ export function CommentaryEditor({
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
+          <CloudBadge compact />
           {busy && (
             <span className="agent-working">
               <span className="dot live" />

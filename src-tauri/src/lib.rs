@@ -1,4 +1,5 @@
 mod claude;
+mod cloud;
 mod commentary;
 mod doctor;
 mod drive;
@@ -325,7 +326,15 @@ fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
     if jobs::running(&id) {
         return Err("Claude is still writing this script.".into());
     }
-    store::remove(&data_dir(&app)?, &id)
+    let data = data_dir(&app)?;
+    store::remove(&data, &id)?;
+    cloud::deleted(&data, &id);
+    Ok(())
+}
+
+#[tauri::command]
+fn cloud_status() -> cloud::Status {
+    cloud::status()
 }
 
 #[tauri::command]
@@ -509,6 +518,10 @@ pub fn run() {
             // The dev page on Tailscale talks to this. It stays on localhost;
             // Vite is what listens on the tailnet.
             http::start(app.handle().clone());
+            // Every script in the cloud, pushed and pulled in the background.
+            if let Ok(dir) = app.path().app_data_dir() {
+                cloud::start(dir);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -542,7 +555,8 @@ pub fn run() {
             save_draft,
             export_doc,
             list_docs,
-            doc_comments
+            doc_comments,
+            cloud_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running writer");

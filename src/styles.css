@@ -1055,3 +1055,17 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .timeline-panel { container-type: inline-size; }
 .timeline-hint { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
 @container (max-width: 640px) { .timeline-hint { display: none; } }
+
+/* The cloud's state */
+.cloud-badge { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 10px; border-radius: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; cursor: default; }
+.cloud-badge i { position: absolute; left: 20px; top: 16px; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); box-shadow: 0 0 0 2px #0b0b0b; }
+.cloud-badge.compact { width: 28px; height: 28px; padding: 0; justify-content: center; margin-right: 2px; }
+.cloud-badge.compact i { left: 17px; top: 15px; box-shadow: 0 0 0 2px #000; }
+.cloud-badge.ok i { background: var(--ok); }
+.cloud-badge.busy { color: #b4bcf0; }
+.cloud-badge.busy i { background: var(--play); animation: pulse 1.4s ease-in-out infinite; }
+.cloud-badge.warn { color: #f5b45a; }
+.cloud-badge.warn i { background: #f5b45a; }
+.cloud-badge.bad { color: var(--danger); }
+.cloud-badge.bad i { background: var(--danger); }
+.cloud-badge span { font-variant-numeric: tabular-nums; }

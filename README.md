@@ -73,6 +73,7 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 - `GET /v1/proxy` gives the DataImpulse proxy for YouTube downloads.
 - `POST /v1/watch` sends a few minutes of footage to Gemini 3.8 Flash through the Vercel AI Gateway (the relay picks the model; 40 a minute per IP).
 - `POST /v1/docs/export`, `GET /v1/docs/exports` and `GET /v1/docs/comments` make a script's Docs, list them and read their comments, as the account that owns Repack's script Docs. Only Docs in its "Writer scripts" folder marked with the script are listed or read.
+- `POST /v1/cloud/*` is the cloud, as Edit's relay has it: presigned R2 URLs for keys under `writer/` only, and calls to Convex functions named `writer:` only, with Convex's service token added. It refuses everything when no client token is set (`relay/src/cloud.ts`).
 
 ```sh
 cd relay
@@ -83,6 +84,13 @@ bunx wrangler secret put ELEVENLABS_API_KEY
 for k in GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET GOOGLE_DRIVE_REFRESH_TOKEN PROXY_URL; do
   infisical secrets get $k --projectId cdf4a0c5-eca4-4415-af3a-40871af285f3 --path=/media --env=dev --plain \
     | tr -d '\n' | bunx wrangler secret put $k
+done
+# The cloud: Repack's R2 bucket and Convex deployment (shared with Edit; Writer keeps to writer/):
+for pair in /web:R2_ACCOUNT_ID:R2_ACCOUNT_ID /web:R2_ACCESS_KEY_ID:R2_ACCESS_KEY_ID /web:R2_SECRET_ACCESS_KEY:R2_SECRET_ACCESS_KEY \
+  /web:R2_BUCKET:R2_BUCKET /web:NEXT_PUBLIC_CONVEX_URL:CONVEX_URL /convex:CONVEX_SERVICE_TOKEN:CONVEX_SERVICE_TOKEN; do
+  scope=${pair%%:*}; rest=${pair#*:}   # not "path": in zsh that is PATH
+  infisical secrets get ${rest%%:*} --projectId cdf4a0c5-eca4-4415-af3a-40871af285f3 --path=$scope --env=dev --plain \
+    | tr -d '\n' | bunx wrangler secret put ${rest#*:}
 done
 # The script Docs account (Repack's GOOGLE_DOCS_REFRESH_TOKEN and its client, at /) and the AI Gateway:
 for pair in GOOGLE_DOCS_CLIENT_ID:GOOGLE_DRIVE_CLIENT_ID GOOGLE_DOCS_CLIENT_SECRET:GOOGLE_DRIVE_CLIENT_SECRET \
@@ -95,3 +103,11 @@ done
 Anyone with the client token can read that Drive account for an hour at a time and use the proxy, so treat the token like a password. The app looks for `https://writer-relay.sphe-g-personal.workers.dev` until you change that URL.
 
 Long recordings are sent in pieces of about two hours, split near a quiet moment. A piece that already succeeded is kept, so a retry does not pay ElevenLabs again.
+
+## Cloud
+
+Every script is in the cloud and on every Mac running Writer, as Edit's projects are. Each script's body (`script.json`) and files (the proxy, the original, transcript pieces, sources, research, the watcher's answers) sit on Cloudflare R2 under `writer/scripts/<id>/` in Repack's bucket; Convex (Repack's deployment, `apps/web/convex/writer.ts` in the Repack repo, published with Repack's `db:push`) keeps the index: each script's rev, body and files. Writer only talks to the relay.
+
+`src-tauri/src/cloud.rs` runs in the background whenever Writer has its relay token. Saves land on disk as always; a few seconds after a script is still, its changed files go up, then a new body, then `writer:commitScript` naming the rev it began from. Every 30 seconds it pulls what other Macs pushed. A commit another Mac overtook is refused, and this Mac's version is kept as "<title> (conflicted copy)" before the cloud's is taken. Scripts still importing or being written by Claude wait until they are done. Deleting a script marks it deleted in Convex (so every Mac removes it) and deletes its files from R2. What this Mac knows is in `cloud/ledger.json` beside `scripts/`; deletions waiting for the connection in `cloud/deleted.json`. The lists and editors show the state (synced, uploading, offline), and an open script follows changes that come down.
+
+The bodies are on R2, not in Convex's file storage: Edit's nightly sweep deletes Convex-stored JSON that no Edit project uses. Keep Writer's keys under `writer/`: Repack's own cleanup deletes unrecorded files under `repack/`.

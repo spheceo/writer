@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { claudeStatus, getProgress, getScript, listScripts, message } from "./api";
 import { CommentaryEditor } from "./commentary-view";
 import { Editor } from "./editor";
@@ -79,6 +79,26 @@ export function App() {
   useEffect(() => {
     if (route.name !== "script" || !ready) return;
     void getScript(route.id).then(setOpen).catch((cause) => setError(message(cause)));
+  }, [route, ready]);
+
+  // A script open here that another Mac changed comes down through the cloud
+  // into its file; the open copy follows it.
+  const opened_ = route.name === "script" && open && open.id === route.id ? open : null;
+  const shown = useRef(opened_);
+  shown.current = opened_;
+  useEffect(() => {
+    if (route.name !== "script" || !ready) return;
+    const timer = window.setInterval(() => {
+      const now = shown.current;
+      if (!now || document.hidden) return;
+      void getScript(now.id)
+        .then((fresh) => {
+          const current = shown.current;
+          if (current && fresh.id === current.id && fresh.updatedAt > current.updatedAt && fresh.revision !== current.revision) setOpen(fresh);
+        })
+        .catch(() => {});
+    }, 8000);
+    return () => window.clearInterval(timer);
   }, [route, ready]);
 
   // While something imports or Claude is writing, keep the list current. The

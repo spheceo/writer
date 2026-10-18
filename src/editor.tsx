@@ -11,6 +11,7 @@ import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
 import type { BuildStatus, Clip, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
+import { CloudBadge } from "./cloud-badge";
 import { Icon } from "./ui";
 
 export type View = "video" | "script" | "split";
@@ -402,6 +403,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
+          <CloudBadge compact />
           {busy && (
             <span className="agent-working">
               <span className="dot live" />

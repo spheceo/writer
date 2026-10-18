@@ -100,6 +100,7 @@ fn route(
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
         ("GET", ["api", "progress"]) => write_json(stream, 200, &crate::import::latest_progress()),
+        ("GET", ["api", "cloud"]) => write_json(stream, 200, &crate::cloud::status()),
         ("GET", ["api", "settings"]) => json_result(stream, get_settings(app)),
         ("PUT", ["api", "settings"]) => {
             let settings = serde_json::from_slice(body).map_err(|_| "Those settings could not be read.".to_string());

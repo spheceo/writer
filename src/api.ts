@@ -172,3 +172,16 @@ export function message(error: unknown) {
   if (error instanceof Error) return error.message;
   return "Something went wrong.";
 }
+
+export type CloudStatus = {
+  enabled: boolean;
+  state: "off" | "syncing" | "synced" | "offline" | "error" | "";
+  pending: number;
+  transfer: { script: string; name: string; up: boolean; done: number; total: number } | null;
+  lastSync: number | null;
+  error: string | null;
+  scripts: number;
+};
+
+/** Where syncing to the cloud has got to. */
+export const cloudStatus = () => (inTauri() ? invoke<CloudStatus>("cloud_status") : http<CloudStatus>("/api/cloud"));

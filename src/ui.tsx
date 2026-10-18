@@ -344,6 +344,7 @@ const PATHS: Record<string, ReactNode> = {
   mute: <path d="M2.75 6.25h2.5L8.5 3.5v9l-3.25-2.75h-2.5zM10.75 6.25l3 3.5M13.75 6.25l-3 3.5" />,
   expand: <path d="M9.5 2.75h3.75V6.5M6.5 13.25H2.75V9.5M13.25 2.75 9 7M2.75 13.25 7 9" />,
   collapse: <path d="M13 3 9.25 6.75M9.25 3.5v3.25h3.25M3 13l3.75-3.75M6.75 12.5V9.25H3.5" />,
+  cloud: <path d="M4.75 12.25h6.5a2.75 2.75 0 0 0 .4-5.47A4 4 0 0 0 4 6.6a2.85 2.85 0 0 0 .75 5.65Z" />,
   keyboard: (
     <>
       <rect x="1.75" y="4" width="12.5" height="8.5" rx="1.5" />

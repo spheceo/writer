@@ -1,4 +1,5 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
+import { CloudBadge } from "./cloud-badge";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   createCommentary,
@@ -184,6 +185,7 @@ export function Library({
               )}
             </label>
           )}
+          <CloudBadge />
           <button type="button" className="claude-status" title={claude?.message ?? "Checking Claude…"} onClick={onSettings}>
             <span className={claude?.loggedIn ? "dot on" : "dot"} />
             Claude{claude?.subscription ? ` · ${claude.subscription[0].toUpperCase()}${claude.subscription.slice(1)}` : ""}
