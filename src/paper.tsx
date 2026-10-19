@@ -206,6 +206,7 @@ export function Grow({
   placeholder,
   className,
   label,
+  oneLine,
   onCommit,
 }: {
   value: string;
@@ -213,6 +214,8 @@ export function Grow({
   placeholder?: string;
   className?: string;
   label?: string;
+  /** A single line, such as a heading: Enter commits rather than breaking it. */
+  oneLine?: boolean;
   onCommit: (text: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -234,7 +237,13 @@ export function Grow({
       spellCheck
       disabled={disabled}
       placeholder={placeholder}
-      onChange={(event) => setText(event.target.value)}
+      onChange={(event) => setText(oneLine ? event.target.value.replace(/\n/g, " ") : event.target.value)}
+      onKeyDown={(event) => {
+        if (oneLine && event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        }
+      }}
       onBlur={() => text !== value && onCommit(text)}
     />
   );

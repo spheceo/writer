@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Kind, Research, ImportProgress, Role, Script, Settings, Summary } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Summary } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -100,6 +100,38 @@ export const startBuild = (id: string, note: string, kind?: Kind) =>
   inTauri()
     ? invoke<BuildStatus>("start_build", { id, note, kind })
     : http<BuildStatus>(`/api/scripts/${id}/build`, json({ note, kind }));
+
+/** Sonnet revises a built script with targeted edits; followed as a build is. */
+export const startRevision = (id: string, request: string, focus: Focus) =>
+  inTauri()
+    ? invoke<BuildStatus>("start_revision", { id, request, focus })
+    : http<BuildStatus>(`/api/scripts/${id}/revise`, json({ request, focus }));
+
+/** The script's conversation with the editor. */
+export const getChat = (id: string) =>
+  inTauri() ? invoke<ChatTurn[]>("get_chat", { id }) : http<ChatTurn[]>(`/api/scripts/${id}/chat`);
+
+/** Starts the conversation again; the script's edits stay. */
+export const clearChat = (id: string) =>
+  inTauri() ? invoke<void>("clear_chat", { id }) : http<void>(`/api/scripts/${id}/chat`, { method: "DELETE" });
+
+/** Declines a proposed rewrite; the saved narration stays. */
+export const declineProposal = (id: string, proposal: string) =>
+  inTauri()
+    ? invoke<Script>("decline_proposal", { id, proposal })
+    : http<Script>(`/api/scripts/${id}/proposals/${proposal}`, { method: "DELETE" });
+
+/** Respells a transcript word; an empty text puts it back. */
+export const correctWord = (id: string, revision: number, word: string, text: string) =>
+  inTauri()
+    ? invoke<Script>("correct_word", { id, revision, word, text })
+    : http<Script>(`/api/scripts/${id}/corrections`, { ...json({ revision, word, text }), method: "PUT" });
+
+/** The producer's own heading; an empty one puts the generated heading back. */
+export const setHeading = (id: string, revision: number, heading: string) =>
+  inTauri()
+    ? invoke<Script>("set_heading", { id, revision, heading })
+    : http<Script>(`/api/scripts/${id}/heading`, { ...json({ revision, heading }), method: "PUT" });
 
 export const getResearch = (id: string) =>
   inTauri() ? invoke<Research | null>("get_research", { id }) : http<Research | null>(`/api/scripts/${id}/research`);

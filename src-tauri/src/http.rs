@@ -16,7 +16,7 @@ use crate::model::Clip;
 use crate::store;
 use crate::{
     build_status, claude_status, delete_script, get_script, get_settings, list_scripts,
-    remove_source, rename_script, save_clips, save_draft, save_settings, source_text, start_build, update_source,
+    remove_source, rename_script, save_clips, save_draft, save_settings, source_text, start_build, start_revision, update_source,
 };
 
 const PORT: u16 = 1421;
@@ -201,6 +201,34 @@ fn route(
             json_result(stream, start_build(app, (*id).to_string(), note, kind))
         }
         ("GET", ["api", "scripts", id, "build"]) => write_json(stream, 200, &build_status(app, (*id).to_string())),
+        ("POST", ["api", "scripts", id, "revise"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let request = value["request"].as_str().unwrap_or("").to_string();
+            let focus = serde_json::from_value(value["focus"].clone()).ok();
+            json_result(stream, start_revision(app, (*id).to_string(), request, focus))
+        }
+        ("GET", ["api", "scripts", id, "chat"]) => {
+            json_result(stream, store::script_dir(&data_dir(&app)?, id).map(|dir| crate::chat::read(&dir)))
+        }
+        ("DELETE", ["api", "scripts", id, "chat"]) => match crate::clear_chat_now(&data_dir(&app)?, id) {
+            Ok(()) => write_json(stream, 200, &json!({ "ok": true })),
+            Err(error) => write_json(stream, 400, &json!({ "error": error })),
+        },
+        ("DELETE", ["api", "scripts", id, "proposals", proposal]) => {
+            json_result(stream, crate::decline_proposal_now(&data_dir(&app)?, id, proposal))
+        }
+        ("PUT", ["api", "scripts", id, "corrections"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;
+            let word = value["word"].as_str().unwrap_or("");
+            let text = value["text"].as_str().unwrap_or("");
+            json_result(stream, crate::correct_word_now(&data_dir(&app)?, id, revision, word, text))
+        }
+        ("PUT", ["api", "scripts", id, "heading"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;
+            json_result(stream, crate::set_heading_now(&data_dir(&app)?, id, revision, value["heading"].as_str().unwrap_or("")))
+        }
         ("PUT", ["api", "scripts", id, "clips"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The cut could not be read.".to_string())?;
             let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;

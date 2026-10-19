@@ -19,7 +19,8 @@ export function useSpeakers(words: Word[], named?: Record<string, string>) {
   }, [words, named]);
 }
 
-export type Picked = { startMs: number; endMs: number; count: number; inCut: boolean };
+/** Words picked in the transcript: their footage, how many, whether the cut plays any, and the first and last. */
+export type Picked = { startMs: number; endMs: number; count: number; inCut: boolean; first: Word; last: Word };
 
 /**
  * The transcript, word by word: click a word to show its frame, double-click
@@ -34,10 +35,13 @@ export const Transcript = memo(function Transcript({
   playhead,
   player,
   noSpeech,
+  corrections,
   onPick,
 }: {
   words: Word[];
   clips: Clip[];
+  /** Words the producer respelled, by word ID. */
+  corrections?: Record<string, string>;
   parts?: Part[];
   speakers: Map<string, { name: string; colour: string }>;
   playhead: Playhead;
@@ -51,7 +55,8 @@ export const Transcript = memo(function Transcript({
   const [focus, setFocus] = useState<number | null>(null);
   const [query, setQuery] = useState("");
 
-  const range = anchor !== null && focus !== null && anchor !== focus ? ([Math.min(anchor, focus), Math.max(anchor, focus)] as const) : null;
+  // One word picked counts too, as in Repack: it can be played, inserted or respelled.
+  const range = anchor !== null && focus !== null && words[anchor] && words[focus] ? ([Math.min(anchor, focus), Math.max(anchor, focus)] as const) : null;
   useEffect(() => {
     if (!range) return onPick(null);
     const [lo, hi] = range;
@@ -60,6 +65,8 @@ export const Transcript = memo(function Transcript({
       endMs: words[hi].endMs,
       count: hi - lo + 1,
       inCut: words.slice(lo, hi + 1).some((word) => covers(clips, word.startMs)),
+      first: words[lo],
+      last: words[hi],
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anchor, focus, words, clips]);
@@ -114,9 +121,9 @@ export const Transcript = memo(function Transcript({
   const hits = useMemo(() => {
     if (needle.length < 2) return new Set<number>();
     const found = new Set<number>();
-    words.forEach((word, index) => word.text.toLowerCase().includes(needle) && found.add(index));
+    words.forEach((word, index) => (corrections?.[word.id] ?? word.text).toLowerCase().includes(needle) && found.add(index));
     return found;
-  }, [needle, words]);
+  }, [needle, words, corrections]);
   const jump = () => {
     const first = [...hits][0];
     const node = first !== undefined ? box.current?.querySelector<HTMLElement>(`[data-index="${first}"]`) : null;
@@ -195,7 +202,7 @@ export const Transcript = memo(function Transcript({
                         }}
                         onDoubleClick={() => player?.audition(word.startMs)}
                       >
-                        {word.text}{" "}
+                        {corrections?.[word.id] ?? word.text}{" "}
                       </button>
                     );
                   })}

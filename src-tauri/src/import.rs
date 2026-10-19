@@ -1113,6 +1113,7 @@ fn new_script(title: String, kind: &str, source_url: String, original: String) -
         commentary: None,
         heading: None,
         corrections: Default::default(),
+        proposals: Vec::new(),
         doc_export: None,
         revision: 1,
         created_at: now,

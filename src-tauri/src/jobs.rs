@@ -89,7 +89,13 @@ pub fn stage(id: &str, text: &str) {
     }
 }
 
-pub fn start(app: AppHandle, id: String, note: String, kind: Option<crate::formats::Kind>) -> Result<BuildStatus, String> {
+/// What a job does: write the whole script, or revise a built one.
+pub enum Work {
+    Build { note: String, kind: Option<crate::formats::Kind> },
+    Revise { request: String, focus: crate::revise::Focus },
+}
+
+pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, String> {
     if crate::import::importing(&id) {
         return Err("This import is still running.".into());
     }
@@ -100,7 +106,7 @@ pub fn start(app: AppHandle, id: String, note: String, kind: Option<crate::forma
         }
         let job = BuildStatus {
             running: true,
-            stage: "Starting".into(),
+            stage: if matches!(work, Work::Revise { .. }) { "Editing the script".into() } else { "Starting".into() },
             started_at: now_ms(),
             finished_at: None,
             report: None,
@@ -115,8 +121,11 @@ pub fn start(app: AppHandle, id: String, note: String, kind: Option<crate::forma
     thread::spawn(move || {
         // A bug in a build ends it as a failed build, never one that reads
         // as running forever.
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::build_once(&app, &id, &note, kind)))
-            .unwrap_or_else(|_| Err("Writer hit a bug while building. Nothing was changed; build again.".into()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &work {
+            Work::Build { note, kind } => crate::build_once(&app, &id, note, *kind),
+            Work::Revise { request, focus } => crate::revise_once(&app, &id, request, focus),
+        }))
+        .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
         if let Ok(mut jobs) = jobs().lock() {
             if let Some(job) = jobs.get_mut(&id) {
                 job.running = false;

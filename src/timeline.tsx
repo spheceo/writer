@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { clock, cutInCard, insertAfter, isCutIn, nearestEdge, range, splitClip, trimClip } from "./clips";
+import { clock, cutInCard, insertAfter, isCutIn, moveItems, nearestEdge, range, splitClip, trimClip } from "./clips";
 import { type CutPlayer, clipStarts, editedPosition, type Playhead } from "./playback";
 import type { Clip, Part, Word } from "./types";
 import { Icon } from "./ui";
@@ -16,12 +16,15 @@ const CARD = "#a27ce0";
 type Drag =
   | { mode: "scrub" }
   | { mode: "trim"; id: string; edge: "in" | "out"; x: number; clip: Clip; ms: number; snapped: boolean }
-  | { mode: "bar"; x: number; scroll: number };
+  | { mode: "bar"; x: number; scroll: number }
+  /** Clips being dragged to a new place: where they would land, once the pointer has moved. */
+  | { mode: "move"; ids: string[]; clicked: string; x: number; moved: boolean; to: number | null };
 
 /**
  * The sequence, as Repack draws it: a time ruler, the picture track (footage
  * and cut-in cards) and the sound track under one playhead. Drag the ruler to
- * scrub; drag a clip's edge to trim it, snapping to the words.
+ * scrub; drag a clip's edge to trim it, snapping to the words; drag a clip
+ * (or the selected clips together) to move it to another edit point.
  */
 export function Timeline({
   clips,
@@ -187,6 +190,17 @@ export function Timeline({
       const raw = (drag.edge === "in" ? drag.clip.startMs : drag.clip.endMs) + shift;
       const snap = nearestEdge(words, raw, drag.edge, SNAP_PX / ppms);
       setDrag({ ...drag, ms: snap ?? raw, snapped: snap !== null });
+    } else if (drag.mode === "move") {
+      if (!drag.moved && Math.abs(event.clientX - drag.x) < 4) return;
+      // Held only once it is a drag, so a click or double-click stays the clip's own.
+      if (!drag.moved) scroller.current?.setPointerCapture(event.pointerId);
+      // The edit point nearest the pointer.
+      const ms = msAt(event.clientX);
+      let to = 0;
+      starts.forEach((start, index) => {
+        if (Math.abs(start - ms) < Math.abs(starts[to] - ms)) to = index;
+      });
+      setDrag({ ...drag, moved: true, to });
     } else if (drag.mode === "bar" && scroller.current) {
       const track = event.currentTarget.getBoundingClientRect().width || 1;
       scroller.current.scrollLeft = drag.scroll + ((event.clientX - drag.x) / track) * content;
@@ -195,6 +209,12 @@ export function Timeline({
   const release = () => {
     if (drag?.mode === "trim" && Math.abs(drag.ms - (drag.edge === "in" ? drag.clip.startMs : drag.clip.endMs)) > 10) {
       onEdit(trimClip(clips, drag.id, drag.edge, drag.ms, durationMs));
+    }
+    if (drag?.mode === "move") {
+      if (drag.moved && drag.to !== null) {
+        const next = moveItems(clips, drag.ids, drag.to);
+        if (next !== clips) onEdit(next);
+      } else if (drag.ids.length > 1) onSelect([drag.clicked]);
     }
     setDrag(null);
   };
@@ -246,7 +266,7 @@ export function Timeline({
             </button>
           )}
         </div>
-        <span className="timeline-hint">Click to select · drag an edge to trim · double-click to jump there</span>
+        <span className="timeline-hint">Click to select · drag to move · drag an edge to trim · double-click to jump there</span>
         <span className="faint timeline-zoom">
           <button type="button" className="icon-tool" aria-label="Zoom out" title="Zoom out (−)" onClick={() => zoomAround(1 / 1.6)}>
             <Icon name="minus" size={13} />
@@ -312,7 +332,17 @@ export function Timeline({
                       onPointerDown={(event) => {
                         if ((event.target as HTMLElement).dataset.edge) return;
                         const many = event.metaKey || event.ctrlKey || event.shiftKey;
-                        onSelect(many ? (selected.includes(clip.id) ? selected.filter((id) => id !== clip.id) : [...selected, clip.id]) : [clip.id]);
+                        // A clip already in a selection drags the whole selection.
+                        const next = many
+                          ? selected.includes(clip.id)
+                            ? selected.filter((id) => id !== clip.id)
+                            : [...selected, clip.id]
+                          : selected.includes(clip.id)
+                            ? selected
+                            : [clip.id];
+                        onSelect(next);
+                        if (disabled || !next.includes(clip.id) || event.button !== 0) return;
+                        setDrag({ mode: "move", ids: clips.filter((item) => next.includes(item.id)).map((item) => item.id), clicked: clip.id, x: event.clientX, moved: false, to: null });
                       }}
                       onDoubleClick={() => player?.seek(starts[index])}
                     >
@@ -365,6 +395,7 @@ export function Timeline({
                 )}
                 <canvas ref={wave} className="wave" style={{ width: view.width }} />
               </div>
+              {drag?.mode === "move" && drag.moved && drag.to !== null && <span className="drop-mark" style={{ left: x(starts[drag.to]) }} />}
               {drag?.mode === "trim" && (
                 <span className="trim-tip" style={{ left: x(starts[clips.findIndex((clip) => clip.id === drag.id)]) + (drag.ms - drag.clip.startMs) * ppms }}>
                   {drag.edge === "in" ? "In" : "Out"} {clock(drag.ms)}

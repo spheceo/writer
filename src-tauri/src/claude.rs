@@ -72,7 +72,7 @@ The timeline is an ordered list of items: clips (source footage ranges) and cut-
 Editorial priority: selecting the right clips matters most. Read the relevant transcript passages and select distinct moments that advance the investigation, reveal a meaningful contradiction or change, or sustain tension. Preserve whole questions, answers and necessary context, and make cuts at coherent story beats. A footage block can combine several carefully selected clips; do not mistake a longer block for permission to leave raw footage running. Remove repetitive exchanges and dragged-out footage. Keep the script and footage engaging together: each tease must be paid off by the following footage, and narration should supply useful context. In the beginning, quickly orient the viewer to the sourced premise and hook them with the interrogation moments they came for; do not make them wait through routine setup.
 The judgment calls are situations, not rules: for each, decide whether this case is in that situation, apply it only if so, and otherwise keep the usual shape. When you apply one that changes the usual shape, say so in a few words in your report, so the producer knows it was a choice."#;
 
-const EDITOR_WRITING: &str = r#"Everything after the intro is in the past tense, and each cut-in is one concise paragraph. Never invent atmosphere or time of day (such as "before sunrise"). {document} Written narration is not rendered voice-over. Do not invent facts, an outcome or hidden thoughts to make a stronger bridge or tease. Narration never uses an em dash."#;
+pub(crate) const EDITOR_WRITING: &str = r#"Everything after the intro is in the past tense, and each cut-in is one concise paragraph. Never invent atmosphere or time of day (such as "before sunrise"). {document} Written narration is not rendered voice-over. Do not invent facts, an outcome or hidden thoughts to make a stronger bridge or tease. Narration never uses an em dash."#;
 
 const EDITOR_FOOT: &str = r#"Clip edges decide whether a cut feels finished. Start each clip on the first word of a thought (the whole question, "Do you feel any remorse?", never "remorse?") and end it on the word that completes it: the end of the answer or sentence, with its full stop or question mark ("…but for killing them, no."). Never end on what follows a finished thought (the speaker's own "Yeah, so", the other speaker's "Okay.", "Now," or "And") or on a hesitation ("um", "so"), and never start on one. Anchor to exact words; the app adds breathing room (a short lead-in and tail that never reaches another word).
 The guides below were written for Repack, where the editor has tools (read_script, write_cut_ins, build_script, curate_assets and others). Here there are none and you need none: the complete transcript is in the message, your answer is the build_script plan. Research found for the case, if any, is in the evidence under RESEARCH: use it for dates, names, places and outcomes the footage doesn't give, and say in the report when a fact you needed was found nowhere.
@@ -222,7 +222,7 @@ fn ask_patiently(system: &str, schema: &str, prompt: &str, resume: Option<&str>)
     ask_model_patiently("opus", system, schema, prompt, resume)
 }
 
-fn ask_model_patiently(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>) -> Result<Turn, String> {
+pub(crate) fn ask_model_patiently(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>) -> Result<Turn, String> {
     match ask(model, system, schema, prompt, resume) {
         Ok(turn) => Ok(turn),
         Err(Trouble::Again(_)) => {
@@ -264,10 +264,10 @@ fn explain(said: &str, status: Option<u64>) -> Trouble {
     Trouble::Stop(format!("Claude stopped: \"{quoted}\" Nothing was changed."))
 }
 
-struct Turn {
-    plan: Option<Value>,
-    session: Option<String>,
-    cost_usd: f64,
+pub(crate) struct Turn {
+    pub plan: Option<Value>,
+    pub session: Option<String>,
+    pub cost_usd: f64,
 }
 
 /// One structured answer from a smaller model (Haiku or Sonnet), tools off,
@@ -377,7 +377,7 @@ fn report(plan: &Value) -> String {
 
 /// Repack's evidence: one line per speaker turn, each sentence led by the ID
 /// of its first word.
-fn evidence(script: &Script, research: Option<&Research>) -> String {
+pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
     let mut letters: Vec<String> = Vec::new();
     let mut letter = |speaker: &Option<String>| {
         let key = speaker.clone().unwrap_or_default();
@@ -488,7 +488,7 @@ fn ends_sentence(text: &str) -> bool {
     trimmed.ends_with(['.', '?', '!'])
 }
 
-fn clock(ms: u64) -> String {
+pub(crate) fn clock(ms: u64) -> String {
     let seconds = ms / 1000;
     let hours = seconds / 3600;
     if hours > 0 {
@@ -652,15 +652,7 @@ fn clean_up(script: &Script, clips: Vec<Clip>, format: &Format, opening: Opening
     if relaxed {
         clips = crate::tidy::join_late(clips, &script.words, &script.speakers, &script.parts, format.compilation);
     }
-    let cut_ins = clips.iter().filter(|clip| clip.is_cut_in()).count();
-    // Which footage blocks are the intro's quick proof, cut tight.
-    let tight: std::ops::Range<usize> = if format.foia() || format.courtroom() {
-        0..intro_blocks(format, opening, cut_ins).max(1)
-    } else if format.compilation && format.style == Style::When {
-        0..2
-    } else {
-        1..2
-    };
+    let tight = intro_range(format, opening, clips.iter().filter(|clip| clip.is_cut_in()).count());
     let footage = crate::tidy::Footage {
         words: &script.words,
         peaks,
@@ -685,7 +677,7 @@ fn clean_up(script: &Script, clips: Vec<Clip>, format: &Format, opening: Opening
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Opening {
+pub(crate) enum Opening {
     OneRun,
     TwoSplit,
 }
@@ -708,6 +700,18 @@ fn dated(text: &str) -> bool {
         && rest[4..].starts_with(',')
 }
 
+/// Which footage blocks are the intro's quick proof, cut tight: a FOIA or
+/// Courtroom opening, a "When" compilation's opening, a single case's hook.
+pub(crate) fn intro_range(format: &Format, opening: Opening, cut_ins: usize) -> std::ops::Range<usize> {
+    if format.foia() || format.courtroom() {
+        0..intro_blocks(format, opening, cut_ins).max(1)
+    } else if format.compilation && format.style == Style::When {
+        0..2
+    } else {
+        1..2
+    }
+}
+
 /// How many footage blocks open the video (the intro), by format.
 fn intro_blocks(format: &Format, opening: Opening, cut_ins: usize) -> usize {
     if cut_ins < 2 {
@@ -723,7 +727,7 @@ fn intro_blocks(format: &Format, opening: Opening, cut_ins: usize) -> usize {
 }
 
 /// Every cut-in's purpose, in order, as Repack names them.
-fn purposes(clips: &[Clip], format: &Format, opening: Opening) -> Vec<&'static str> {
+pub(crate) fn purposes(clips: &[Clip], format: &Format, opening: Opening) -> Vec<&'static str> {
     // For each cut-in: was there footage between it and the cut-in before?
     let mut bare = Vec::new();
     let mut footage = false;
@@ -777,7 +781,7 @@ fn purposes(clips: &[Clip], format: &Format, opening: Opening) -> Vec<&'static s
         .collect()
 }
 
-fn word_at(words: &[Word], id: Option<&str>) -> Option<usize> {
+pub(crate) fn word_at(words: &[Word], id: Option<&str>) -> Option<usize> {
     let index: usize = id?.trim().strip_prefix('w')?.parse().ok()?;
     (index < words.len()).then_some(index)
 }

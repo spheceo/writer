@@ -77,6 +77,8 @@ export type Script = {
   heading?: string;
   /** Words the producer respelled, by word ID. */
   corrections?: Record<string, string>;
+  /** Rewrites of saved narration waiting for the producer to accept or decline. */
+  proposals?: Proposal[];
   /** The last full export to Google Docs. */
   docExport?: { id: string; url: string; revision: number; exportedAt: number };
   revision: number;
@@ -223,3 +225,12 @@ export type DocComment = {
   createdTime?: string;
   replies?: { author?: { displayName?: string }; content?: string; deleted?: boolean }[];
 };
+
+/** A rewrite of saved narration Claude proposed, for the producer to accept or decline. */
+export type Proposal = { id: string; cutIn: string; before: string; after: string; at: number };
+
+/** One message in a footage script's conversation with the editor. */
+export type ChatTurn = { role: "producer" | "editor"; text: string; at: number; costUsd?: number; failed?: boolean };
+
+/** What the producer is looking at as they ask for a change. */
+export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null };

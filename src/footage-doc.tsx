@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { blocks, clipRange, duration, heading, isCutIn, keptMs } from "./clips";
+import { blocks, clipRange, duration, generatedHeading, heading, isCutIn, keptMs } from "./clips";
 import { assetLinks, BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, rangeUrl } from "./doc-export";
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
-import type { Clip, Script } from "./types";
+import { wordDiff } from "./diff";
+import type { Clip, Proposal, Script } from "./types";
 import { Icon } from "./ui";
 
 /**
@@ -21,6 +22,8 @@ export function FootageDoc({
   zoomKey,
   disabled,
   onNarration,
+  onHeading,
+  onDecline,
   onPreview,
 }: {
   script: Script;
@@ -31,6 +34,10 @@ export function FootageDoc({
   zoomKey: string;
   disabled: boolean;
   onNarration: (id: string, text: string) => void;
+  /** The producer's own heading; empty puts the generated one back. */
+  onHeading: (text: string) => void;
+  /** Declines a proposed rewrite. Accepting writes it as the narration. */
+  onDecline: (proposal: Proposal) => void;
   onPreview: (index: number) => void;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
@@ -144,7 +151,14 @@ export function FootageDoc({
       <div className="canvas" ref={canvas} onScroll={(event) => setPage(pageInView(event.currentTarget, scale, LETTER))}>
         <Paper sheet={LETTER} scale={scale} rail={rail} version={comments} onPages={setPages}>
           <h1 className="doc-title" data-block>
-            {heading(script)}
+            <Grow
+              className="doc-title-input"
+              label="Heading"
+              oneLine
+              value={heading(script)}
+              disabled={disabled}
+              onCommit={(text) => onHeading(text.trim() === generatedHeading(script) ? "" : text)}
+            />
           </h1>
           <section className="assets" data-block>
             {assets.length > 0 && (
@@ -212,6 +226,28 @@ export function FootageDoc({
                     placeholder="Write the narration for this cut-in…"
                     onCommit={(text) => block.cue && onNarration(block.cue.clip.id, text)}
                   />
+                  {(() => {
+                    const proposal = script.proposals?.find((item) => item.cutIn === block.cue?.clip.id);
+                    if (!proposal) return null;
+                    return (
+                      <div className="proposal" aria-label="Proposed rewrite">
+                        <p className="proposal-text">
+                          {wordDiff(proposal.before, proposal.after).map((piece, at) =>
+                            piece.kind === "same" ? <span key={at}>{piece.text}</span> : piece.kind === "add" ? <ins key={at}>{piece.text}</ins> : <del key={at}>{piece.text}</del>,
+                          )}
+                        </p>
+                        <div className="proposal-actions">
+                          <span className="faint">Claude proposed this rewrite.</span>
+                          <button type="button" className="sm primary" disabled={disabled} onClick={() => block.cue && onNarration(block.cue.clip.id, proposal.after)}>
+                            Accept
+                          </button>
+                          <button type="button" className="sm" disabled={disabled} onClick={() => onDecline(proposal)}>
+                            Decline
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </Fragment>

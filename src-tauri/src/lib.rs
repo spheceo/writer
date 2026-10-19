@@ -1,3 +1,4 @@
+mod chat;
 mod claude;
 mod cloud;
 mod commentary;
@@ -13,6 +14,7 @@ mod model;
 mod pages;
 mod proc;
 mod research;
+mod revise;
 mod settings;
 mod speakers;
 mod store;
@@ -316,6 +318,8 @@ fn save_clips(app: AppHandle, id: String, revision: u32, clips: Vec<Clip>) -> Re
         return Err("This script changed. Reload it.".into());
     }
     script.clips = check_clips(clips, script.duration_ms)?;
+    // A proposal whose paragraph changed (accepted, or edited by hand) is done.
+    script.proposals = revise::settle(&script.clips, std::mem::take(&mut script.proposals));
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
@@ -426,7 +430,14 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     // The sound, so pauses with speech the transcript missed are kept.
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
-    let mut built = claude::build(&script, note, Some(&research), &peaks)?;
+    chat::add(&dir, "producer", &if note.trim().is_empty() { "Build the script.".to_string() } else { format!("Build the script. {}", note.trim()) }, None, false);
+    let mut built = match claude::build(&script, note, Some(&research), &peaks) {
+        Ok(built) => built,
+        Err(error) => {
+            chat::add(&dir, "editor", &error, None, true);
+            return Err(error);
+        }
+    };
     let found = match (&research.problem, research.articles.len()) {
         (_, 0) => format!("Research: {}", research.problem.clone().unwrap_or_else(|| "nothing found.".into())),
         (_, n) => format!(
@@ -438,9 +449,11 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     built.report = format!("{}\n\n{found}", built.report.trim());
     let mut script = store::read(&dir)?;
     script.clips = check_clips(built.clips, script.duration_ms)?;
+    script.proposals.clear();
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
+    chat::add(&dir, "editor", &built.report, Some(built.cost_usd), false);
     Ok((built.report, built.cost_usd))
 }
 
@@ -470,7 +483,139 @@ fn build_commentary(dir: &Path, id: &str, script: &model::Script, note: &str) ->
 #[tauri::command]
 fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::Kind>) -> Result<jobs::BuildStatus, String> {
     store::script_dir(&data_dir(&app)?, &id)?;
-    jobs::start(app, id, note, kind)
+    jobs::start(app, id, jobs::Work::Build { note, kind })
+}
+
+/// Sonnet revises a built footage script with targeted edits, as Repack's
+/// chat editor does. Runs on a job's thread; the page follows it as a build.
+pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Focus) -> Result<(String, f64), String> {
+    let data = data_dir(app)?;
+    let dir = store::script_dir(&data, id)?;
+    let script = store::read(&dir)?;
+    if script.commentary.is_some() {
+        return Err("A commentary script is rewritten from its sources; use Rewrite.".into());
+    }
+    if !script.clips.iter().any(|clip| clip.is_cut_in()) {
+        return Err("Build the script first; then ask for changes.".into());
+    }
+    let earlier = chat::recent(&dir);
+    chat::add(&dir, "producer", request, None, false);
+    let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
+    let research = research::load(&dir);
+    let done = revise::revise(&script, request, focus, &earlier, research.as_ref(), &peaks);
+    let done = match done {
+        Ok(done) => done,
+        Err(error) => {
+            chat::add(&dir, "editor", &error, None, true);
+            return Err(error);
+        }
+    };
+    // Edits made by hand while Claude worked would be lost: ask again instead.
+    let mut now = store::read(&dir)?;
+    if now.revision != script.revision {
+        let error = "The script changed while Claude was editing it, so nothing was applied. Ask again.".to_string();
+        chat::add(&dir, "editor", &error, None, true);
+        return Err(error);
+    }
+    now.clips = check_clips(done.clips, now.duration_ms)?;
+    now.corrections = done.corrections;
+    now.proposals = done.proposals;
+    now.revision += 1;
+    now.updated_at = now_ms();
+    store::write(&dir, &now)?;
+    chat::add(&dir, "editor", &done.answer, Some(done.cost_usd), false);
+    Ok((done.answer, done.cost_usd))
+}
+
+#[tauri::command]
+fn start_revision(app: AppHandle, id: String, request: String, focus: Option<revise::Focus>) -> Result<jobs::BuildStatus, String> {
+    store::script_dir(&data_dir(&app)?, &id)?;
+    jobs::start(app, id, jobs::Work::Revise { request, focus: focus.unwrap_or_default() })
+}
+
+#[tauri::command]
+fn get_chat(app: AppHandle, id: String) -> Result<Vec<chat::Turn>, String> {
+    Ok(chat::read(&store::script_dir(&data_dir(&app)?, &id)?))
+}
+
+pub fn clear_chat_now(data: &Path, id: &str) -> Result<(), String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    chat::clear(&store::script_dir(data, id)?)
+}
+
+#[tauri::command]
+fn clear_chat(app: AppHandle, id: String) -> Result<(), String> {
+    clear_chat_now(&data_dir(&app)?, &id)
+}
+
+/// Declines a proposed rewrite: the saved narration stays.
+pub fn decline_proposal_now(data: &Path, id: &str, proposal: &str) -> Result<ScriptDetail, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    script.proposals.retain(|item| item.id != proposal);
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    Ok(store::detail(script, &dir))
+}
+
+#[tauri::command]
+fn decline_proposal(app: AppHandle, id: String, proposal: String) -> Result<ScriptDetail, String> {
+    decline_proposal_now(&data_dir(&app)?, &id, &proposal)
+}
+
+/// Respells a transcript word, or puts it back with an empty text. Its timing never changes.
+pub fn correct_word_now(data: &Path, id: &str, revision: u32, word: &str, text: &str) -> Result<ScriptDetail, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    if script.revision != revision {
+        return Err("This script changed. Reload it.".into());
+    }
+    let Some(found) = script.words.iter().find(|item| item.id == word) else {
+        return Err("That word is not in the transcript.".into());
+    };
+    let text = text.trim();
+    if text.chars().count() > 200 {
+        return Err("Keep the word under 200 characters.".into());
+    }
+    if text.is_empty() || text == found.text {
+        script.corrections.remove(word);
+    } else {
+        script.corrections.insert(word.to_string(), text.to_string());
+    }
+    script.revision += 1;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    Ok(store::detail(script, &dir))
+}
+
+#[tauri::command]
+fn correct_word(app: AppHandle, id: String, revision: u32, word: String, text: String) -> Result<ScriptDetail, String> {
+    correct_word_now(&data_dir(&app)?, &id, revision, &word, &text)
+}
+
+/// The producer's own heading in place of the generated one; empty puts the generated one back.
+pub fn set_heading_now(data: &Path, id: &str, revision: u32, heading: &str) -> Result<ScriptDetail, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    if script.revision != revision {
+        return Err("This script changed. Reload it.".into());
+    }
+    let heading = heading.trim();
+    if heading.chars().count() > 300 || heading.chars().any(char::is_control) {
+        return Err("Keep the heading to one line of up to 300 characters.".into());
+    }
+    script.heading = (!heading.is_empty()).then(|| heading.to_string());
+    script.revision += 1;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    Ok(store::detail(script, &dir))
+}
+
+#[tauri::command]
+fn set_heading(app: AppHandle, id: String, revision: u32, heading: String) -> Result<ScriptDetail, String> {
+    set_heading_now(&data_dir(&app)?, &id, revision, &heading)
 }
 
 #[tauri::command]
@@ -559,7 +704,13 @@ pub fn run() {
             check_relay,
             claude_status,
             start_build,
+            start_revision,
             build_status,
+            get_chat,
+            clear_chat,
+            decline_proposal,
+            correct_word,
+            set_heading,
             create_commentary,
             add_source,
             update_source,

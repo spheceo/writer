@@ -33,6 +33,20 @@ pub struct Clip {
 
 pub const CUT_IN_MS: u64 = 3_000;
 
+/// A rewrite of narration the producer had already saved, waiting for them
+/// to accept or decline it, as Repack proposes changes to saved narration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Proposal {
+    pub id: String,
+    /// The cut-in it rewrites.
+    pub cut_in: String,
+    /// The narration it was written against, and what it proposes.
+    pub before: String,
+    pub after: String,
+    pub at: i64,
+}
+
 /// A Google Doc made from the script, and the revision it was made from, so
 /// the editor can say when the script has changed since.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,6 +180,9 @@ pub struct Script {
     /// changes; only what it reads as.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub corrections: BTreeMap<String, String>,
+    /// Rewrites of saved narration waiting for the producer's review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<Proposal>,
     /// The last full export to Google Docs (not a draft), as Repack keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_export: Option<DocExport>,

@@ -33,7 +33,7 @@ export function Working({ stage, since, hint }: { stage: string; since: number |
     <div className="turn working">
       <div className="thinking">
         <span className="dot live" />
-        <span>{stage && stage !== "Writing the script" ? `${stage}…` : "Opus is writing the script"}</span>
+        <span>{stage === "Editing the script" ? "Sonnet is editing the script" : stage && stage !== "Writing the script" ? `${stage}…` : "Opus is writing the script"}</span>
         <span className="mono faint">
           <Elapsed since={since} />
         </span>
@@ -43,10 +43,19 @@ export function Working({ stage, since, hint }: { stage: string; since: number |
   );
 }
 
-/** What Claude said, a paragraph at a time. */
-export function Said({ text, costUsd }: { text: string; costUsd?: number }) {
+/** What the producer asked, as their side of the conversation. */
+export function Asked({ text }: { text: string }) {
   return (
-    <div className="turn">
+    <div className="user">
+      <div className="bubble">{text}</div>
+    </div>
+  );
+}
+
+/** What Claude said, a paragraph at a time. */
+export function Said({ text, costUsd, failed }: { text: string; costUsd?: number; failed?: boolean }) {
+  return (
+    <div className={failed ? "turn failed" : "turn"}>
       {text.split(/\n{2,}/).map((part, index) => (
         <p key={index}>{part}</p>
       ))}
@@ -67,6 +76,7 @@ export function Composer({
   hint,
   extra,
   label,
+  model = "Opus 5.5",
   onChange,
   onSend,
 }: {
@@ -78,6 +88,8 @@ export function Composer({
   /** More controls beside the model, such as the format. */
   extra?: ReactNode;
   label: string;
+  /** The model the message goes to. */
+  model?: string;
   onChange: (value: string) => void;
   onSend: () => void;
 }) {
@@ -106,11 +118,11 @@ export function Composer({
         }}
       />
       <div className="composer-footer">
-        <span className="model" title="Scripts are written on Opus through your Claude login">
+        <span className="model" title={`${model} through your Claude login`}>
           <svg className="claude-spark" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
             <path d="M6 .5v11M.5 6h11M2.1 2.1l7.8 7.8M9.9 2.1l-7.8 7.8" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
-          Opus 5.5
+          {model}
         </span>
         {extra}
         <span className="spacer" />

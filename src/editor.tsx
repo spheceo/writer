@@ -1,8 +1,8 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Composer, Said, Working } from "./agent";
-import { buildStatus, getResearch, getScript, inTauri, message, retryTranscribe, saveClips, startBuild } from "./api";
-import { clock, insertAfter, isCutIn, keptMs, purposes, splitClip } from "./clips";
+import { Asked, ChatLog, Composer, Said, Working } from "./agent";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, inTauri, message, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { DocsDialog } from "./docs-dialog";
 import { scriptText } from "./doc-export";
 import { FootageDoc } from "./footage-doc";
@@ -10,7 +10,7 @@ import { Monitor } from "./monitor";
 import { CutPlayer, clipStarts, editedPosition, Playhead } from "./playback";
 import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
-import type { BuildStatus, Clip, Kind, Research, Script } from "./types";
+import type { BuildStatus, ChatTurn, Clip, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
 import { Icon } from "./ui";
@@ -104,8 +104,6 @@ const KINDS: { value: Kind; label: string }[] = [
   { value: "courtroom", label: "Courtroom" },
 ];
 
-type Report = { text: string; costUsd: number };
-
 /** When the last build of a script whose outcome was shown here ended; or marks one shown. */
 export function seen(id: string, finishedAt?: number | null) {
   const key = `writer.build-seen.${id}`;
@@ -149,7 +147,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [copied, setCopied] = useState(false);
   const [started, setStarted] = useState<number | null>(null);
   const [stage, setStage] = useState("");
-  const [report, setReport] = useState<Report | null>(null);
+  const [chat, setChat] = useState<ChatTurn[]>([]);
+  // What was just asked, shown until the conversation on disk has it.
+  const [sent, setSent] = useState<string | null>(null);
+  const [rebuilding, setRebuilding] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
@@ -269,12 +270,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     }
   };
 
-  const addPicked = () => {
+  /** Premiere's insert edit, as Repack makes it: the words go in at the playhead with breathing room, and the playhead moves past them. */
+  const insertPicked = (at = playhead.ms) => {
     if (!picked) return;
-    const position = editedPosition(clips, playhead.ms);
-    const clip: Clip = { id: crypto.randomUUID(), startMs: picked.startMs, endMs: picked.endMs };
-    void persist(insertAfter(clips, position ? position.index : clips.length - 1, clip));
+    const clip: Clip = { id: crypto.randomUUID(), ...breathe(script.words, picked.startMs, picked.endMs, script.durationMs || picked.endMs) };
+    const next = insertAt(clips, at, clip);
+    void persist(next);
+    player.seek(clipStarts(next)[next.findIndex((item) => item.id === clip.id) + 1]);
   };
+  const [spelling, setSpelling] = useState<string | null>(null);
+  useEffect(() => setSpelling(null), [picked?.first.id, picked?.count]);
   const liftPicked = () => {
     if (!picked) return;
     void persist(
@@ -372,6 +377,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       }
       watching.current = false;
       setStarted(null);
+      void loadChat().finally(() => setSent(null));
       if (!job) return;
       seen(script.id, job.finishedAt);
       if (job.error) {
@@ -386,23 +392,27 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       } catch (cause) {
         setError(message(cause));
       }
-      setReport({ text: job.report ?? "", costUsd: job.costUsd ?? 0 });
       void getResearch(script.id).then(setResearch).catch(() => {});
     };
     window.setTimeout(poll, 3000);
   };
 
+  const loadChat = () =>
+    getChat(script.id)
+      .then(setChat)
+      .catch(() => {});
+
   useEffect(() => {
     alive.current = true;
+    void loadChat();
     void buildStatus(script.id)
       .then((job) => {
         if (job?.running) follow(job.startedAt);
         // A build that ended while no page watched it (or that Writer closed
-        // on) says how it went, once.
+        // on) says how it went, once: its answer is in the conversation.
         else if (job?.finishedAt && job.finishedAt > seen(script.id)) {
           seen(script.id, job.finishedAt);
           if (job.error) setError(job.error);
-          else setReport({ text: job.report ?? "", costUsd: job.costUsd ?? 0 });
         }
       })
       .catch(() => {});
@@ -414,16 +424,58 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   }, [script.id]);
 
   const build = async () => {
-    setReport(null);
     setError(null);
     setStage("Starting");
+    setRebuilding(false);
     try {
       const job = await startBuild(script.id, note, kind);
+      setSent(note.trim() ? `Build the script. ${note.trim()}` : "Build the script.");
       setNote("");
       follow(job.startedAt);
     } catch (cause) {
       setError(message(cause));
     }
+  };
+
+  // Once the script is built, a message asks Sonnet for targeted edits, as
+  // Repack's chat does, with what the producer has selected as "this".
+  const revise = async () => {
+    const request = note.trim();
+    if (!request) return;
+    setError(null);
+    setStage("Editing the script");
+    try {
+      const job = await startRevision(script.id, request, {
+        selected,
+        picked: picked ? [picked.startMs, picked.endMs] : null,
+        playheadMs: Math.round(playhead.ms),
+      });
+      setSent(request);
+      setNote("");
+      follow(job.startedAt);
+    } catch (cause) {
+      setError(message(cause));
+    }
+  };
+
+  /** Runs a change that saves on its own (spelling, heading, a declined proposal) after the edits queued before it. */
+  const change = (work: () => Promise<Script>) => {
+    const mine = epoch.current;
+    pending.current += 1;
+    const run = queue.current.then(async () => {
+      if (mine !== epoch.current) return;
+      try {
+        const saved = await work();
+        revision.current = saved.revision;
+        onChange(saved);
+      } catch (cause) {
+        setError(message(cause));
+      } finally {
+        pending.current -= 1;
+      }
+    });
+    queue.current = run;
+    return run;
   };
 
   const copy = async () => {
@@ -523,6 +575,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             disabled={busy}
             onPreview={preview}
             onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
+            onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
+            onDecline={(proposal) => void change(() => declineProposal(script.id, proposal.id))}
           />
         )}
         {view === "split" && (
@@ -571,27 +625,63 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   playhead={playhead}
                   player={player}
                   noSpeech={script.noSpeech}
+                  corrections={script.corrections}
                   onPick={setPicked}
                 />
               )}
               {picked && (
                 <div className="selection">
                   <span>
-                    {picked.count} words <span className="mono faint">{clock(picked.endMs - picked.startMs)}</span>
+                    {picked.count} {picked.count === 1 ? "word" : "words"} <span className="mono faint">{clock(picked.endMs - picked.startMs)}</span>
                   </span>
                   <span className="spacer" />
                   <button type="button" className="tool" onClick={() => player.audition(picked.startMs)}>
                     <Icon name="play" size={11} />
                     Play
                   </button>
-                  <button type="button" className="tool" disabled={busy} title="Add these words to the cut, after the clip at the playhead" onClick={addPicked}>
+                  <button type="button" className="tool" disabled={busy} title="Insert these words at the playhead, as an insert edit" onClick={() => insertPicked()}>
                     <Icon name="plus" size={12} />
-                    Add to cut
+                    Insert
                   </button>
+                  <button type="button" className="tool" disabled={busy} title="Insert these words at the very start" onClick={() => insertPicked(0)}>
+                    At start
+                  </button>
+                  {picked.count === 1 && (
+                    <button type="button" className="tool" title="Fix how this word is spelled; its timing stays" onClick={() => setSpelling(script.corrections?.[picked.first.id] ?? picked.first.text)}>
+                      Fix spelling
+                    </button>
+                  )}
                   <button type="button" className="tool danger-text" disabled={busy || !picked.inCut} title={picked.inCut ? "Take these words out of every clip in the cut" : "None of these words are in the cut"} onClick={liftPicked}>
                     Remove
                   </button>
                 </div>
+              )}
+              {picked && spelling !== null && (
+                <form
+                  className="selection"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const word = picked.first;
+                    void change(() => correctWord(script.id, revision.current, word.id, spelling));
+                    setSpelling(null);
+                  }}
+                >
+                  <input
+                    // biome-ignore lint/a11y/noAutofocus: opened by the button beside it
+                    autoFocus
+                    value={spelling}
+                    maxLength={200}
+                    aria-label="Spelling"
+                    onChange={(event) => setSpelling(event.target.value.replace(/\s/g, ""))}
+                    onKeyDown={(event) => event.key === "Escape" && setSpelling(null)}
+                  />
+                  <button type="submit" className="tool">Save</button>
+                  {script.corrections?.[picked.first.id] && (
+                    <button type="button" className="tool" title={`Back to "${picked.first.text}"`} onClick={() => (void change(() => correctWord(script.id, revision.current, picked.first.id, "")), setSpelling(null))}>
+                      Undo fix
+                    </button>
+                  )}
+                </form>
               )}
             </>
           ) : (
@@ -620,8 +710,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               </button>
             </div>
           </div>
-          <div className="chat-log">
-            {!cueCount && !busy && (
+          <ChatLog trigger={`${chat.length}:${sent ?? ""}:${busy}`}>
+            {!cueCount && !busy && !chat.length && (
               <div className="agent-empty">
                 <h2>Write the script</h2>
                 <p>
@@ -642,36 +732,107 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 </button>
               </div>
             )}
-            {report && !busy && <Said text={report.text || "Script written."} costUsd={report.costUsd} />}
-            {cueCount > 0 && !report && !busy && (
+            {chat.map((turn, index) =>
+              turn.role === "producer" ? (
+                <Asked key={`${turn.at}-${index}`} text={turn.text} />
+              ) : (
+                <Said key={`${turn.at}-${index}`} text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />
+              ),
+            )}
+            {sent && busy && <Asked text={sent} />}
+            {cueCount > 0 && !busy && !chat.length && (
               <div className="turn">
                 <p className="muted">
-                  {clock(keptMs(clips))} cut · {cueCount} cut-ins. Ask for a rebuild below; it replaces the clips and narration, and undo brings them back.
+                  {clock(keptMs(clips))} cut · {cueCount} cut-ins. Ask for a change below: Claude edits the script where it needs to, and undo brings back what it changed.
                 </p>
               </div>
             )}
-            {busy && <Working stage={stage} since={started} hint="Long footage takes 5 to 15 minutes. You can keep reading the transcript meanwhile." />}
-          </div>
+            {!!script.proposals?.length && !busy && (
+              <div className="proposals-note">
+                <span>
+                  {script.proposals.length === 1 ? "A rewrite is" : `${script.proposals.length} rewrites are`} waiting for your review beside the narration.
+                </span>
+                {view === "video" && (
+                  <button type="button" className="link-button" onClick={() => setView("script")}>
+                    Review in Script view
+                  </button>
+                )}
+              </div>
+            )}
+            {busy && (
+              <Working
+                stage={stage}
+                since={started}
+                hint={stage === "Editing the script" ? "Edits usually take a minute or two." : "Long footage takes 5 to 15 minutes. You can keep reading the transcript meanwhile."}
+              />
+            )}
+          </ChatLog>
+          {cueCount > 0 && !busy && (
+            <div className="agent-actions" style={{ padding: "0 14px 8px" }}>
+              {rebuilding ? (
+                <>
+                  <span>Rebuild from scratch? Every clip and paragraph is replaced (undo brings them back).</span>
+                  <select className="kind-select" value={kind} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
+                    {KINDS.map((item) => (
+                      <option key={item.value} value={item.value}>{item.label}</option>
+                    ))}
+                  </select>
+                  <button type="button" className="sm danger-fill" onClick={() => void build()}>
+                    Rebuild{note.trim() ? " with these notes" : ""}
+                  </button>
+                  <button type="button" className="link-button" onClick={() => setRebuilding(false)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="link-button" onClick={() => setRebuilding(true)}>
+                    Rebuild from scratch…
+                  </button>
+                  {chat.length > 0 && (
+                    <button type="button" className="link-button" title="Start the conversation again; the script stays as it is" onClick={() => void clearChat(script.id).then(() => setChat([]), (cause) => setError(message(cause)))}>
+                      New conversation
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          )}
           <Composer
             value={note}
             disabled={busy}
-            canSend={!busy && ready}
-            label={cueCount ? "Rebuild the script" : "Build the script"}
-            placeholder={busy ? "Claude is writing…" : cueCount ? "Ask for a rebuild, e.g. aim for 30 minutes, open on the confession…" : "Notes for the build (optional), e.g. aim for 30 minutes…"}
+            canSend={!busy && ready && (!cueCount || !!note.trim())}
+            label={cueCount ? "Ask for a change" : "Build the script"}
+            model={cueCount ? "Sonnet 5.5" : "Opus 5.5"}
+            placeholder={
+              busy
+                ? "Claude is working…"
+                : cueCount
+                  ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
+                  : "Notes for the build (optional), e.g. aim for 30 minutes…"
+            }
             hint={!ready ? "Transcribe the footage first" : undefined}
             extra={
-              <select className="kind-select" value={kind} disabled={busy} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
-                {KINDS.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
-                ))}
-              </select>
+              !cueCount ? (
+                <select className="kind-select" value={kind} disabled={busy} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
+                  {KINDS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+              ) : undefined
             }
             onChange={setNote}
-            onSend={() => void build()}
+            onSend={() => void (cueCount ? revise() : build())}
           />
         </aside>
       </div>
-      <DocsDialog open={docsOpen} script={script} onClose={() => setDocsOpen(false)} onChange={onChange} />
+      <DocsDialog
+        open={docsOpen}
+        script={script}
+        onClose={() => setDocsOpen(false)}
+        onChange={onChange}
+        onUseComments={cueCount ? (text) => setNote(`Work through these comments from the Google Doc:\n${text}`) : undefined}
+      />
     </div>
   );
 }

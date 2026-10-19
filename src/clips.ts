@@ -229,6 +229,70 @@ export function splitClip(clips: Clip[], index: number, sourceMs: number): Clip[
   return [...clips.slice(0, index), { ...clip, endMs: ms }, { id: crypto.randomUUID(), startMs: ms, endMs: clip.endMs }, ...clips.slice(index + 1)];
 }
 
+/** Breathing room kept before a clip's first word and after its last, never closer than 60 ms to another word. */
+export const LEAD_MS = 150;
+export const TAIL_MS = 400;
+
+/** A word-anchored range with breathing room, as Repack's breathe gives it. */
+export function breathe(words: Word[], startMs: number, endMs: number, durationMs: number) {
+  let lo = 0;
+  let hi = words.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (words[mid].startMs < endMs) lo = mid + 1;
+    else hi = mid;
+  }
+  const next = words[lo];
+  let prev: Word | undefined;
+  for (let i = lo - 1; i >= 0; i--)
+    if (words[i].endMs <= startMs) {
+      prev = words[i];
+      break;
+    }
+  return {
+    startMs: Math.round(Math.min(startMs, Math.max(startMs - LEAD_MS, prev ? prev.endMs + 60 : 0))),
+    endMs: Math.round(Math.max(endMs, Math.min(endMs + TAIL_MS, next ? next.startMs - 60 : durationMs))),
+  };
+}
+
+/**
+ * Premiere's insert edit, as Repack makes it: a footage clip under the
+ * moment is split there, and the item goes in at the nearest edit point.
+ */
+export function insertAt(clips: Clip[], editedMs: number, item: Clip) {
+  const ms = Math.round(editedMs);
+  let at = 0;
+  let list = clips;
+  for (let index = 0; index < clips.length; index++) {
+    const length = clips[index].endMs - clips[index].startMs;
+    if (ms < at + length) {
+      if (!isCutIn(clips[index])) list = splitClip(clips, index, clips[index].startMs + (ms - at));
+      break;
+    }
+    at += length;
+  }
+  const bounds = [0];
+  for (const clip of list) bounds.push(bounds[bounds.length - 1] + clip.endMs - clip.startMs);
+  let best = 0;
+  bounds.forEach((bound, index) => {
+    if (Math.abs(bound - ms) < Math.abs(bounds[best] - ms)) best = index;
+  });
+  return [...list.slice(0, best), item, ...list.slice(best)];
+}
+
+/**
+ * Moves items, keeping their order, to the edit point `to` (0 is before the
+ * first item, the length is after the last), as dragging them there does.
+ */
+export function moveItems(clips: Clip[], ids: string[], to: number) {
+  const moving = clips.filter((clip) => ids.includes(clip.id));
+  if (!moving.length) return clips;
+  const before = clips.slice(0, to).filter((clip) => !ids.includes(clip.id)).length;
+  const rest = clips.filter((clip) => !ids.includes(clip.id));
+  const next = [...rest.slice(0, before), ...moving, ...rest.slice(before)];
+  return next.every((clip, index) => clip === clips[index]) ? clips : next;
+}
+
 /** Puts an item in after `index`, or first for -1. */
 export const insertAfter = (clips: Clip[], index: number, clip: Clip) => [...clips.slice(0, index + 1), clip, ...clips.slice(index + 1)];
 
