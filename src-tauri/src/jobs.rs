@@ -1,17 +1,22 @@
 //! Script builds run on their own thread. A page on the tailnet asks how a
 //! build is going rather than holding one request open for ten minutes, so a
 //! dropped connection, a sleeping laptop or a reload does not lose the build.
+//! Each build's state is also kept beside its script (`build.json`), so one
+//! that finished while no page watched still says how it went, and one that
+//! Writer closed on says so instead of vanishing.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::model::now_ms;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildStatus {
     pub running: bool,
@@ -29,13 +34,50 @@ fn jobs() -> &'static Mutex<HashMap<String, BuildStatus>> {
     JOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// The latest build of a script, running or finished, since the app started.
-pub fn status(id: &str) -> Option<BuildStatus> {
-    jobs().lock().ok()?.get(id).cloned()
+fn file(data: &Path, id: &str) -> Option<PathBuf> {
+    crate::store::script_dir(data, id).ok().map(|dir| dir.join("build.json"))
+}
+
+fn keep(data: &Path, id: &str, job: &BuildStatus) {
+    let Some(path) = file(data, id) else { return };
+    let tmp = path.with_extension("json.tmp");
+    if let Ok(bytes) = serde_json::to_vec(job) {
+        if fs::write(&tmp, bytes).is_ok() {
+            let _ = fs::rename(tmp, path);
+        }
+    }
+}
+
+/// The latest build of a script, running or finished: this run's, else the
+/// one kept on disk from before.
+pub fn status(data: &Path, id: &str) -> Option<BuildStatus> {
+    if let Some(job) = jobs().lock().ok()?.get(id).cloned() {
+        return Some(job);
+    }
+    let job: BuildStatus = serde_json::from_slice(&fs::read(file(data, id)?).ok()?).ok()?;
+    // Running on disk but not here: Writer closed on it (and startup missed it).
+    Some(if job.running { interrupted(job) } else { job })
+}
+
+fn interrupted(mut job: BuildStatus) -> BuildStatus {
+    job.running = false;
+    job.finished_at = Some(job.finished_at.unwrap_or_else(now_ms));
+    job.error = Some("Writer closed while Claude was writing this script, so the build stopped. Nothing was changed; build again.".into());
+    job
+}
+
+/// A build that died with the app is not still running. Run at startup.
+pub fn mark_interrupted(data: &Path, id: &str) {
+    let Some(path) = file(data, id) else { return };
+    let Ok(bytes) = fs::read(&path) else { return };
+    let Ok(job) = serde_json::from_slice::<BuildStatus>(&bytes) else { return };
+    if job.running {
+        keep(data, id, &interrupted(job));
+    }
 }
 
 pub fn running(id: &str) -> bool {
-    status(id).is_some_and(|job| job.running)
+    jobs().lock().ok().and_then(|jobs| jobs.get(id).map(|job| job.running)).unwrap_or(false)
 }
 
 /// Says what a running build is doing.
@@ -68,6 +110,8 @@ pub fn start(app: AppHandle, id: String, note: String, kind: Option<crate::forma
         jobs.insert(id.clone(), job.clone());
         job
     };
+    let data = crate::data_dir(&app)?;
+    keep(&data, &id, &job);
     thread::spawn(move || {
         // A bug in a build ends it as a failed build, never one that reads
         // as running forever.
@@ -84,6 +128,7 @@ pub fn start(app: AppHandle, id: String, note: String, kind: Option<crate::forma
                     }
                     Err(error) => job.error = Some(error),
                 }
+                keep(&data, &id, job);
             }
         }
     });

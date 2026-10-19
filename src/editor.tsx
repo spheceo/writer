@@ -2,8 +2,9 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer, Said, Working } from "./agent";
 import { buildStatus, getResearch, getScript, inTauri, message, retryTranscribe, saveClips, startBuild } from "./api";
-import { clock, document, insertAfter, isCutIn, keptMs, purposes, splitClip } from "./clips";
+import { clock, insertAfter, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { DocsDialog } from "./docs-dialog";
+import { scriptText } from "./doc-export";
 import { FootageDoc } from "./footage-doc";
 import { Monitor } from "./monitor";
 import { CutPlayer, clipStarts, editedPosition, Playhead } from "./playback";
@@ -105,13 +106,35 @@ const KINDS: { value: Kind; label: string }[] = [
 
 type Report = { text: string; costUsd: number };
 
+/** When the last build of a script whose outcome was shown here ended; or marks one shown. */
+export function seen(id: string, finishedAt?: number | null) {
+  const key = `writer.build-seen.${id}`;
+  if (finishedAt) window.localStorage.setItem(key, String(finishedAt));
+  return Number(window.localStorage.getItem(key) ?? 0);
+}
+
 /**
  * A footage script, as Repack's editor: the Video view (the monitor, the
  * transcript and research, the timeline), the Script view (its Doc), and Split
  * (the monitor beside the Doc). Claude sits at the right in all three.
  */
 export function Editor({ script, onChange, onBack }: { script: Script; onChange: (script: Script) => void; onBack: () => void }) {
-  const clips = script.clips;
+  // The timeline as edited here. Each edit shows at once and is saved in
+  // turn, each save quoting the revision the one before it returned, as
+  // Repack's editor queues them. Changes from elsewhere (a build, an export)
+  // are taken once nothing is waiting to be saved.
+  const [clips, setClips] = useState(script.clips);
+  const shown = useRef(script.clips);
+  const revision = useRef(script.revision);
+  const pending = useRef(0);
+  const epoch = useRef(0);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    if (pending.current) return;
+    shown.current = script.clips;
+    revision.current = script.revision;
+    setClips(script.clips);
+  }, [script]);
   const [view, setView] = useView("footage", "video");
   const [expanded, setExpanded] = useState(false);
   const [agentShown, setAgentShown] = useState(() => window.localStorage.getItem("writer.agent") !== "closed");
@@ -170,41 +193,69 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setHistory((n) => n + 1);
   };
 
-  const persist = async (next: Clip[], record = true) => {
-    const before = clips;
+  /**
+   * Shows an edit and queues its save. A refused save (the script changed
+   * in another window or on another Mac) drops the edits queued after it and
+   * takes the script as it is on disk, so the next edit saves again.
+   */
+  const persist = (next: Clip[], record = true) => {
+    const before = shown.current;
+    shown.current = next;
+    setClips(next);
+    if (record) remember(before);
+    pending.current += 1;
     setSaving("saving");
     setError(null);
-    try {
-      onChange(await saveClips(script.id, script.revision, next));
-      if (record) remember(before);
-      setSaving("saved");
-      window.setTimeout(() => setSaving((state) => (state === "saved" ? null : state)), 1600);
-      return true;
-    } catch (cause) {
-      setSaving(null);
-      setError(message(cause));
-      return false;
-    }
+    const mine = epoch.current;
+    const run = queue.current.then(async () => {
+      if (mine !== epoch.current) return false;
+      try {
+        const saved = await saveClips(script.id, revision.current, next);
+        revision.current = saved.revision;
+        onChange(saved);
+        return true;
+      } catch (cause) {
+        epoch.current += 1;
+        future.current = [];
+        setError(message(cause));
+        try {
+          const fresh = await getScript(script.id);
+          revision.current = fresh.revision;
+          shown.current = fresh.clips;
+          setClips(fresh.clips);
+          onChange(fresh);
+        } catch {
+          // The error says what went wrong; the next edit tries again.
+        }
+        return false;
+      } finally {
+        pending.current -= 1;
+        if (!pending.current) {
+          setSaving((state) => (state === "saving" ? "saved" : state));
+          window.setTimeout(() => setSaving((state) => (state === "saved" ? null : state)), 1600);
+        }
+      }
+    });
+    queue.current = run;
+    return run;
   };
 
-  const undo = async () => {
+  const undo = () => {
     const previous = past.current.at(-1);
-    if (!previous || saving === "saving") return;
-    if (await persist(previous, false)) {
-      past.current = past.current.slice(0, -1);
-      future.current = [...future.current, clips];
-      setHistory((n) => n + 1);
-    }
+    if (!previous) return;
+    past.current = past.current.slice(0, -1);
+    future.current = [...future.current, shown.current];
+    setHistory((n) => n + 1);
+    void persist(previous, false);
   };
 
-  const redo = async () => {
+  const redo = () => {
     const next = future.current.at(-1);
-    if (!next || saving === "saving") return;
-    if (await persist(next, false)) {
-      future.current = future.current.slice(0, -1);
-      past.current = [...past.current.slice(-29), clips];
-      setHistory((n) => n + 1);
-    }
+    if (!next) return;
+    future.current = future.current.slice(0, -1);
+    past.current = [...past.current.slice(-29), shown.current];
+    setHistory((n) => n + 1);
+    void persist(next, false);
   };
 
   // A timestamp clicked in the script: Split plays it there; Script opens the
@@ -246,8 +297,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     if ((event.metaKey || event.ctrlKey) && /^[zZy]$/.test(event.key)) {
       if (typing) return;
       event.preventDefault();
-      if (event.key === "y" || event.shiftKey) void redo();
-      else void undo();
+      if (event.key === "y" || event.shiftKey) redo();
+      else undo();
       return;
     }
     if (typing) return;
@@ -322,6 +373,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       watching.current = false;
       setStarted(null);
       if (!job) return;
+      seen(script.id, job.finishedAt);
       if (job.error) {
         setError(job.error);
         return;
@@ -343,7 +395,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   useEffect(() => {
     alive.current = true;
     void buildStatus(script.id)
-      .then((job) => job?.running && follow(job.startedAt))
+      .then((job) => {
+        if (job?.running) follow(job.startedAt);
+        // A build that ended while no page watched it (or that Writer closed
+        // on) says how it went, once.
+        else if (job?.finishedAt && job.finishedAt > seen(script.id)) {
+          seen(script.id, job.finishedAt);
+          if (job.error) setError(job.error);
+          else setReport({ text: job.report ?? "", costUsd: job.costUsd ?? 0 });
+        }
+      })
       .catch(() => {});
     return () => {
       alive.current = false;
@@ -366,7 +427,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   };
 
   const copy = async () => {
-    const text = document(script);
+    const text = scriptText(script);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -411,10 +472,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             </span>
           )}
           <ViewTabs view={view} onChange={(next) => (setExpanded(false), setView(next))} />
-          <button type="button" className="icon-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!past.current.length || saving === "saving"} onClick={() => void undo()}>
+          <button type="button" className="icon-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!past.current.length} onClick={undo}>
             <Icon name="undo" />
           </button>
-          <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length || saving === "saving"} onClick={() => void redo()}>
+          <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length} onClick={redo}>
             <Icon name="redo" />
           </button>
           <Shortcuts groups={FOOTAGE_SHORTCUTS} />
@@ -459,7 +520,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             playhead={playhead}
             follow={view === "split"}
             zoomKey={view}
-            disabled={saving === "saving" || busy}
+            disabled={busy}
             onPreview={preview}
             onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
           />
@@ -523,11 +584,11 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                     <Icon name="play" size={11} />
                     Play
                   </button>
-                  <button type="button" className="tool" disabled={saving === "saving"} title="Add these words to the cut, after the clip at the playhead" onClick={addPicked}>
+                  <button type="button" className="tool" disabled={busy} title="Add these words to the cut, after the clip at the playhead" onClick={addPicked}>
                     <Icon name="plus" size={12} />
                     Add to cut
                   </button>
-                  <button type="button" className="tool danger-text" disabled={saving === "saving" || !picked.inCut} title={picked.inCut ? "Take these words out of every clip in the cut" : "None of these words are in the cut"} onClick={liftPicked}>
+                  <button type="button" className="tool danger-text" disabled={busy || !picked.inCut} title={picked.inCut ? "Take these words out of every clip in the cut" : "None of these words are in the cut"} onClick={liftPicked}>
                     Remove
                   </button>
                 </div>
@@ -547,7 +608,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           playhead={playhead}
           player={player}
           selected={selected}
-          disabled={saving === "saving" || busy}
+          disabled={busy}
           onSelect={setSelected}
           onEdit={(next) => void persist(next)}
         />

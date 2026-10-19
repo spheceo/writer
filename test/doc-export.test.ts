@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { at, blurSpans, boundary, commentaryContent, footageContent } from "../src/doc-export";
+import { at, blurSpans, boundary, commentaryContent, footageContent, scriptText } from "../src/doc-export";
 import { scriptDocx } from "../src/docx";
 import type { Draft, Script } from "../src/types";
 
@@ -25,19 +25,81 @@ const script = {
 
 test("lays a footage script out as Repack's Doc, a comment on each timestamp", () => {
   const content = footageContent(script);
-  expect(content.text).toStartWith("INTERRO The Case\n\nTotal Duration: 0m04s\n\n(0:01‑0:02)\n\nHe was charged with murder.");
-  const link = content.styles.find((style) => style.url);
-  expect(link?.url).toBe("https://youtu.be/abc?t=0");
+  expect(content.text).toBe("INTERRO The Case\n\nAssets:\n-\tFootage\n\nTotal Duration: 0m4s\n\n(0:00‑0:02)\n\nHe was charged with murder.\n\n");
+  const links = content.styles.filter((style) => style.url).map((style) => style.url);
+  expect(links).toEqual(["https://youtu.be/abc", "https://youtu.be/abc?t=0"]);
   const notes = content.notes.map((note) => [content.text.slice(note.start - 1, note.end - 1), note.text]);
   expect(notes).toEqual([
-    ["(0:01‑0:02)", "Did...it?"],
+    ["(0:00‑0:02)", "did...it"],
     ["murder", "Note to editor: Blur this"],
   ]);
+  expect(scriptText(script)).toContain("-\tFootage https://youtu.be/abc\n");
 });
 
-test("finds a clip's first and last words", () => {
-  expect(boundary({ id: "c", startMs: 1_150, endMs: 1_700 }, words)).toBe("you...do");
-  expect(boundary({ id: "c", startMs: 5_000, endMs: 6_000 }, words)).toBe("...");
+test("finds a clip's first and last words as Repack notes them", () => {
+  expect(boundary({ startMs: 1_250, endMs: 1_500 }, words)).toBe("you...do");
+  expect(boundary({ startMs: 1_150, endMs: 1_700 }, words, { w3: "IT!" })).toBe("did...it");
+  expect(boundary({ startMs: 5_000, endMs: 6_000 }, words)).toBe("...");
+});
+
+test("links a compilation's ranges to their own videos and divides its cases", () => {
+  const compilation = {
+    ...script,
+    title: "It Went Wrong",
+    sourceKind: "compilation",
+    sourceUrl: "https://youtu.be/a\nhttps://drive.google.com/file/d/B/view",
+    compilation: true,
+    parts: [
+      { title: "A", startMs: 0, durationMs: 60_000, audio: false, url: "https://youtu.be/a" },
+      { title: "B", startMs: 60_000, durationMs: 60_000, audio: false, url: "https://drive.google.com/file/d/B/view" },
+    ],
+    clips: [
+      { id: "c1", startMs: 1_000, endMs: 5_000 },
+      { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Hook." },
+      { id: "n2", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Next." },
+      { id: "c2", startMs: 70_000, endMs: 75_500 },
+      { id: "n3", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "End." },
+    ],
+  } as unknown as Script;
+  const content = footageContent(compilation);
+  expect(content.text).toStartWith("INTERRO It Went Wrong\n\nAssets:\n-\tFootage 1\n-\tFootage 2\n\nTotal Duration: 0m19s\n\n(0:01‑0:05)\n\nHook.\n\n \nNext.\n\n(0:10‑0:15)\n\nEnd.");
+  const links = content.styles.filter((style) => style.url).map((style) => style.url);
+  expect(links).toEqual(["https://youtu.be/a", "https://drive.google.com/file/d/B/view", "https://youtu.be/a?t=1", "https://drive.google.com/file/d/B/view?t=10"]);
+  expect(content.styles.filter((style) => style.divider)).toHaveLength(1);
+});
+
+test("runs a Courtroom case on in one paragraph and marks audio recordings", () => {
+  const court = {
+    ...script,
+    kind: "courtroom",
+    sourceKind: "drive",
+    sourceUrl: "https://drive.google.com/drive/folders/F",
+    parts: [
+      { title: "Hearing", startMs: 0, durationMs: 60_000, audio: false, url: "https://drive.google.com/file/d/H/view" },
+      { title: "Call", startMs: 60_000, durationMs: 60_000, audio: true, url: "https://drive.google.com/file/d/C/view" },
+    ],
+    clips: [
+      { id: "c1", startMs: 1_000, endMs: 5_000 },
+      { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "The promise.\n\nThe backstory." },
+      { id: "c2", startMs: 61_000, endMs: 64_000 },
+      { id: "n2", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Then." },
+    ],
+  } as unknown as Script;
+  const text = footageContent(court).text;
+  expect(text).toContain("-\tFootage\n");
+  expect(text).toContain("(0:01‑0:05)\n\nThe promise.\n\nThe backstory. (Audio 0:01‑0:04) Then.\n");
+  expect(text).toEndWith("\nTotal length of clips: 0m7s\n");
+});
+
+test("footage from this Mac lists no assets and links nothing", () => {
+  const local = { ...script, sourceKind: "file", sourceUrl: "/Users/me/case.mp4" } as unknown as Script;
+  const content = footageContent(local);
+  expect(content.text).not.toContain("Assets:");
+  expect(content.styles.some((style) => style.url)).toBe(false);
+});
+
+test("a rewritten heading heads the Doc", () => {
+  expect(footageContent({ ...script, heading: "INTERRO John Doe - The Case" } as Script).text).toStartWith("INTERRO John Doe - The Case\n");
 });
 
 test("links a YouTube moment and leaves other links alone", () => {

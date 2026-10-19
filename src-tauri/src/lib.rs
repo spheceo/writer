@@ -284,6 +284,8 @@ fn rename_script(app: AppHandle, id: String, title: String) -> Result<ScriptDeta
     let dir = store::script_dir(&data, &id)?;
     let mut script = store::read(&dir)?;
     script.title = title.to_string();
+    // The title heads the script, so its Google Doc is out of date now.
+    script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
     Ok(store::detail(script, &dir))
@@ -461,8 +463,8 @@ fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::K
 }
 
 #[tauri::command]
-fn build_status(id: String) -> Option<jobs::BuildStatus> {
-    jobs::status(&id)
+fn build_status(app: AppHandle, id: String) -> Option<jobs::BuildStatus> {
+    jobs::status(&data_dir(&app).ok()?, &id)
 }
 
 /// Timeline items stay in the order given: a hook plays footage from anywhere.

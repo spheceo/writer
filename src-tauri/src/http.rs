@@ -200,7 +200,7 @@ fn route(
             let kind = serde_json::from_value(value["kind"].clone()).ok();
             json_result(stream, start_build(app, (*id).to_string(), note, kind))
         }
-        ("GET", ["api", "scripts", id, "build"]) => write_json(stream, 200, &build_status((*id).to_string())),
+        ("GET", ["api", "scripts", id, "build"]) => write_json(stream, 200, &build_status(app, (*id).to_string())),
         ("PUT", ["api", "scripts", id, "clips"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The cut could not be read.".to_string())?;
             let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;

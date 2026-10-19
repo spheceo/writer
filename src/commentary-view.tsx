@@ -5,7 +5,7 @@ import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
 import { addSource, buildStatus, getScript, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
-import { useSplit, useView, type View, ViewTabs } from "./editor";
+import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
 import { Monitor } from "./monitor";
 import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
@@ -192,6 +192,7 @@ export function CommentaryEditor({
       setStarted(null);
       setSent(null);
       if (!job) return;
+      seen(script.id, job.finishedAt);
       if (job.error) {
         setError(job.error);
         return;
@@ -209,7 +210,16 @@ export function CommentaryEditor({
   useEffect(() => {
     alive.current = true;
     void buildStatus(script.id)
-      .then((job) => job?.running && follow(job.startedAt))
+      .then((job) => {
+        if (job?.running) follow(job.startedAt);
+        // A build that ended while no page watched it (or that Writer closed
+        // on) says how it went, once.
+        else if (job?.finishedAt && job.finishedAt > seen(script.id)) {
+          seen(script.id, job.finishedAt);
+          if (job.error) setError(job.error);
+          else setReport({ text: job.report ?? "", costUsd: job.costUsd ?? 0 });
+        }
+      })
       .catch(() => {});
     return () => {
       alive.current = false;
@@ -241,6 +251,8 @@ export function CommentaryEditor({
     } catch (cause) {
       setSaving(null);
       setError(message(cause));
+      // Changed elsewhere: take it as it is on disk, so the next edit saves.
+      await getScript(script.id).then(onChange, () => {});
     }
   };
 

@@ -545,7 +545,9 @@ fn local_files(dir: &Path) -> BTreeMap<String, Kept> {
             }
             let Ok(relative) = path.strip_prefix(dir) else { continue };
             let relative = relative.to_string_lossy().replace('\\', "/");
-            if relative == "script.json" {
+            // A build's state belongs to the Mac running it: another Mac
+            // would read a build running there as one Writer closed on.
+            if relative == "script.json" || relative == "build.json" {
                 continue;
             }
             let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);

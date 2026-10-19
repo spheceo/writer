@@ -141,8 +141,13 @@ export function purposes(script: Pick<Script, "clips" | "kind" | "compilation" |
   return names.map((name) => LABELS[name] ?? name);
 }
 
-/** The script's title line, as Repack heads its Docs. */
-export function heading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation">) {
+/** The script's title line, as Repack heads its Docs: the producer's own wording when they rewrote it. */
+export function heading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation" | "heading">) {
+  return script.heading?.trim() || generatedHeading(script);
+}
+
+/** The title line built from what is known: the series, who is interrogated, then the title. */
+export function generatedHeading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation">) {
   const series = script.kind === "foia" ? "FOIA" : script.kind === "courtroom" ? "COURT" : "INTERRO";
   const suspects = script.compilation ? [] : (script.suspects ?? []);
   return suspects.length ? `${series} ${suspects.join(" & ")} - ${script.title}` : `${series} ${script.title}`;
@@ -155,35 +160,35 @@ export function partAt(parts: Part[] | undefined, ms: number) {
   return index < 0 ? parts.length - 1 : index;
 }
 
+/** A moment as the script prints it, Repack's way: whole seconds, rounded down. */
+export function stamp(ms: number) {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}:${pad(minutes % 60)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
+
 /**
  * A clip's range as the script prints it. In a joined case it reads on its
  * own recording's clock, as Repack prints it, so it can be found in that file.
  */
-export function range(clip: Clip, parts?: Part[], dash = "–") {
+export function range(clip: Pick<Clip, "startMs" | "endMs">, parts?: Part[], dash = "–") {
   const index = partAt(parts, clip.startMs);
   const offset = index >= 0 && parts ? parts[index].startMs : 0;
-  return `${clock(clip.startMs - offset)}${dash}${clock(clip.endMs - offset)}`;
+  return `${stamp(clip.startMs - offset)}${dash}${stamp(clip.endMs - offset)}`;
 }
 
+/** A clip's range as the script prints it, marked when it is of an audio-only recording, as Repack marks it. */
+export function clipRange(clip: Pick<Clip, "startMs" | "endMs">, parts?: Part[], dash = "–") {
+  const index = partAt(parts, clip.startMs);
+  return `${index >= 0 && parts?.[index].audio ? "Audio " : ""}${range(clip, parts, dash)}`;
+}
+
+/** How long the cut runs, as Repack states it under the assets: "38m12s", "1h2m5s". */
 export function duration(ms: number) {
-  const total = Math.round(ms / 1000);
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = String(total % 60).padStart(2, "0");
-  return hours ? `${hours}h${String(minutes).padStart(2, "0")}m${seconds}s` : `${minutes}m${seconds}s`;
-}
-
-/** The script as Repack exports it to a Doc: title, length, then range lines alternating with narration. */
-export function document(script: Script) {
-  const parts = [heading(script), `Total Duration: ${duration(keptMs(script.clips))}`];
-  for (const block of blocks(script.clips)) {
-    if (block.clips.length) {
-      parts.push(block.clips.map(({ clip }) => `(${range(clip, script.parts, "\u2011")})`).join(" + "));
-    }
-    const text = block.cue?.clip.narration?.trim();
-    if (text) parts.push(text);
-  }
-  return `${parts.join("\n\n")}\n`;
+  const seconds = Math.round(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes >= 60 ? `${Math.floor(minutes / 60)}h` : ""}${minutes % 60}m${seconds % 60}s`;
 }
 
 export type Line = { words: Word[]; startMs: number; endMs: number; speaker: string | null };

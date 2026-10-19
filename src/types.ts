@@ -23,6 +23,8 @@ export type Part = {
   durationMs: number;
   audio: boolean;
   claimedMs?: number;
+  /** The recording's YouTube or Drive link, which its timestamps link to. */
+  url?: string;
 };
 
 /** A question a paused import waits on, as Repack asks it. */
@@ -71,6 +73,10 @@ export type Script = {
   suspects?: string[];
   /** A commentary project's sources and written script. */
   commentary?: Commentary;
+  /** The heading as the producer rewrote it, in place of the generated one. */
+  heading?: string;
+  /** Words the producer respelled, by word ID. */
+  corrections?: Record<string, string>;
   /** The last full export to Google Docs. */
   docExport?: { id: string; url: string; revision: number; exportedAt: number };
   revision: number;

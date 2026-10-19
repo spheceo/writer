@@ -1,4 +1,4 @@
-import { blocks, clock, duration, heading, isCutIn, keptMs, partAt, range } from "./clips";
+import { blocks, clipRange, clock, duration, heading, isCutIn, keptMs, partAt } from "./clips";
 import { isClip, totalLine } from "./commentary";
 import type { DocContent } from "./docx";
 import type { Cite, Clip, Draft, Script, Source, Word } from "./types";
@@ -52,11 +52,21 @@ export function blurSpans(narration: string, extra = false): [number, number][] 
   return found.sort((a, b) => a[0] - b[0]).filter((span, index, all) => index === 0 || span[0] >= all[index - 1][1]);
 }
 
-/** A clip's first and last words, as Repack notes them on its timestamp. */
-export function boundary(clip: Clip, words: Word[]) {
-  const inside = words.filter((word) => word.startMs >= clip.startMs - 50 && word.endMs <= clip.endMs + 50);
-  if (!inside.length) return "...";
-  return `${inside[0].text}...${inside[inside.length - 1].text}`;
+/**
+ * A clip's first and last words, as Repack notes them on its timestamp: any
+ * word the clip touches, lowercased and without the punctuation around it
+ * ("yeah," reads as "yeah"), as respelled where the producer fixed one.
+ */
+export function boundary(clip: Pick<Clip, "startMs" | "endMs">, words: Word[], corrections: Record<string, string> = {}) {
+  const inside = words.filter((word) => word.startMs < clip.endMs && word.endMs > clip.startMs);
+  const first = inside[0];
+  const last = inside.at(-1);
+  if (!first || !last) return "...";
+  const bare = (word: Word) => {
+    const text = (corrections[word.id] ?? word.text).toLowerCase();
+    return text.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "") || text;
+  };
+  return `${bare(first)}...${bare(last)}`;
 }
 
 /** A YouTube link at a moment. Other links are left as they are. */
@@ -72,42 +82,102 @@ export function at(link: string, ms: number) {
   }
 }
 
+const isLink = (value: string | undefined): value is string => !!value && /^https?:\/\//i.test(value);
+
+/**
+ * Where a clip's footage can be watched, as Repack links it: its own
+ * recording's link from the moment it starts on that recording's clock; a
+ * single YouTube video from the moment; a single Drive file or folder as it
+ * is. Footage from this Mac has nowhere to link.
+ */
+export function rangeUrl(script: Pick<Script, "sourceUrl" | "sourceKind" | "parts" | "compilation">, clip: Pick<Clip, "startMs">) {
+  const index = partAt(script.parts, clip.startMs);
+  const part = index >= 0 ? script.parts?.[index] : undefined;
+  const url = part?.url ?? (script.compilation ? "" : script.sourceUrl);
+  if (!isLink(url)) return "";
+  if (!part?.url && script.sourceKind !== "youtube") return url;
+  try {
+    const watch = new URL(url);
+    watch.searchParams.set("t", String(Math.floor((clip.startMs - (part?.startMs ?? 0)) / 1000)));
+    return watch.toString();
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * What the script lists under "Assets:", as Repack lists it: one case's
+ * footage once (a Drive folder as the folder), or a compilation's videos in
+ * order, "Footage 1", "Footage 2"….
+ */
+export function assetLinks(script: Pick<Script, "sourceUrl" | "parts" | "compilation">) {
+  if (script.compilation)
+    return (script.parts ?? []).flatMap((part, index) => (isLink(part.url) ? [{ label: `Footage ${index + 1}`, url: part.url }] : []));
+  return isLink(script.sourceUrl) ? [{ label: "Footage", url: script.sourceUrl }] : [];
+}
+
+/**
+ * Where a compilation's cases start, by block: each transition (a cut-in with
+ * no footage before it), and the first block of a hidden compilation, as
+ * Repack divides them. A single case has none.
+ */
+export function caseStarts(script: Pick<Script, "clips" | "compilation" | "title">) {
+  if (!script.compilation) return [];
+  const hidden = !/^\s*["“'‘]?when\b/i.test(script.title);
+  return blocks(script.clips).flatMap((block, index) => (!block.clips.length || (index === 0 && hidden) ? [index] : []));
+}
+
 /**
  * An interrogation, FOIA, Courtroom or compilation script as Repack exports
- * it: the title line, the total duration, then each block's ranges (each
- * linked to its moment and noted with its first and last words) and its
- * narration, with Repack's blur notes on the words to blur.
+ * it: the title line, the assets, the total duration, then each block's
+ * ranges (each linked to its moment and noted with its first and last words)
+ * and its narration, with Repack's blur notes on the words to blur. A
+ * Courtroom case runs on after its first block in one paragraph and ends on
+ * how long its clips run. `copy` writes each asset's link after its label,
+ * for text that has no links.
  */
-export function footageContent(script: Script): DocContent {
+export function footageContent(script: Script, copy = false): DocContent {
   const { content, at: here, append, note } = writer();
   append(`${heading(script)}\n`, { title: true });
+  const assets = assetLinks(script);
+  if (assets.length) {
+    append("\nAssets:\n");
+    for (const { label, url } of assets) {
+      append("-\t", { asset: true });
+      append(label, { url });
+      if (copy) append(` ${url}`);
+      append("\n");
+    }
+  }
   append(`\nTotal Duration: ${duration(keptMs(script.clips))}\n\n`);
-  const youtube = script.sourceKind === "youtube" && !script.compilation ? script.sourceUrl : "";
-  let lastPart = -1;
+  const running = script.kind === "courtroom" && !script.compilation;
+  const cases = caseStarts(script);
   for (const [index, block] of blocks(script.clips).entries()) {
-    const first = block.clips[0]?.clip;
-    const part = first ? partAt(script.parts, first.startMs) : lastPart;
+    const inline = running && index > 0;
     // A new case in a compilation is set off by a line, as Repack divides cases.
-    if (script.compilation && index > 0 && part !== lastPart && block.clips.length) append(" \n", { divider: true });
-    if (first) lastPart = part;
+    if (cases.indexOf(index) > 0) append(" \n", { divider: true });
+    if (inline && block.clips.length && !content.text.endsWith("\n")) append(" ");
     block.clips.forEach(({ clip }, position) => {
       if (position) append(" + ");
       const start = here();
+      // The brackets belong to the note, not to the link.
       append("(");
+      const url = rangeUrl(script, clip);
       // A non-breaking hyphen: Docs would otherwise wrap a timestamp there.
-      append(range(clip, script.parts, "‑"), youtube ? { url: at(youtube, clip.startMs) } : undefined);
+      append(clipRange(clip, script.parts, "\u2011"), url ? { url } : undefined);
       append(")");
-      note(start, here(), boundary(clip, script.words));
+      note(start, here(), boundary(clip, script.words, script.corrections));
     });
-    if (block.clips.length) append("\n\n");
+    if (block.clips.length) append(inline ? " " : "\n\n");
     const narration = block.cue?.clip.narration?.trim();
     if (block.cue && narration && isCutIn(block.cue.clip)) {
       const from = here();
       for (const [a, b] of blurSpans(narration)) note(from + a, from + b, BLUR_NOTE);
-      append(`${narration}\n\n`);
+      append(running ? narration : `${narration}\n\n`);
     }
   }
   if (!content.text.endsWith("\n")) append("\n");
+  if (script.kind === "courtroom") append(`\nTotal length of clips: ${duration(keptMs(script.clips.filter((clip) => !isCutIn(clip))))}\n`);
   return content;
 }
 
@@ -180,4 +250,9 @@ export function docContent(script: Script): DocContent {
     return commentaryContent(script.title, draft, script.commentary.sources);
   }
   return footageContent(script);
+}
+
+/** The script as text, laid out as its Doc is, for the clipboard. */
+export function scriptText(script: Script) {
+  return script.commentary ? docContent(script).text : footageContent(script, true).text;
 }

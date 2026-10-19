@@ -56,6 +56,10 @@ pub struct Part {
     /// What a recording cut short claims to be, when it holds less.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claimed_ms: Option<u64>,
+    /// Where the recording can be watched: its YouTube or Drive link, which
+    /// the script's timestamps and assets link to, as Repack's do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// A question that pauses an import, as Repack asks it on the script.
@@ -154,6 +158,14 @@ pub struct Script {
     /// The people the case is about, for the script's title line.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub suspects: Vec<String>,
+    /// The heading as the producer rewrote it, in place of the generated
+    /// "INTERRO … - title" line, as Repack keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heading: Option<String>,
+    /// Words the producer respelled, by word ID. A word's timing never
+    /// changes; only what it reads as.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub corrections: BTreeMap<String, String>,
     /// The last full export to Google Docs (not a draft), as Repack keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_export: Option<DocExport>,

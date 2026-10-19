@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { blocks, duration, heading, isCutIn, keptMs, range } from "./clips";
-import { BLUR_NOTE, COMMENT_AUTHOR, at as linkAt, blurSpans, boundary } from "./doc-export";
+import { blocks, clipRange, duration, heading, isCutIn, keptMs } from "./clips";
+import { assetLinks, BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, rangeUrl } from "./doc-export";
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import type { Clip, Script } from "./types";
@@ -48,7 +48,8 @@ export function FootageDoc({
   useEffect(() => window.localStorage.setItem(`writer.comments.${zoomKey}`, comments ? "on" : "off"), [zoomKey, comments]);
 
   const parts = blocks(clips);
-  const youtube = script.sourceKind === "youtube" && !script.compilation ? script.sourceUrl : "";
+  const assets = assetLinks(script);
+  const cases = caseStarts(script);
   const nowId = usePlayheadValue(playhead, (p) => (follow && !p.auditioning ? (editedPosition(clips, p.ms)?.clip.id ?? null) : null));
 
   // The playing timestamp's red line fills as its clip runs out.
@@ -98,7 +99,7 @@ export function FootageDoc({
               <span className="avatar bot">G</span>
               <span className="comment-author">{COMMENT_AUTHOR}</span>
             </span>
-            <span className="card-text">{boundary(clip, script.words)}</span>
+            <span className="card-text">{boundary(clip, script.words, script.corrections)}</span>
           </button>
         )),
         ...(block.cue && blurSpans(block.cue.clip.narration ?? "").length
@@ -146,13 +147,15 @@ export function FootageDoc({
             {heading(script)}
           </h1>
           <section className="assets" data-block>
-            {youtube && (
+            {assets.length > 0 && (
               <>
                 <h2>Assets:</h2>
                 <ul>
-                  <li>
-                    <a href={youtube} target="_blank" rel="noreferrer">Footage</a>
-                  </li>
+                  {assets.map((asset) => (
+                    <li key={asset.label}>
+                      <a href={asset.url} target="_blank" rel="noreferrer">{asset.label}</a>
+                    </li>
+                  ))}
                 </ul>
               </>
             )}
@@ -165,6 +168,7 @@ export function FootageDoc({
           )}
           {parts.map((block, index) => (
             <Fragment key={block.cue?.clip.id ?? block.clips[0]?.clip.id ?? index}>
+              {cases.indexOf(index) > 0 && <hr className="case-divider" data-block />}
               {block.clips.length > 0 && (
                 <p className="ranges" data-block>
                   {block.clips.map(({ clip, index: at }, position) => (
@@ -183,14 +187,14 @@ export function FootageDoc({
                         (
                         <button
                           type="button"
-                          title={youtube ? `Preview · ${linkAt(youtube, clip.startMs)}` : "Preview"}
-                          aria-label={`Preview ${range(clip, script.parts, " to ")}`}
+                          title={rangeUrl(script, clip) ? `Preview · ${rangeUrl(script, clip)}` : "Preview"}
+                          aria-label={`Preview ${clipRange(clip, script.parts, " to ")}`}
                           onClick={() => {
                             clicked.current = true;
                             onPreview(at);
                           }}
                         >
-                          {range(clip, script.parts)}
+                          {clipRange(clip, script.parts)}
                         </button>
                         )
                       </span>
@@ -212,6 +216,11 @@ export function FootageDoc({
               )}
             </Fragment>
           ))}
+          {script.kind === "courtroom" && parts.length > 0 && (
+            <p className="doc-total" data-block>
+              Total length of clips: {duration(keptMs(clips.filter((clip) => !isCutIn(clip))))}
+            </p>
+          )}
         </Paper>
       </div>
     </section>

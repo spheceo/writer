@@ -770,6 +770,8 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .page .assets li::before { content: "-"; position: absolute; left: -24px; }
 .page .assets p { margin: 12pt 0 0; }
 .page .assets a { color: #1155cc; text-decoration: underline; }
+.page .case-divider { border: 0; border-top: 1px solid #999; margin: 0 0 12pt; }
+.page .doc-total { margin: 12pt 0 0; }
 .page > .page-body > .ranges { margin: 0 0 12pt; }
 .page .plus { margin: 0 0.05em; }
 .range { position: relative; }

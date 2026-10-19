@@ -199,6 +199,8 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
         speakers: Default::default(),
         suspects: Vec::new(),
         commentary: Some(Commentary::default()),
+        heading: None,
+        corrections: Default::default(),
         doc_export: None,
         revision: 0,
         created_at: now,

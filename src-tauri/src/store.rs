@@ -26,8 +26,17 @@ pub fn proxy_path(dir: &Path) -> PathBuf {
     dir.join("proxy.mp4")
 }
 
-pub fn detail(script: Script, dir: &Path) -> ScriptDetail {
+pub fn detail(mut script: Script, dir: &Path) -> ScriptDetail {
     let proxy = proxy_path(dir);
+    // A script joined before its recordings kept their links gets them from
+    // the import's own list, so its timestamps link as a new one's do.
+    if script.parts.iter().any(|part| part.url.is_none()) {
+        if let Some(links) = crate::import::part_links(dir, &script) {
+            for (part, link) in script.parts.iter_mut().zip(links) {
+                part.url.get_or_insert(link);
+            }
+        }
+    }
     ScriptDetail {
         proxy_path: proxy.is_file().then(|| proxy.to_string_lossy().into_owned()),
         script,
@@ -74,6 +83,9 @@ pub fn mark_interrupted(data: &Path) {
     };
     for entry in entries.flatten() {
         let dir = entry.path();
+        if let Some(id) = dir.file_name().and_then(|name| name.to_str()) {
+            crate::jobs::mark_interrupted(data, id);
+        }
         let Ok(mut script) = read(&dir) else {
             continue;
         };

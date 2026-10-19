@@ -951,8 +951,8 @@ mod tests {
     fn heads_each_recording_and_keeps_clips_inside_one() {
         let mut two = script();
         two.parts = vec![
-            crate::model::Part { title: "Interview".into(), start_ms: 0, duration_ms: 6_800, audio: false, claimed_ms: None },
-            crate::model::Part { title: "Jail call".into(), start_ms: 6_800, duration_ms: 3_200, audio: true, claimed_ms: None },
+            crate::model::Part { title: "Interview".into(), start_ms: 0, duration_ms: 6_800, audio: false, claimed_ms: None, url: None },
+            crate::model::Part { title: "Jail call".into(), start_ms: 6_800, duration_ms: 3_200, audio: true, claimed_ms: None, url: None },
         ];
         let text = evidence(&two, None);
         assert!(text.contains("Recording 1 · Interview\n[0:00] A: w0 Hi,"));

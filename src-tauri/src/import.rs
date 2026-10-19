@@ -831,7 +831,11 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
 
     // Join, each recording at the length it actually holds.
     let paths: Vec<PathBuf> = wanted.iter().map(|(index, recording)| drive_file(&folder, *index, recording)).collect();
-    let items: Vec<(String, PathBuf)> = wanted.iter().map(|(_, recording)| drive::stem(&recording.name)).zip(paths.iter().cloned()).collect();
+    let items: Vec<(String, PathBuf, Option<String>)> = wanted
+        .iter()
+        .zip(paths.iter().cloned())
+        .map(|((_, recording), path)| (drive::stem(&recording.name), path, Some(drive_link(&recording.id))))
+        .collect();
     join_preview(app, dir, script, &items, "recordings")?;
     // The recordings are in the joined footage now; the list stays for Retry.
     for path in &paths {
@@ -842,19 +846,19 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
 
 /// Joins recordings, or a compilation's videos, into one preview, each at the
 /// length it actually holds, and records where each one sits.
-fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(String, PathBuf)], what: &str) -> Result<(), String> {
+fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(String, PathBuf, Option<String>)], what: &str) -> Result<(), String> {
     let count = items.len();
     let mut parts = Vec::with_capacity(count);
     let mut join = Vec::with_capacity(count);
     let mut start_ms = 0;
-    for (title, path) in items {
+    for (title, path, url) in items {
         let found = media::streams(path).map_err(|_| format!("Could not read {title}."))?;
         let claimed = found.duration_ms;
         let held = media::playable_ms(path, claimed);
         if held < claimed {
             note(script, format!("{title} is cut short: it claims {} but holds {}. Writer joined what it holds.", clock(claimed), clock(held)));
         }
-        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed) });
+        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone() });
         start_ms += held;
         join.push(media::JoinPart { path: path.as_path(), streams: media::Streams { duration_ms: held, ..found } });
     }
@@ -873,6 +877,32 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
     script.parts = parts;
     script.original_path = proxy.to_string_lossy().into_owned();
     store::write(dir, script)
+}
+
+/// A Drive recording's page, which plays it from a moment with `t`.
+fn drive_link(id: &str) -> String {
+    format!("https://drive.google.com/file/d/{id}/view")
+}
+
+/// The links of a joined script's recordings, in play order, for one joined
+/// before its parts kept them: a Drive folder's chosen recordings, or a
+/// compilation's videos less those left out. None when they no longer line up.
+pub fn part_links(dir: &Path, script: &Script) -> Option<Vec<String>> {
+    let links: Vec<String> = if script.compilation {
+        let videos = Videos::read(dir)?;
+        videos
+            .videos
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !videos.skipped.contains(&index.to_string()))
+            .map(|(_, video)| video.url.clone())
+            .collect()
+    } else if script.source_kind == "drive" {
+        Manifest::read(dir)?.wanted().iter().map(|(_, recording)| drive_link(&recording.id)).collect()
+    } else {
+        return None;
+    };
+    (links.len() == script.parts.len()).then_some(links)
 }
 
 /// A compilation's videos, one case each, as the producer listed them.
@@ -972,7 +1002,7 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
             youtube_to(app, data, &script.id, &script.title, &video.url, &dest, settings, (base, span), &detail)
         };
         match result.and_then(|_| if readable(&dest) { Ok(()) } else { Err("Couldn't be read as video, so it was dropped.".into()) }) {
-            Ok(()) => items.push((video.title.clone(), dest)),
+            Ok(()) => items.push((video.title.clone(), dest, Some(video.url.clone()))),
             Err(error) => {
                 if !readable(&dest) && pulled(&dest) == 0 {
                     let _ = fs::remove_file(&dest);
@@ -996,7 +1026,7 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         return pause(app, dir, script, Decision::FailedRecordings { summary, failed, total: count }).map(|_| Fetched::Paused);
     }
     join_preview(app, dir, script, &items, "videos")?;
-    for (_, path) in &items {
+    for (_, path, _) in &items {
         let _ = fs::remove_file(path);
     }
     Ok(Fetched::Joined)
@@ -1081,6 +1111,8 @@ fn new_script(title: String, kind: &str, source_url: String, original: String) -
         speakers: Default::default(),
         suspects: Vec::new(),
         commentary: None,
+        heading: None,
+        corrections: Default::default(),
         doc_export: None,
         revision: 1,
         created_at: now,
