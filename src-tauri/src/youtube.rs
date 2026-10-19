@@ -84,6 +84,65 @@ pub fn title(url: &str, proxy_file: Option<&Path>) -> String {
         .unwrap_or_else(|| "YouTube video".into())
 }
 
+/// What a compilation's video is, checked before anything downloads, as
+/// Repack checks its videos: its title, channel and length, or why it can't
+/// be imported (private or gone, live or upcoming, age-restricted, no
+/// length, over 8 hours).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Probe {
+    pub title: String,
+    pub channel: String,
+    pub duration_ms: Option<u64>,
+    pub problem: Option<String>,
+}
+
+pub fn probe(url: &str) -> Probe {
+    let said = match proc::run("yt-dlp", &["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", url], Duration::from_secs(90)) {
+        Ok(text) => text,
+        Err(error) => return Probe { problem: Some(probe_trouble(&error)), ..Default::default() },
+    };
+    let Ok(info) = serde_json::from_str::<serde_json::Value>(said.trim()) else {
+        return Probe { problem: Some("YouTube didn't say what this video is.".into()), ..Default::default() };
+    };
+    let title: String = info["title"].as_str().unwrap_or("YouTube video").chars().take(180).collect();
+    let channel = info["channel"].as_str().or(info["uploader"].as_str()).unwrap_or("").to_string();
+    let duration_ms = info["duration"].as_f64().filter(|seconds| *seconds > 0.0).map(|seconds| (seconds * 1000.0) as u64);
+    let live = info["live_status"].as_str().unwrap_or("");
+    let problem = if info["is_live"].as_bool() == Some(true) || live == "is_live" {
+        Some("It's live now; import it once the stream has ended.".to_string())
+    } else if live == "is_upcoming" {
+        Some("It hasn't premiered yet.".to_string())
+    } else if info["age_limit"].as_u64().unwrap_or(0) >= 18 {
+        Some("It's age-restricted, so it can't be downloaded.".to_string())
+    } else if duration_ms.is_none() {
+        Some("YouTube doesn't give its length.".to_string())
+    } else if duration_ms.is_some_and(|ms| ms > 8 * 3_600_000) {
+        Some("It runs over 8 hours.".to_string())
+    } else {
+        None
+    };
+    Probe { title, channel, duration_ms, problem }
+}
+
+/// yt-dlp's failure as a reason a person can act on.
+fn probe_trouble(error: &str) -> String {
+    let lower = error.to_lowercase();
+    if lower.contains("private video") {
+        "It's private.".into()
+    } else if lower.contains("confirm your age") || lower.contains("age-restricted") || lower.contains("inappropriate") {
+        "It's age-restricted, so it can't be downloaded.".into()
+    } else if lower.contains("unavailable") || lower.contains("removed") || lower.contains("does not exist") || lower.contains("terminated") {
+        "It's no longer available.".into()
+    } else if lower.contains("not a bot") || lower.contains("sign in") {
+        "YouTube asked this Mac to sign in, so it couldn't be checked. It may still import through the proxy.".into()
+    } else if lower.contains("premiere") || lower.contains("live event") {
+        "It hasn't premiered yet.".into()
+    } else {
+        "YouTube couldn't be asked about it. Check the link.".into()
+    }
+}
+
 pub fn download(
     url: &str,
     dest: &Path,

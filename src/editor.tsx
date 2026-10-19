@@ -1,9 +1,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Asked, ChatLog, Composer, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, inTauri, message, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, inTauri, message, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { DocsDialog } from "./docs-dialog";
+import { VersionsDialog } from "./versions-dialog";
 import { scriptText } from "./doc-export";
 import { FootageDoc } from "./footage-doc";
 import { Monitor } from "./monitor";
@@ -144,6 +145,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [error, setError] = useState<string | null>(script.error);
   const [notesShown, setNotesShown] = useState(true);
   const [docsOpen, setDocsOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const [started, setStarted] = useState<number | null>(null);
   const [stage, setStage] = useState("");
@@ -287,7 +289,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         if (isCutIn(clip) || clip.endMs <= picked.startMs || clip.startMs >= picked.endMs) return [clip];
         const kept: Clip[] = [];
         if (clip.startMs < picked.startMs) kept.push({ ...clip, endMs: picked.startMs });
-        if (clip.endMs > picked.endMs) kept.push({ ...clip, id: kept.length ? crypto.randomUUID() : clip.id, startMs: picked.endMs });
+        if (clip.endMs > picked.endMs) kept.push(kept.length ? { ...clip, id: crypto.randomUUID(), startMs: picked.endMs, notes: undefined } : { ...clip, startMs: picked.endMs });
         return kept;
       }),
     );
@@ -530,6 +532,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length} onClick={redo}>
             <Icon name="redo" />
           </button>
+          <button type="button" className="icon-tool" aria-label="Versions" title="Versions" onClick={() => setVersionsOpen(true)}>
+            <Icon name="history" />
+          </button>
           <Shortcuts groups={FOOTAGE_SHORTCUTS} />
           <button type="button" className="icon-tool" aria-label="Copy script" disabled={!cueCount} title="Copy the script as Repack's Doc text" onClick={() => void copy()}>
             <Icon name={copied ? "check" : "copy"} />
@@ -577,6 +582,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
             onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
             onDecline={(proposal) => void change(() => declineProposal(script.id, proposal.id))}
+            onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
           />
         )}
         {view === "split" && (
@@ -826,6 +832,17 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           />
         </aside>
       </div>
+      <VersionsDialog
+        open={versionsOpen}
+        script={script}
+        busy={busy}
+        onClose={() => setVersionsOpen(false)}
+        onRestore={(version) => {
+          remember(shown.current);
+          void change(() => restoreVersion(script.id, revision.current, version.id));
+          setVersionsOpen(false);
+        }}
+      />
       <DocsDialog
         open={docsOpen}
         script={script}

@@ -2,6 +2,7 @@ import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { CloudBadge } from "./cloud-badge";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import {
+  checkVideos,
   createCommentary,
   deleteScript,
   importDrive,
@@ -14,7 +15,7 @@ import {
   resumeImport,
 } from "./api";
 import { clock } from "./clips";
-import type { Choice, ClaudeStatus, ImportProgress, Script, Summary } from "./types";
+import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
 
 type Source = "youtube" | "drive" | "file" | "compilation" | "commentary";
@@ -101,7 +102,7 @@ export function splitTitle(title: string) {
   return found ? { name: found[1], from: found[2] } : { name: title, from: "" };
 }
 
-const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc" };
+const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc", compilation: "stack" };
 
 export function Library({
   scripts,
@@ -598,8 +599,8 @@ const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
     hint: "A video essay in the Internet Janitor's style, written from sources rather than one case's footage. The first link is the brief; add more sources, and past scripts for the style, once it's made.",
   },
   compilation: {
-    placeholder: "One YouTube or Drive video link per line, a case each",
-    hint: "2 to 12 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case.",
+    placeholder: "One YouTube or Drive video link per line, a case each. REUSE before a link marks a case the channel already covered.",
+    hint: "2 to 20 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case. A reused case isn't imported: it takes only its transition, with its link.",
   },
 };
 
@@ -623,6 +624,12 @@ function ImportDialog({
   const [source, setSource] = useState<Source>("youtube");
   const [value, setValue] = useState("");
   const [title, setTitle] = useState("");
+  const [article, setArticle] = useState("");
+  // A compilation's videos as checked, before anything downloads, as Repack checks them.
+  const [checked, setChecked] = useState<VideoCheck[] | null>(null);
+  // One Courtroom case whose hearing runs across the videos, rather than a case each.
+  const [oneCase, setOneCase] = useState(false);
+  const [checking, setChecking] = useState(false);
   const fields = useRef<HTMLDivElement>(null);
   // A new tab puts the cursor in its first field, ready to paste.
   useEffect(() => {
@@ -646,6 +653,35 @@ function ImportDialog({
     });
     if (typeof picked === "string") setValue(picked);
   };
+
+  const check = async () => {
+    setChecking(true);
+    setError(null);
+    try {
+      setChecked(await checkVideos(links));
+    } catch (cause) {
+      setError(message(cause));
+    } finally {
+      setChecking(false);
+    }
+  };
+  // The checked list, as lines again: a row toggled to a reuse or removed changes the import.
+  const checkedLines = (rows: VideoCheck[]) => rows.map((row) => (row.reuse ? `REUSE ${row.url}` : row.url));
+  const imported = checked?.filter((row) => !row.reuse) ?? [];
+  const totalMs = imported.reduce((sum, row) => sum + (row.durationMs ?? 0), 0);
+  const blocked = !checked
+    ? null
+    : imported.some((row) => row.problem)
+      ? "Remove or replace the videos that can't be imported."
+      : oneCase && checked.some((row) => row.reuse)
+        ? "A reused case belongs in a compilation, not one Courtroom case."
+        : imported.length < 2
+        ? "A compilation needs at least two videos to import."
+        : imported.length > 20
+          ? "A compilation takes at most 20 videos to import."
+          : totalMs > 20 * 3_600_000
+            ? "Together the videos run past 20 hours."
+            : null;
 
   // An import takes minutes. Errors in the first moments (a bad link, no
   // access) stay in the dialog; after that it closes and the list follows it.
@@ -677,16 +713,19 @@ function ImportDialog({
       setError("Give the compilation a title and at least two links.");
       return;
     }
+    // A compilation's videos are checked before they import.
+    if (source === "compilation" && !checked) return void check();
+    if (source === "compilation" && blocked) return setError(blocked);
     setBusy(true);
     setError(null);
     const work =
       source === "youtube"
-        ? importYoutube(input)
+        ? importYoutube(input, article.trim())
         : source === "drive"
-          ? importDrive(input)
+          ? importDrive(input, article.trim())
           : source === "compilation"
-            ? importCompilation(title, links)
-            : importFile(input);
+            ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
+            : importFile(input, article.trim());
     const outcome = work.then(
       (script) => ({ kind: "done" as const, script }),
       (cause: unknown) => ({ kind: "failed" as const, cause }),
@@ -700,6 +739,9 @@ function ImportDialog({
     setBusy(false);
     setValue("");
     setTitle("");
+    setArticle("");
+    setChecked(null);
+    setOneCase(false);
     onClose();
     onStarted();
     void outcome.then((result) => {
@@ -720,8 +762,25 @@ function ImportDialog({
           {error && <span className="bad dialog-error">{error}</span>}
           <span className="spacer" />
           <button type="button" className="ghost" onClick={onClose}>Cancel</button>
-          <button type="submit" form="import" className="primary" disabled={busy || (source === "commentary" ? !title.trim() : !value.trim())}>
-            {busy ? (source === "commentary" ? "Reading…" : "Starting…") : source === "commentary" ? "Create" : "Import"}
+          <button
+            type="submit"
+            form="import"
+            className="primary"
+            disabled={busy || checking || (source === "commentary" ? !title.trim() : !value.trim()) || (source === "compilation" && !!checked && !!blocked)}
+          >
+            {busy
+              ? source === "commentary"
+                ? "Reading…"
+                : "Starting…"
+              : source === "commentary"
+                ? "Create"
+                : source === "compilation"
+                  ? checking
+                    ? "Checking…"
+                    : checked
+                      ? `Import ${imported.length} ${imported.length === 1 ? "video" : "videos"}`
+                      : "Check videos"
+                  : "Import"}
           </button>
         </>
       }
@@ -739,6 +798,7 @@ function ImportDialog({
           onChange={(next) => {
             setSource(next);
             setValue("");
+            setChecked(null);
             setError(null);
           }}
           options={[
@@ -777,17 +837,54 @@ function ImportDialog({
                 maxLength={180}
                 onChange={(event) => setTitle(event.target.value)}
               />
-              <textarea
-                className="links"
-                rows={5}
-                value={value}
-                placeholder={SOURCES.compilation.placeholder}
-                spellCheck={false}
-                onChange={(event) => setValue(event.target.value)}
-              />
+              {!checked ? (
+                <textarea
+                  className="links"
+                  rows={5}
+                  value={value}
+                  placeholder={SOURCES.compilation.placeholder}
+                  spellCheck={false}
+                  onChange={(event) => setValue(event.target.value)}
+                />
+              ) : (
+                <div className="checklist video-checks">
+                  {checked.map((row, index) => (
+                    <div key={`${row.url}-${index}`} className={row.problem && !row.reuse ? "video-check bad-row" : "video-check"}>
+                      <span className="faint mono">{row.reuse ? "↺" : checked.slice(0, index + 1).filter((item) => !item.reuse).length}</span>
+                      <span className="video-check-what">
+                        <strong className="truncate" title={row.title || row.url}>{row.title || row.url}</strong>
+                        <span className={row.problem && !row.reuse ? "bad" : "faint"}>
+                          {row.reuse ? "Reused case: not imported; it takes only its transition." : row.problem ?? [row.durationMs ? clock(row.durationMs) : "", row.channel].filter(Boolean).join(" · ")}
+                        </span>
+                      </span>
+                      <label className="faint toggle" title="A case the channel already covered: not imported, it takes only its transition">
+                        <input type="checkbox" checked={row.reuse} onChange={(event) => setChecked(checked.map((item, at) => (at === index ? { ...item, reuse: event.target.checked } : item)))} /> Reuse
+                      </label>
+                      <button type="button" className="link-button faint" aria-label="Remove" title="Remove" onClick={() => setChecked(checked.filter((_, at) => at !== index))}>
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <label className="faint toggle" title="Repack's Courtroom: one case's hearing in several videos, joined in order as one case; a link's t marks where the case starts">
+                <input type="checkbox" checked={oneCase} onChange={(event) => setOneCase(event.target.checked)} /> One Courtroom case across these videos
+              </label>
               <p className="hint">
-                {links.length} {links.length === 1 ? "video" : "videos"} ·{" "}
-                {/^\s*["“'‘]?when\b/i.test(title) ? "standard compilation" : "hidden compilation"}
+                {checked ? (
+                  <>
+                    {imported.length} {imported.length === 1 ? "video" : "videos"} to import{totalMs ? `, ${clock(totalMs)}` : ""}
+                    {checked.length > imported.length ? ` · ${checked.length - imported.length} reused` : ""} ·{" "}
+                    {oneCase ? "one Courtroom case" : /^\s*["“'‘]?when\b/i.test(title) ? "standard compilation" : "hidden compilation"} ·{" "}
+                    <button type="button" className="link-button" onClick={() => (setValue(checkedLines(checked).join("\n")), setChecked(null))}>
+                      Edit the links
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {links.length} {links.length === 1 ? "line" : "lines"} · {oneCase ? "one Courtroom case" : /^\s*["“'‘]?when\b/i.test(title) ? "standard compilation" : "hidden compilation"}
+                  </>
+                )}
               </p>
             </>
           ) : source === "file" && desktop ? (
@@ -814,6 +911,18 @@ function ImportDialog({
             />
           )}
           <p className="hint">{SOURCES[source].hint}</p>
+          {(source === "youtube" || source === "drive" || source === "file") && (
+            <>
+              <input
+                value={article}
+                placeholder="Article (optional): https://… a news report on the case"
+                spellCheck={false}
+                aria-label="Article"
+                onChange={(event) => setArticle(event.target.value)}
+              />
+              <p className="hint">If given, Writer reads it when the import starts and uses it for the case's facts instead of searching.</p>
+            </>
+          )}
         </div>
       </form>
     </Dialog>

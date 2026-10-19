@@ -8,6 +8,8 @@ export const COMMENT_AUTHOR = "GeniusScriptwriter10";
 export const BLUR_NOTE = "Note to editor: Blur this";
 /** The commentary channel marks words for a bleep or blur with a plain "Censor". */
 export const CENSOR_NOTE = "Censor";
+/** What a reused case's transition prints when nothing is written on it, for its link's comment to sit on. */
+export const REUSE_MARK = "REUSE";
 
 /** Writes a Doc's text while keeping its styles and comments in Docs' indexes. */
 function writer() {
@@ -82,7 +84,7 @@ export function at(link: string, ms: number) {
   }
 }
 
-const isLink = (value: string | undefined): value is string => !!value && /^https?:\/\//i.test(value);
+const isLink = (value: string | undefined): value is string => !!value && /^https?:\/\/\S+$/i.test(value);
 
 /**
  * Where a clip's footage can be watched, as Repack links it: its own
@@ -110,9 +112,14 @@ export function rangeUrl(script: Pick<Script, "sourceUrl" | "sourceKind" | "part
  * footage once (a Drive folder as the folder), or a compilation's videos in
  * order, "Footage 1", "Footage 2"….
  */
-export function assetLinks(script: Pick<Script, "sourceUrl" | "parts" | "compilation">) {
+export function assetLinks(script: Pick<Script, "sourceUrl" | "sourceKind" | "parts" | "compilation">) {
   if (script.compilation)
     return (script.parts ?? []).flatMap((part, index) => (isLink(part.url) ? [{ label: `Footage ${index + 1}`, url: part.url }] : []));
+  // One Courtroom case across several videos links each video once, in order.
+  if (script.sourceKind === "compilation" && (script.parts?.length ?? 0) > 1) {
+    const urls = [...new Set((script.parts ?? []).map((part) => part.url).filter(isLink))];
+    return urls.map((url, index) => ({ label: `Footage ${index + 1}`, url }));
+  }
   return isLink(script.sourceUrl) ? [{ label: "Footage", url: script.sourceUrl }] : [];
 }
 
@@ -166,12 +173,17 @@ export function footageContent(script: Script, copy = false): DocContent {
       // A non-breaking hyphen: Docs would otherwise wrap a timestamp there.
       append(clipRange(clip, script.parts, "\u2011"), url ? { url } : undefined);
       append(")");
+      // Its first and last words, then what the producer wrote on the
+      // timestamp, each as Repack's own note.
       note(start, here(), boundary(clip, script.words, script.corrections));
+      for (const written of clip.notes ?? []) note(start, here(), written.text);
     });
     if (block.clips.length) append(inline ? " " : "\n\n");
-    const narration = block.cue?.clip.narration?.trim();
+    // A reused case with nothing written on it still prints a word for its link's comment.
+    const narration = block.cue?.clip.narration?.trim() || (block.cue?.clip.reuse ? REUSE_MARK : "");
     if (block.cue && narration && isCutIn(block.cue.clip)) {
       const from = here();
+      if (block.cue.clip.reuse) note(from, from + narration.length, `Reuse: ${block.cue.clip.reuse}`);
       for (const [a, b] of blurSpans(narration)) note(from + a, from + b, BLUR_NOTE);
       append(running ? narration : `${narration}\n\n`);
     }

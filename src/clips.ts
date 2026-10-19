@@ -36,11 +36,8 @@ export function lift(clips: Clip[], startMs: number, endMs: number): Clip[] {
     const parts: Clip[] = [];
     if (clip.startMs < startMs) parts.push({ ...clip, endMs: startMs });
     if (clip.endMs > endMs) {
-      parts.push({
-        ...clip,
-        id: parts.length ? crypto.randomUUID() : clip.id,
-        startMs: endMs,
-      });
+      // A second piece is a new timestamp: the comments stay on the first.
+      parts.push(parts.length ? { ...clip, id: crypto.randomUUID(), startMs: endMs, notes: undefined } : { ...clip, startMs: endMs });
     }
     return parts;
   });

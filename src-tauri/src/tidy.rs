@@ -451,8 +451,9 @@ pub fn remove_range(clips: Vec<Clip>, start_ms: u64, end_ms: u64) -> Vec<Clip> {
                 kept.push(Clip { end_ms: start_ms, ..clip.clone() });
             }
             if clip.end_ms > end_ms {
-                let id = if kept.is_empty() { clip.id.clone() } else { uuid::Uuid::new_v4().to_string() };
-                kept.push(Clip { id, start_ms: end_ms, ..clip });
+                // A second piece is a new timestamp: the comments stay on the first.
+                let (id, notes) = if kept.is_empty() { (clip.id.clone(), clip.notes.clone()) } else { (uuid::Uuid::new_v4().to_string(), Vec::new()) };
+                kept.push(Clip { id, start_ms: end_ms, notes, ..clip });
             }
             kept
         })
@@ -478,8 +479,8 @@ pub fn fit_to_parts(clips: Vec<Clip>, parts: &[Part]) -> Vec<Clip> {
                 if end_ms < start_ms + 100 {
                     continue;
                 }
-                let id = if pieces.is_empty() { clip.id.clone() } else { uuid::Uuid::new_v4().to_string() };
-                pieces.push(Clip { id, start_ms, end_ms, ..clip.clone() });
+                let (id, notes) = if pieces.is_empty() { (clip.id.clone(), clip.notes.clone()) } else { (uuid::Uuid::new_v4().to_string(), Vec::new()) };
+                pieces.push(Clip { id, start_ms, end_ms, notes, ..clip.clone() });
             }
             pieces
         })
@@ -569,11 +570,15 @@ pub fn tighten(footage: &Footage, clips: &[Clip], beat_ms: u64, intro: &dyn Fn(u
         let mut from = clip.start_ms;
         let mut pieces = Vec::new();
         for (start, end) in runs {
-            pieces.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: from, end_ms: start, ..clip.clone() });
+            pieces.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: from, end_ms: start, notes: Vec::new(), ..clip.clone() });
             from = end;
             stalls += 1;
         }
-        pieces.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: from, end_ms: clip.end_ms, ..clip.clone() });
+        pieces.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: from, end_ms: clip.end_ms, notes: Vec::new(), ..clip.clone() });
+        // The timestamp's comments stay with its first piece.
+        if let Some(first) = pieces.iter_mut().find(|piece| piece.end_ms >= piece.start_ms + 100) {
+            first.notes = clip.notes.clone();
+        }
         out.extend(pieces.into_iter().filter(|piece| piece.end_ms >= piece.start_ms + 100));
     }
     Tightened { clips: out, pauses: quiet.len(), stalls }

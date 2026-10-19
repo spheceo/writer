@@ -144,3 +144,30 @@ test("exports the commentary script with short cues and editor comments", () => 
   expect(bytes[0]).toBe(0x50);
   expect(bytes[1]).toBe(0x4b);
 });
+
+test("puts the producer's comments on a timestamp into the Doc there", () => {
+  const noted = {
+    ...script,
+    clips: [{ ...script.clips[0], notes: [{ id: "n", text: "Blur the plate.", at: 0 }] }, script.clips[1]],
+  } as Script;
+  const content = footageContent(noted);
+  const on = content.notes.filter((note) => content.text.slice(note.start - 1, note.end - 1) === "(0:00‑0:02)").map((note) => note.text);
+  expect(on).toEqual(["did...it", "Blur the plate."]);
+});
+
+test("a reused case's transition carries its link as a comment, and REUSE when nothing is written", () => {
+  const reused = {
+    ...script,
+    compilation: true,
+    title: "Cops Who Got It Wrong",
+    clips: [
+      script.clips[0],
+      { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Intro." },
+      { id: "r", startMs: 0, endMs: 3_000, kind: "cut-in", reuse: "https://youtu.be/old" },
+    ],
+  } as unknown as Script;
+  const content = footageContent(reused);
+  expect(content.text).toContain("Intro.\n\n \nREUSE\n");
+  const notes = content.notes.map((note) => [content.text.slice(note.start - 1, note.end - 1), note.text]);
+  expect(notes).toContainEqual(["REUSE", "Reuse: https://youtu.be/old"]);
+});

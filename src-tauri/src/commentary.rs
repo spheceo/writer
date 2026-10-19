@@ -202,6 +202,7 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
         heading: None,
         corrections: Default::default(),
         proposals: Vec::new(),
+        reuses: Vec::new(),
         doc_export: None,
         revision: 0,
         created_at: now,

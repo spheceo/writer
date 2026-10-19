@@ -305,6 +305,7 @@ const PATHS: Record<string, ReactNode> = {
     </>
   ),
   back: <path d="M13 8H3.5M7.5 4 3.5 8l4 4" />,
+  history: <path d="M2.75 8a5.25 5.25 0 1 0 1.6-3.78M2.75 2.75v2.5h2.5M8 5.25V8l2 1.5" />,
   minus: <path d="M3.5 8h9" />,
   chevron: <path d="m4.5 6.25 3.5 3.5 3.5-3.5" />,
   send: <path d="M8 13V3.5M4 7.25 8 3.25l4 4" />,

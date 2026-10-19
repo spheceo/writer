@@ -190,6 +190,60 @@ pub fn recordings(token: &str, link: &Link) -> Result<(String, Vec<Recording>), 
     }
 }
 
+/// The PDFs in a case's folder and its subfolders (police reports, court
+/// papers), in name order, each once however often it was added.
+pub fn pdfs(token: &str, folder: &str) -> Result<Vec<Recording>, String> {
+    let mut found = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut queue = vec![folder.to_string()];
+    let mut entries = 0;
+    while let Some(parent) = queue.pop() {
+        let mut page: Option<String> = None;
+        loop {
+            let mut url = format!(
+                "{API}/files?q=%27{parent}%27+in+parents+and+trashed+%3D+false&fields=nextPageToken,files({FIELDS})&pageSize=1000&includeItemsFromAllDrives=true&supportsAllDrives=true"
+            );
+            if let Some(token) = &page {
+                let token = token.replace('%', "%25").replace('+', "%2B").replace('/', "%2F").replace('=', "%3D").replace('&', "%26");
+                url.push_str(&format!("&pageToken={token}"));
+            }
+            let list = get_json(token, &url)?;
+            for file in list["files"].as_array().into_iter().flatten() {
+                entries += 1;
+                if entries > MAX_ENTRIES {
+                    return Err("That folder holds more than 1,000 items.".into());
+                }
+                let name = file["name"].as_str().unwrap_or("").to_string();
+                let (id, mime) = match file["shortcutDetails"]["targetId"].as_str() {
+                    Some(target) => (target, file["shortcutDetails"]["targetMimeType"].as_str().unwrap_or("")),
+                    None => (file["id"].as_str().unwrap_or(""), file["mimeType"].as_str().unwrap_or("")),
+                };
+                if id.is_empty() {
+                    continue;
+                }
+                if mime == "application/vnd.google-apps.folder" {
+                    queue.push(id.to_string());
+                    continue;
+                }
+                if mime != "application/pdf" && !name.to_ascii_lowercase().ends_with(".pdf") {
+                    continue;
+                }
+                let size: u64 = file["size"].as_str().and_then(|size| size.parse().ok()).unwrap_or(0);
+                if !seen.insert(format!("{}:{size}", file["md5Checksum"].as_str().unwrap_or(id))) {
+                    continue;
+                }
+                found.push(Recording { id: id.to_string(), name, size, audio: false, claimed_ms: None });
+            }
+            page = list["nextPageToken"].as_str().map(str::to_string);
+            if page.is_none() {
+                break;
+            }
+        }
+    }
+    found.sort_by(|a, b| (a.name.to_lowercase(), &a.id).cmp(&(b.name.to_lowercase(), &b.id)));
+    Ok(found)
+}
+
 pub fn stem(name: &str) -> String {
     let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
     stem.chars().take(180).collect()

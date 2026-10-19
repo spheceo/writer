@@ -115,21 +115,30 @@ fn route(
         ("GET", ["api", "claude"]) => write_json(stream, 200, &claude_status()),
         ("POST", ["api", "scripts", "file"]) => {
             let path = json_str(body, "path")?;
-            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path)))
+            let article = json_str(body, "article").ok();
+            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path), article.as_deref()))
         }
         ("POST", ["api", "scripts", "youtube"]) => {
             let url = json_str(body, "url")?;
-            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url))
+            let article = json_str(body, "article").ok();
+            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url, article.as_deref()))
         }
         ("POST", ["api", "scripts", "compilation"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let title = value["title"].as_str().unwrap_or("").to_string();
             let urls: Vec<String> = value["urls"].as_array().into_iter().flatten().filter_map(|url| url.as_str().map(str::to_string)).collect();
-            json_result(stream, crate::import::from_compilation(&app, &data_dir(&app)?, &title, &urls))
+            let case = value["case"].as_bool().unwrap_or(false);
+            json_result(stream, crate::import::from_compilation(&app, &data_dir(&app)?, &title, &urls, case))
+        }
+        ("POST", ["api", "videos", "check"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let lines: Vec<String> = value["lines"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            json_result(stream, crate::import::check_videos(&data_dir(&app)?, &lines))
         }
         ("POST", ["api", "scripts", "drive"]) => {
             let url = json_str(body, "url")?;
-            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url))
+            let article = json_str(body, "article").ok();
+            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref()))
         }
         ("POST", ["api", "scripts", "commentary"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
@@ -178,7 +187,7 @@ fn route(
         }
         ("GET", ["api", "scripts", id, "research"]) => {
             let dir = store::script_dir(&data_dir(&app)?, id)?;
-            write_json(stream, 200, &crate::research::load(&dir))
+            write_json(stream, 200, &crate::research_shown(&dir))
         }
         ("POST", ["api", "scripts", id, "research"]) => json_result(stream, crate::research_now(&data_dir(&app)?, id)),
         ("PUT", ["api", "scripts", id, "title"]) => {
@@ -223,6 +232,13 @@ fn route(
             let word = value["word"].as_str().unwrap_or("");
             let text = value["text"].as_str().unwrap_or("");
             json_result(stream, crate::correct_word_now(&data_dir(&app)?, id, revision, word, text))
+        }
+        ("GET", ["api", "scripts", id, "versions"]) => json_result(stream, crate::list_versions_now(&data_dir(&app)?, id)),
+        ("GET", ["api", "scripts", id, "versions", version]) => json_result(stream, crate::get_version_now(&data_dir(&app)?, id, version)),
+        ("POST", ["api", "scripts", id, "versions", version, "restore"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;
+            json_result(stream, crate::restore_version_now(&data_dir(&app)?, id, revision, version))
         }
         ("PUT", ["api", "scripts", id, "heading"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

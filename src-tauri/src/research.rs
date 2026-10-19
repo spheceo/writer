@@ -225,6 +225,35 @@ struct Hit {
     url: String,
 }
 
+/// The article the producer gave with the footage, read now, as Repack reads
+/// it: its text (up to 6,000 characters) becomes the case's research, so no
+/// search runs. One that can't be read stops the import before it starts.
+pub fn provided(url: &str) -> Result<Research, String> {
+    let url = url.trim();
+    if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() > 2_000 {
+        return Err("The article needs a web link (https://…).".into());
+    }
+    let page = read(&Hit { url: url.to_string() }).ok_or("Couldn't read that article. Check the link opens without a sign-in, or leave it out and Writer researches the case.")?;
+    Ok(Research {
+        articles: vec![Article {
+            title: page.title,
+            outlet: page.outlet,
+            published: page.published,
+            url: page.url,
+            summary: page.text.chars().take(6_000).collect(),
+            facts: Vec::new(),
+        }],
+        queries: Vec::new(),
+        at: now_ms(),
+        problem: None,
+    })
+}
+
+/// Keeps research beside a script.
+pub fn keep(dir: &Path, research: &Research) -> Result<(), String> {
+    save(dir, research)
+}
+
 /// One DuckDuckGo search, from its plain HTML page.
 fn search(query: &str) -> Result<Vec<Hit>, String> {
     let url = format!("https://html.duckduckgo.com/html/?q={}", encode(query));

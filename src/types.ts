@@ -14,7 +14,13 @@ export type Clip = {
   kind?: "cut-in";
   narration?: string;
   narrationRole?: "intro" | "bridge" | "conclusion";
+  /** On a compilation's transition into a reused case: the earlier video's link, a comment there, never narration. */
+  reuse?: string;
+  /** What the producer wrote on a footage clip's timestamp; each goes into the Doc as a comment there. */
+  notes?: Note[];
 };
+
+export type Note = { id: string; text: string; at: number };
 
 /** One recording of a joined Drive folder, on the joined clock. */
 export type Part = {
@@ -77,6 +83,8 @@ export type Script = {
   heading?: string;
   /** Words the producer respelled, by word ID. */
   corrections?: Record<string, string>;
+  /** A compilation's reused cases: each takes only its transition, carrying its link. */
+  reuses?: { url: string; title: string; after: number }[];
   /** Rewrites of saved narration waiting for the producer to accept or decline. */
   proposals?: Proposal[];
   /** The last full export to Google Docs. */
@@ -234,3 +242,12 @@ export type ChatTurn = { role: "producer" | "editor"; text: string; at: number; 
 
 /** What the producer is looking at as they ask for a change. */
 export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null };
+
+/** A saved version of a footage script: who made it and what changed. */
+export type Version = { id: string; at: number; author: "you" | "claude" | "before"; summary: string; base?: string; restored?: number };
+
+/** What a version holds. */
+export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; heading: string | null };
+
+/** A compilation's line, checked before anything downloads. */
+export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null };

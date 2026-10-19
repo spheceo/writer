@@ -775,6 +775,11 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .page .doc-total { margin: 12pt 0 0; }
 .page .doc-title-input { width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; resize: none; overflow: hidden; }
 .page .doc-title-input:focus { outline: none; box-shadow: 0 1px 0 #1155cc; }
+.doc-rail .comment.add { color: var(--muted); font-size: 12px; cursor: pointer; text-align: left; }
+.doc-rail .comment.writing textarea { width: 100%; min-height: 60px; resize: vertical; font: inherit; font-size: 12.5px; }
+.doc-rail .card-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.doc-rail .card-remove { margin-left: auto; font-size: 14px; text-decoration: none; }
+.doc-rail .card-where { display: block; margin-top: 4px; font-size: 11px; }
 .page .proposal { margin: 6pt 0 0; padding: 8px 10px; border-left: 3px solid #1155cc; background: #f3f6fc; font-family: system-ui, sans-serif; font-size: 12px; color: #222; }
 .page .proposal-text { margin: 0 0 6px; line-height: 1.5; white-space: pre-wrap; }
 .page .proposal ins { background: #d6f0d8; text-decoration: none; }
@@ -1083,3 +1088,20 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .cloud-badge.bad { color: var(--danger); }
 .cloud-badge.bad i { background: var(--danger); }
 .cloud-badge span { font-variant-numeric: tabular-nums; }
+
+.version-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; max-height: 420px; overflow: auto; }
+.version-row { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: 64px 1fr auto; gap: 10px; align-items: baseline; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.version-row:hover, .version-row:focus-visible { background: var(--hover); }
+.version-who { font-weight: 600; font-size: 12px; }
+.version-who.claude { color: #d97757; }
+.version-who.before { color: var(--muted); }
+.version-detail { display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow: auto; font-size: 13px; }
+.version-diffs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.version-diffs .proposal-text { margin: 4px 0 0; line-height: 1.55; white-space: pre-wrap; }
+.version-diffs ins { background: #1f3d24; color: #c9f2cf; text-decoration: none; }
+.version-diffs del { background: #3d1f1f; color: #f2c9c9; }
+
+.video-checks { max-height: 280px; overflow: auto; }
+.video-check { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.video-check-what { display: flex; flex-direction: column; min-width: 0; }
+.video-check.bad-row strong { color: var(--danger); }

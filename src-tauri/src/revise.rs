@@ -225,6 +225,9 @@ fn current(script: &Script, format: &Format) -> String {
             _ => " (no words)".to_string(),
         };
         lines.push(format!("{label} clip [{}–{}{recording}]{said}", claude::clock(clip.start_ms), claude::clock(clip.end_ms)));
+        for note in &clip.notes {
+            lines.push(format!("   producer's comment for the editor: \"{}\"", note.text.trim()));
+        }
         for issue in issues.iter().filter(|issue| issue.id == clip.id) {
             lines.push(format!("   edge review: {} {}", if issue.end { "end" } else { "start" }, issue.issue));
         }
@@ -379,7 +382,8 @@ impl Work<'_> {
                 if clip.is_cut_in() || ms < clip.start_ms + 100 || ms + 100 > clip.end_ms {
                     return Err("Split a clip at a word inside it, away from its edges.".into());
                 }
-                let second = Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: ms, ..clip.clone() };
+                // The timestamp's comments stay with the first half.
+                let second = Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: ms, notes: Vec::new(), ..clip.clone() };
                 self.clips[index].end_ms = ms;
                 self.name_new(&second);
                 self.clips.insert(index + 1, second);
@@ -424,6 +428,7 @@ impl Work<'_> {
                     kind: Some("cut-in".into()),
                     narration: Some(narration.clone()),
                     narration_role: Some("bridge".into()),
+                    ..Default::default()
                 };
                 self.name_new(&clip);
                 self.writes.insert(clip.id.clone(), narration);

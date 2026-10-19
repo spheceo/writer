@@ -1,3 +1,4 @@
+mod casefiles;
 mod chat;
 mod claude;
 mod cloud;
@@ -21,6 +22,7 @@ mod store;
 mod tidy;
 mod tools;
 mod transcribe;
+mod versions;
 mod watch;
 mod youtube;
 
@@ -50,32 +52,32 @@ fn get_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, path: String) -> Result<ScriptDetail, String> {
+async fn import_file(app: AppHandle, path: String, article: Option<String>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_file(&app, &data, Path::new(&path))
+        import::from_file(&app, &data, Path::new(&path), article.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn import_youtube(app: AppHandle, url: String) -> Result<ScriptDetail, String> {
+async fn import_youtube(app: AppHandle, url: String, article: Option<String>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_youtube(&app, &data, &url)
+        import::from_youtube(&app, &data, &url, article.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn import_drive(app: AppHandle, url: String) -> Result<ScriptDetail, String> {
+async fn import_drive(app: AppHandle, url: String, article: Option<String>) -> Result<ScriptDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_drive(&app, &data, &url)
+        import::from_drive(&app, &data, &url, article.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -115,10 +117,10 @@ async fn check_drive(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>) -> Result<ScriptDetail, String> {
+async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>, case: Option<bool>) -> Result<ScriptDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_compilation(&app, &data, &title, &urls)
+        import::from_compilation(&app, &data, &title, &urls, case.unwrap_or(false))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -126,7 +128,15 @@ async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>) ->
 
 #[tauri::command]
 fn get_research(app: AppHandle, id: String) -> Result<Option<research::Research>, String> {
-    Ok(research::load(&store::script_dir(&data_dir(&app)?, &id)?))
+    Ok(research_shown(&store::script_dir(&data_dir(&app)?, &id)?))
+}
+
+/// The research the page lists: the case folder's PDFs first, then what was searched for.
+pub fn research_shown(dir: &Path) -> Option<research::Research> {
+    match (research::load(dir), casefiles::load(dir).filter(|documents| !documents.read.is_empty())) {
+        (None, None) => None,
+        (found, _) => Some(casefiles::with_documents(dir, found.unwrap_or_default())),
+    }
 }
 
 /// Looks for the case's news again. Reads the script, then searches.
@@ -143,7 +153,7 @@ pub fn research_now(data: &Path, id: &str) -> Result<research::Research, String>
     if script.words.is_empty() {
         return Err("Transcribe the footage before researching it.".into());
     }
-    Ok(research::run(&script, &dir))
+    Ok(casefiles::with_documents(&dir, research::run(&script, &dir)))
 }
 
 #[tauri::command]
@@ -317,12 +327,14 @@ fn save_clips(app: AppHandle, id: String, revision: u32, clips: Vec<Clip>) -> Re
     if script.revision != revision {
         return Err("This script changed. Reload it.".into());
     }
+    let before = script.clone();
     script.clips = check_clips(clips, script.duration_ms)?;
     // A proposal whose paragraph changed (accepted, or edited by hand) is done.
     script.proposals = revise::settle(&script.clips, std::mem::take(&mut script.proposals));
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
+    versions::keep(&dir, "you", &before, &script);
     Ok(store::detail(script, &dir))
 }
 
@@ -422,11 +434,18 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     }
     let research = match research::load(&dir).filter(|found| !found.articles.is_empty() || found.problem.is_none()) {
         Some(found) => found,
+        // The case folder's incident report gives the facts, as in Repack: no search.
+        None if casefiles::load(&dir).is_some_and(|documents| documents.has_report()) => research::Research {
+            problem: Some("not searched: the case folder's incident report gives the facts.".into()),
+            at: now_ms(),
+            ..Default::default()
+        },
         None => {
             jobs::stage(id, "Researching the case");
             research::run(&script, &dir)
         }
     };
+    let research = casefiles::with_documents(&dir, research);
     // The sound, so pauses with speech the transcript missed are kept.
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
@@ -448,11 +467,13 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     };
     built.report = format!("{}\n\n{found}", built.report.trim());
     let mut script = store::read(&dir)?;
+    let before = script.clone();
     script.clips = check_clips(built.clips, script.duration_ms)?;
     script.proposals.clear();
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
+    versions::keep(&dir, "claude", &before, &script);
     chat::add(&dir, "editor", &built.report, Some(built.cost_usd), false);
     Ok((built.report, built.cost_usd))
 }
@@ -481,6 +502,13 @@ fn build_commentary(dir: &Path, id: &str, script: &model::Script, note: &str) ->
 }
 
 #[tauri::command]
+async fn check_videos(app: AppHandle, lines: Vec<String>) -> Result<Vec<import::VideoCheck>, String> {
+    tauri::async_runtime::spawn_blocking(move || import::check_videos(&data_dir(&app)?, &lines))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::Kind>) -> Result<jobs::BuildStatus, String> {
     store::script_dir(&data_dir(&app)?, &id)?;
     jobs::start(app, id, jobs::Work::Build { note, kind })
@@ -501,8 +529,8 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
     let earlier = chat::recent(&dir);
     chat::add(&dir, "producer", request, None, false);
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
-    let research = research::load(&dir);
-    let done = revise::revise(&script, request, focus, &earlier, research.as_ref(), &peaks);
+    let research = casefiles::with_documents(&dir, research::load(&dir).unwrap_or_default());
+    let done = revise::revise(&script, request, focus, &earlier, Some(&research), &peaks);
     let done = match done {
         Ok(done) => done,
         Err(error) => {
@@ -517,12 +545,14 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
         chat::add(&dir, "editor", &error, None, true);
         return Err(error);
     }
+    let before = now.clone();
     now.clips = check_clips(done.clips, now.duration_ms)?;
     now.corrections = done.corrections;
     now.proposals = done.proposals;
     now.revision += 1;
     now.updated_at = now_ms();
     store::write(&dir, &now)?;
+    versions::keep(&dir, "claude", &before, &now);
     chat::add(&dir, "editor", &done.answer, Some(done.cost_usd), false);
     Ok((done.answer, done.cost_usd))
 }
@@ -579,6 +609,7 @@ pub fn correct_word_now(data: &Path, id: &str, revision: u32, word: &str, text: 
     if text.chars().count() > 200 {
         return Err("Keep the word under 200 characters.".into());
     }
+    let before = script.clone();
     if text.is_empty() || text == found.text {
         script.corrections.remove(word);
     } else {
@@ -587,6 +618,7 @@ pub fn correct_word_now(data: &Path, id: &str, revision: u32, word: &str, text: 
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
+    versions::keep(&dir, "you", &before, &script);
     Ok(store::detail(script, &dir))
 }
 
@@ -606,16 +638,66 @@ pub fn set_heading_now(data: &Path, id: &str, revision: u32, heading: &str) -> R
     if heading.chars().count() > 300 || heading.chars().any(char::is_control) {
         return Err("Keep the heading to one line of up to 300 characters.".into());
     }
+    let before = script.clone();
     script.heading = (!heading.is_empty()).then(|| heading.to_string());
     script.revision += 1;
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
+    versions::keep(&dir, "you", &before, &script);
     Ok(store::detail(script, &dir))
 }
 
 #[tauri::command]
 fn set_heading(app: AppHandle, id: String, revision: u32, heading: String) -> Result<ScriptDetail, String> {
     set_heading_now(&data_dir(&app)?, &id, revision, &heading)
+}
+
+pub fn list_versions_now(data: &Path, id: &str) -> Result<Vec<versions::Version>, String> {
+    Ok(versions::list(&store::script_dir(data, id)?))
+}
+
+#[tauri::command]
+fn list_versions(app: AppHandle, id: String) -> Result<Vec<versions::Version>, String> {
+    list_versions_now(&data_dir(&app)?, &id)
+}
+
+pub fn get_version_now(data: &Path, id: &str, version: &str) -> Result<versions::Snapshot, String> {
+    versions::read(&store::script_dir(data, id)?, version)
+}
+
+#[tauri::command]
+fn get_version(app: AppHandle, id: String, version: String) -> Result<versions::Snapshot, String> {
+    get_version_now(&data_dir(&app)?, &id, &version)
+}
+
+/// Makes an earlier version the script again; the restore is a version too.
+/// Spelling fixes on words the transcript no longer has are left out.
+pub fn restore_version_now(data: &Path, id: &str, revision: u32, version: &str) -> Result<ScriptDetail, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    if script.revision != revision {
+        return Err("This script changed. Reload it.".into());
+    }
+    let snapshot = versions::read(&dir, version)?;
+    let at = versions::list(&dir).iter().find(|item| item.id == version).map(|item| item.at).unwrap_or(0);
+    let before = script.clone();
+    script.clips = check_clips(snapshot.clips, script.duration_ms)?;
+    script.corrections = snapshot.corrections.into_iter().filter(|(word, _)| script.words.iter().any(|item| &item.id == word)).collect();
+    script.heading = snapshot.heading;
+    script.proposals = revise::settle(&script.clips, std::mem::take(&mut script.proposals));
+    script.revision += 1;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    versions::keep_restored(&dir, &before, &script, at);
+    Ok(store::detail(script, &dir))
+}
+
+#[tauri::command]
+fn restore_version(app: AppHandle, id: String, revision: u32, version: String) -> Result<ScriptDetail, String> {
+    restore_version_now(&data_dir(&app)?, &id, revision, &version)
 }
 
 #[tauri::command]
@@ -639,9 +721,12 @@ fn check_clips(clips: Vec<Clip>, duration_ms: u64) -> Result<Vec<Clip>, String> 
         if bad_id || bad_range {
             return Err("A clip has invalid boundaries.".into());
         }
+        if clip.notes.len() > 50 || clip.notes.iter().any(|note| note.text.trim().is_empty() || note.text.chars().count() > 2_000 || note.id.is_empty() || note.id.len() > 80) {
+            return Err("A timestamp holds up to 50 comments of up to 2,000 characters.".into());
+        }
         match clip.kind.as_deref() {
             None => {
-                if clip.narration.is_some() || clip.narration_role.is_some() {
+                if clip.narration.is_some() || clip.narration_role.is_some() || clip.reuse.is_some() {
                     return Err("Only a cut-in holds narration.".into());
                 }
             }
@@ -703,6 +788,7 @@ pub fn run() {
             save_settings,
             check_relay,
             claude_status,
+            check_videos,
             start_build,
             start_revision,
             build_status,
@@ -711,6 +797,9 @@ pub fn run() {
             decline_proposal,
             correct_word,
             set_heading,
+            list_versions,
+            get_version,
+            restore_version,
             create_commentary,
             add_source,
             update_source,

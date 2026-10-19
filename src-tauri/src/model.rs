@@ -29,9 +29,36 @@ pub struct Clip {
     /// `intro`, `bridge` or `conclusion`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narration_role: Option<String>,
+    /// On a compilation's transition into a reused case: the link to the
+    /// earlier video, shown as a comment there and never in the narration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse: Option<String>,
+    /// What the producer wrote on a footage clip's timestamp for the editor;
+    /// each goes into the Google Doc as a comment there, as Repack's do.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub text: String,
+    pub at: i64,
 }
 
 pub const CUT_IN_MS: u64 = 3_000;
+
+/// A reused case in a compilation: its link, its title, and how many of the
+/// compilation's own videos come before it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reuse {
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    pub after: usize,
+}
 
 /// A rewrite of narration the producer had already saved, waiting for them
 /// to accept or decline it, as Repack proposes changes to saved narration.
@@ -180,6 +207,10 @@ pub struct Script {
     /// changes; only what it reads as.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub corrections: BTreeMap<String, String>,
+    /// A compilation's reused cases: ones the channel already covered, lifted
+    /// in whole by the editor, so each takes only its transition here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reuses: Vec<Reuse>,
     /// Rewrites of saved narration waiting for the producer's review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<Proposal>,

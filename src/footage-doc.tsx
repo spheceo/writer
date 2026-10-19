@@ -4,7 +4,7 @@ import { assetLinks, BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary,
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import { wordDiff } from "./diff";
-import type { Clip, Proposal, Script } from "./types";
+import type { Clip, Note, Proposal, Script } from "./types";
 import { Icon } from "./ui";
 
 /**
@@ -24,6 +24,7 @@ export function FootageDoc({
   onNarration,
   onHeading,
   onDecline,
+  onNotes,
   onPreview,
 }: {
   script: Script;
@@ -38,6 +39,8 @@ export function FootageDoc({
   onHeading: (text: string) => void;
   /** Declines a proposed rewrite. Accepting writes it as the narration. */
   onDecline: (proposal: Proposal) => void;
+  /** The comments on a timestamp, as they now stand. */
+  onNotes: (id: string, notes: Note[]) => void;
   onPreview: (index: number) => void;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
@@ -51,6 +54,16 @@ export function FootageDoc({
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [active, setActive] = useState<string | null>(null);
+  // The timestamp last clicked, which can take a comment, as in Repack.
+  const [chosen, setChosen] = useState<string | null>(null);
+  // The timestamp a comment is being written on, and its words so far.
+  const [writing, setWriting] = useState<{ id: string; text: string } | null>(null);
+  const saveNote = () => {
+    if (!writing?.text.trim()) return setWriting(null);
+    const clip = clips.find((item) => item.id === writing.id);
+    if (clip) onNotes(clip.id, [...(clip.notes ?? []), { id: crypto.randomUUID(), text: writing.text.trim().slice(0, 2000), at: Date.now() }]);
+    setWriting(null);
+  };
   const clicked = useRef(false);
   useEffect(() => window.localStorage.setItem(`writer.comments.${zoomKey}`, comments ? "on" : "off"), [zoomKey, comments]);
 
@@ -88,7 +101,7 @@ export function FootageDoc({
 
   const rail = comments
     ? parts.flatMap((block) => [
-        ...block.clips.map(({ clip }) => (
+        ...block.clips.flatMap(({ clip }) => [
           <button
             type="button"
             className="comment"
@@ -99,6 +112,7 @@ export function FootageDoc({
             onMouseLeave={() => setActive(null)}
             onClick={() => {
               clicked.current = true;
+              setChosen(clip.id);
               onPreview(block.clips.find((item) => item.clip.id === clip.id)?.index ?? 0);
             }}
           >
@@ -107,8 +121,77 @@ export function FootageDoc({
               <span className="comment-author">{COMMENT_AUTHOR}</span>
             </span>
             <span className="card-text">{boundary(clip, script.words, script.corrections)}</span>
-          </button>
-        )),
+          </button>,
+          ...(clip.notes ?? []).map((written) => (
+            <div className="comment human" key={written.id} data-card={clip.id}>
+              <span className="card-head">
+                <span className="avatar">Y</span>
+                <span className="comment-author">You</span>
+                <button
+                  type="button"
+                  className="link-button faint card-remove"
+                  aria-label="Delete comment"
+                  title="Delete comment"
+                  disabled={disabled}
+                  onClick={() => onNotes(clip.id, (clip.notes ?? []).filter((item) => item.id !== written.id))}
+                >
+                  ×
+                </button>
+              </span>
+              <span className="card-text">{written.text}</span>
+              <span className="faint card-where">Goes into the Google Doc on this timestamp, as {COMMENT_AUTHOR}.</span>
+            </div>
+          )),
+          writing?.id === clip.id ? (
+            <form
+              className="comment human writing"
+              key={`write-${clip.id}`}
+              data-card={clip.id}
+              onSubmit={(event) => {
+                event.preventDefault();
+                saveNote();
+              }}
+            >
+              <textarea
+                // biome-ignore lint/a11y/noAutofocus: opened by the button just clicked
+                autoFocus
+                rows={3}
+                maxLength={2000}
+                value={writing.text}
+                placeholder="A note to the editor on this timestamp…"
+                onChange={(event) => setWriting({ id: clip.id, text: event.target.value })}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setWriting(null);
+                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) saveNote();
+                }}
+              />
+              <span className="card-actions">
+                <button type="button" className="sm ghost" onClick={() => setWriting(null)}>Cancel</button>
+                <button type="submit" className="sm primary" disabled={!writing.text.trim()}>Comment</button>
+              </span>
+            </form>
+          ) : chosen === clip.id && !disabled ? (
+            <button type="button" className="comment add" key={`add-${clip.id}`} data-card={clip.id} onClick={() => setWriting({ id: clip.id, text: "" })}>
+              + Comment on this timestamp
+            </button>
+          ) : null,
+        ]),
+        ...(block.cue?.clip.reuse
+          ? [
+              <div className="comment" key={`reuse-${block.cue.clip.id}`} data-card={`cue-${block.cue.clip.id}`}>
+                <span className="card-head">
+                  <span className="avatar bot">G</span>
+                  <span className="comment-author">{COMMENT_AUTHOR}</span>
+                </span>
+                <span className="card-text">
+                  Reuse:{" "}
+                  <a href={block.cue.clip.reuse} target="_blank" rel="noreferrer">
+                    {block.cue.clip.reuse}
+                  </a>
+                </span>
+              </div>,
+            ]
+          : []),
         ...(block.cue && blurSpans(block.cue.clip.narration ?? "").length
           ? [
               <div className="comment" key={`blur-${block.cue.clip.id}`} data-card={`cue-${block.cue.clip.id}`}>
@@ -205,6 +288,7 @@ export function FootageDoc({
                           aria-label={`Preview ${clipRange(clip, script.parts, " to ")}`}
                           onClick={() => {
                             clicked.current = true;
+                            setChosen(clip.id);
                             onPreview(at);
                           }}
                         >
@@ -223,7 +307,7 @@ export function FootageDoc({
                     label={`Narration ${index + 1}`}
                     value={block.cue.clip.narration ?? ""}
                     disabled={disabled}
-                    placeholder="Write the narration for this cut-in…"
+                    placeholder={block.cue.clip.reuse ? "REUSE (a reused case's transition; write it, or leave REUSE)" : "Write the narration for this cut-in…"}
                     onCommit={(text) => block.cue && onNarration(block.cue.clip.id, text)}
                   />
                   {(() => {

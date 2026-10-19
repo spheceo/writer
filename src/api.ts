@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Summary } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -39,16 +39,17 @@ export const listScripts = () =>
 export const getScript = (id: string) =>
   inTauri() ? invoke<Script>("get_script", { id }) : http<Script>(`/api/scripts/${id}`);
 
-export const importFile = (path: string) =>
-  inTauri() ? invoke<Script>("import_file", { path }) : http<Script>("/api/scripts/file", json({ path }));
+/** The footage, and an optional article about the case, read in place of research, as Repack takes it. */
+export const importFile = (path: string, article?: string) =>
+  inTauri() ? invoke<Script>("import_file", { path, article: article || null }) : http<Script>("/api/scripts/file", json({ path, article }));
 
-export const importYoutube = (url: string) =>
+export const importYoutube = (url: string, article?: string) =>
   inTauri()
-    ? invoke<Script>("import_youtube", { url })
-    : http<Script>("/api/scripts/youtube", json({ url }));
+    ? invoke<Script>("import_youtube", { url, article: article || null })
+    : http<Script>("/api/scripts/youtube", json({ url, article }));
 
-export const importDrive = (url: string) =>
-  inTauri() ? invoke<Script>("import_drive", { url }) : http<Script>("/api/scripts/drive", json({ url }));
+export const importDrive = (url: string, article?: string) =>
+  inTauri() ? invoke<Script>("import_drive", { url, article: article || null }) : http<Script>("/api/scripts/drive", json({ url, article }));
 
 export const renameScript = (id: string, title: string) =>
   inTauri()
@@ -133,6 +134,19 @@ export const setHeading = (id: string, revision: number, heading: string) =>
     ? invoke<Script>("set_heading", { id, revision, heading })
     : http<Script>(`/api/scripts/${id}/heading`, { ...json({ revision, heading }), method: "PUT" });
 
+/** The script's versions, oldest first. */
+export const listVersions = (id: string) =>
+  inTauri() ? invoke<Version[]>("list_versions", { id }) : http<Version[]>(`/api/scripts/${id}/versions`);
+
+export const getVersion = (id: string, version: string) =>
+  inTauri() ? invoke<Snapshot>("get_version", { id, version }) : http<Snapshot>(`/api/scripts/${id}/versions/${version}`);
+
+/** Makes an earlier version the script again. */
+export const restoreVersion = (id: string, revision: number, version: string) =>
+  inTauri()
+    ? invoke<Script>("restore_version", { id, revision, version })
+    : http<Script>(`/api/scripts/${id}/versions/${version}/restore`, json({ revision }));
+
 export const getResearch = (id: string) =>
   inTauri() ? invoke<Research | null>("get_research", { id }) : http<Research | null>(`/api/scripts/${id}/research`);
 
@@ -142,10 +156,15 @@ export const researchAgain = (id: string) =>
     ? invoke<Research>("research_again", { id })
     : http<Research>(`/api/scripts/${id}/research`, { method: "POST" });
 
-export const importCompilation = (title: string, urls: string[]) =>
+/** Videos joined in order: a compilation, one case each, or (`kase`) one Courtroom case across them. */
+export const importCompilation = (title: string, urls: string[], kase = false) =>
   inTauri()
-    ? invoke<Script>("import_compilation", { title, urls })
-    : http<Script>("/api/scripts/compilation", json({ title, urls }));
+    ? invoke<Script>("import_compilation", { title, urls, case: kase })
+    : http<Script>("/api/scripts/compilation", json({ title, urls, case: kase }));
+
+/** A compilation's lines checked before anything downloads, as Repack checks its videos. */
+export const checkVideos = (lines: string[]) =>
+  inTauri() ? invoke<VideoCheck[]>("check_videos", { lines }) : http<VideoCheck[]>("/api/videos/check", json({ lines }));
 
 export const buildStatus = (id: string) =>
   inTauri()
