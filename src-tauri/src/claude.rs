@@ -139,7 +139,7 @@ fn plan_schema() -> String {
 /// Opus plans the cut and writes every paragraph in one print-mode turn, with
 /// tools off. A refused plan gets one repair turn on the same session, so the
 /// cached evidence is not paid for twice. The user's Claude login pays.
-pub fn build(script: &Script, note: &str, research: Option<&Research>) -> Result<Built, String> {
+pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[f32]) -> Result<Built, String> {
     if script.words.is_empty() {
         return Err("Transcribe the footage before building the script.".into());
     }
@@ -164,15 +164,34 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>) -> Result
     let mut turn = ask_patiently(&system, &schema, &prompt, None)?;
     cost += turn.cost_usd;
     let mut repairs = 0;
+    // A plan that passed but missed its target (a compilation's pages, a FOIA
+    // cut's floor), kept in case a repair does no better, as Repack's build
+    // goes on to bring an off-target cut in rather than refuse it.
+    let mut best: Option<Built> = None;
     loop {
         let refusal = match &turn.plan {
-            Some(plan) => match compile(script, plan) {
-                Ok(clips) => return Ok(Built { clips, report: report(plan), cost_usd: cost }),
+            Some(plan) => match compile_with(script, plan, peaks) {
+                Ok(done) => {
+                    let mut said = report(plan);
+                    said.push_str(&format!("\n\n{}", cleanup_line(&done)));
+                    let miss = off_target(script, &format, &done);
+                    let built = Built { clips: done.clips, report: said, cost_usd: cost };
+                    match miss {
+                        None => return Ok(built),
+                        Some(miss) => {
+                            best = Some(Built { report: format!("{}\n\n{miss}", built.report), ..built });
+                            format!("The plan passed but is off target: {miss} Send the complete corrected plan.")
+                        }
+                    }
+                }
                 Err(refusal) => format!("The app refused that plan: {refusal} Send the corrected complete plan."),
             },
             None => "Your answer carried no plan. Send the complete plan as the structured answer.".to_string(),
         };
         if repairs == 2 || turn.session.is_none() {
+            if let Some(best) = best {
+                return Ok(Built { cost_usd: cost, ..best });
+            }
             return Err(match &turn.plan {
                 Some(_) => format!("Claude's plan was refused again. {}", refusal.trim_start_matches("The app refused that plan: ")),
                 None => "Claude did not send a plan. Build again; nothing was changed.".into(),
@@ -317,6 +336,41 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
     })
 }
 
+/// How a cut that passed misses its format's target, if it does: a
+/// compilation outside 6 to 7 Letter pages, a FOIA cut under ten minutes.
+fn off_target(script: &Script, format: &Format, done: &Compiled) -> Option<String> {
+    if format.compilation {
+        let pages = crate::pages::count(script, &done.clips);
+        let (least, most) = crate::pages::COMPILATION_PAGES;
+        if pages < least || pages > most {
+            let change = if pages > most { "Shorten it: tighter cut-ins and fewer or shorter footage ranges" } else { "Lengthen it: fuller cut-ins and more of the strongest footage" };
+            return Some(format!("The script runs {pages} Letter pages; a compilation's runs {least} to {most}. {change}, keeping every case."));
+        }
+    }
+    if format.foia() && done.below_floor {
+        return Some("The cut runs under a FOIA video's ten-minute floor even with every pause kept. Keep more of the footage.".into());
+    }
+    None
+}
+
+/// What the clean-up did, as Repack's build report says it.
+fn cleanup_line(done: &Compiled) -> String {
+    let cut_ins = done.clips.iter().filter(|clip| clip.is_cut_in()).count();
+    let length: u64 = done.clips.iter().map(|clip| clip.end_ms - clip.start_ms).sum();
+    let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut line = format!(
+        "Built the script: {} written, {} long. Fixed {} and tightened {}.",
+        plural(cut_ins, "cut-in", "cut-ins"),
+        clock(length),
+        plural(done.fixed, "clip edge", "clip edges"),
+        plural(done.pauses + done.stalls, "quiet pause", "quiet pauses"),
+    );
+    if done.below_floor {
+        line.push_str(" It runs under a FOIA video's ten minutes even with every pause kept; it needs more footage.");
+    }
+    line
+}
+
 fn report(plan: &Value) -> String {
     clip_text(plan["report"].as_str().unwrap_or(""), 2_000)
 }
@@ -444,14 +498,28 @@ fn clock(ms: u64) -> String {
     }
 }
 
-const LEAD_MS: u64 = 150;
-const TAIL_MS: u64 = 400;
-const CLEAR_MS: u64 = 60;
+/// A plan made into a cut, and what the clean-up did to it.
+pub struct Compiled {
+    pub clips: Vec<Clip>,
+    /// Clip edges moved to where a thought starts or ends.
+    pub fixed: usize,
+    /// Quiet pauses cut to a beat, and stalls cut inside intro clips.
+    pub pauses: usize,
+    pub stalls: usize,
+    /// A FOIA cut short of its ten minutes even with every pause kept.
+    pub below_floor: bool,
+}
+
+#[cfg(test)]
+pub fn compile(script: &Script, plan: &Value) -> Result<Vec<Clip>, String> {
+    compile_with(script, plan, &[]).map(|done| done.clips)
+}
 
 /// Repack's compileScriptPlan: check the plan's shape for its format, map
-/// word IDs to source times, give each edge room to breathe, then tighten
-/// long pauses the way that format does.
-pub fn compile(script: &Script, plan: &Value) -> Result<Vec<Clip>, String> {
+/// word IDs to source times with room to breathe, fix clip edges that miss a
+/// thought, then tighten quiet pauses the way that format does, read from the
+/// footage's 20 ms `peaks` (none: every pause between words counts as quiet).
+pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Compiled, String> {
     let format = Format::new(script.kind, script.compilation, &script.title);
     let items = plan["items"].as_array().ok_or("The plan has no items.")?;
     if items.is_empty() || items.len() > 500 {
@@ -525,7 +593,7 @@ pub fn compile(script: &Script, plan: &Value) -> Result<Vec<Clip>, String> {
                     }
                     _ => (0, script.duration_ms),
                 };
-                let (start_ms, end_ms) = breathe(&script.words, a.start_ms, b.end_ms, script.duration_ms);
+                let (start_ms, end_ms) = crate::tidy::breathe(&script.words, a.start_ms, b.end_ms, script.duration_ms);
                 let (start_ms, end_ms) = (start_ms.max(lo), end_ms.min(hi.max(b.end_ms)));
                 clips.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms, end_ms, ..Default::default() });
             }
@@ -572,7 +640,48 @@ pub fn compile(script: &Script, plan: &Value) -> Result<Vec<Clip>, String> {
             ));
         }
     }
-    Ok(tighten(script, clips, &format, opening))
+    Ok(clean_up(script, clips, &format, opening, peaks))
+}
+
+/// Polish the edges, relax a Courtroom cut's second half, then tighten its
+/// quiet pauses; a FOIA cut keeps longer pauses rather than go under ten
+/// minutes.
+fn clean_up(script: &Script, clips: Vec<Clip>, format: &Format, opening: Opening, peaks: &[f32]) -> Compiled {
+    let (mut clips, fixed) = crate::tidy::polish(clips, &script.words, &script.corrections, script.duration_ms);
+    let relaxed = format.kind == Kind::Courtroom;
+    if relaxed {
+        clips = crate::tidy::join_late(clips, &script.words, &script.speakers, &script.parts, format.compilation);
+    }
+    let cut_ins = clips.iter().filter(|clip| clip.is_cut_in()).count();
+    // Which footage blocks are the intro's quick proof, cut tight.
+    let tight: std::ops::Range<usize> = if format.foia() || format.courtroom() {
+        0..intro_blocks(format, opening, cut_ins).max(1)
+    } else if format.compilation && format.style == Style::When {
+        0..2
+    } else {
+        1..2
+    };
+    let footage = crate::tidy::Footage {
+        words: &script.words,
+        peaks,
+        parts: &script.parts,
+        duration_ms: script.duration_ms,
+        compilation: format.compilation,
+        relaxed,
+    };
+    let intro = |block: usize| tight.contains(&block);
+    let run = |beat: u64| crate::tidy::tighten(&footage, &clips, beat, &intro);
+    let length = |cut: &[Clip]| cut.iter().map(|clip| clip.end_ms - clip.start_ms).sum::<u64>();
+    let (beat, below_floor) = if format.foia() {
+        match crate::tidy::beat_for_floor(|beat| length(&run(beat).clips), crate::tidy::PAUSE_BEAT_MS, crate::tidy::FOIA_FLOOR_MS, script.duration_ms) {
+            Some(beat) => (beat, false),
+            None => (crate::tidy::PAUSE_BEAT_MS, true),
+        }
+    } else {
+        (crate::tidy::PAUSE_BEAT_MS, false)
+    };
+    let done = run(beat);
+    Compiled { clips: done.clips, fixed, pauses: done.pauses, stalls: done.stalls, below_floor }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -673,19 +782,6 @@ fn word_at(words: &[Word], id: Option<&str>) -> Option<usize> {
     (index < words.len()).then_some(index)
 }
 
-/// A short lead-in and tail that never reaches another word.
-fn breathe(words: &[Word], start_ms: u64, end_ms: u64, duration_ms: u64) -> (u64, u64) {
-    let next = words.iter().find(|word| word.start_ms >= end_ms);
-    let prev = words.iter().rev().find(|word| word.end_ms <= start_ms);
-    let floor = prev.map(|word| word.end_ms + CLEAR_MS).unwrap_or(0);
-    let ceiling = next
-        .map(|word| word.start_ms.saturating_sub(CLEAR_MS))
-        .unwrap_or(duration_ms.max(end_ms));
-    let start = start_ms.min(start_ms.saturating_sub(LEAD_MS).max(floor));
-    let end = end_ms.max((end_ms + TAIL_MS).min(ceiling));
-    (start, end)
-}
-
 /// Footage runs, each ended by its cut-in.
 fn blocks(clips: &[Clip]) -> Vec<Vec<&Clip>> {
     let mut out = vec![Vec::new()];
@@ -728,124 +824,6 @@ fn replayed_ms(clip: &Clip, later: &[&Clip]) -> u64 {
         reached = reached.max(to);
     }
     total
-}
-
-/// Repack's floor for a FOIA cut.
-const FOIA_FLOOR_MS: u64 = 10 * 60_000;
-
-/// Long pauses inside a clip become a beat: one second, or two before an
-/// answer. Intro clips that should be tight carry no pause over about a
-/// second. Courtroom relaxes later in the cut: clips under 10 s apart join,
-/// and pauses under 5 s stay. A FOIA cut is never tightened under ten minutes.
-fn tighten(script: &Script, clips: Vec<Clip>, format: &Format, opening: Opening) -> Vec<Clip> {
-    let original = clips.clone();
-    let cut_ins = clips.iter().filter(|clip| clip.is_cut_in()).count();
-    // Which footage blocks are tight intro blocks.
-    let tight: std::ops::Range<usize> = if format.foia() || format.courtroom() {
-        0..intro_blocks(format, opening, cut_ins).max(1)
-    } else if format.compilation && format.style == Style::When {
-        0..2
-    } else {
-        1..2
-    };
-    // Where Courtroom starts to relax, on the edited clock.
-    let total: u64 = clips.iter().map(|clip| clip.end_ms - clip.start_ms).sum();
-    let relax_from = if format.kind == Kind::Courtroom {
-        let mut at = 0;
-        let mut transitions = 0;
-        let mut found = None;
-        let mut footage = false;
-        for clip in &clips {
-            if clip.is_cut_in() {
-                if !footage {
-                    transitions += 1;
-                    if transitions == 2 && format.compilation {
-                        found = Some(at);
-                    }
-                }
-                footage = false;
-            } else {
-                footage = true;
-            }
-            at += clip.end_ms - clip.start_ms;
-        }
-        Some(found.unwrap_or(total / 2))
-    } else {
-        None
-    };
-
-    let mut out: Vec<Clip> = Vec::with_capacity(clips.len());
-    let mut block = 0;
-    let mut at = 0;
-    for clip in clips {
-        let length = clip.end_ms - clip.start_ms;
-        if clip.is_cut_in() {
-            block += 1;
-            at += length;
-            out.push(clip);
-            continue;
-        }
-        let relaxed = relax_from.is_some_and(|from| at >= from);
-        at += length;
-        // Courtroom, relaxed: a clip under 10 s after the last, in the same
-        // recording, joins it, keeping the footage between.
-        if relaxed {
-            if let Some(previous) = out.last_mut().filter(|previous| !previous.is_cut_in()) {
-                let same = part_at(&script.parts, previous.start_ms) == part_at(&script.parts, clip.start_ms);
-                if same && clip.start_ms >= previous.end_ms && clip.start_ms - previous.end_ms < 10_000 {
-                    previous.end_ms = clip.end_ms;
-                    continue;
-                }
-            }
-        }
-        let intro = tight.contains(&block);
-        let inside: Vec<&Word> = script
-            .words
-            .iter()
-            .filter(|word| word.start_ms >= clip.start_ms && word.end_ms <= clip.end_ms)
-            .collect();
-        let mut start = clip.start_ms;
-        let mut first = true;
-        for pair in inside.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            let gap = b.start_ms.saturating_sub(a.end_ms);
-            let answer = a.speaker != b.speaker;
-            let (limit, beat) = if intro {
-                (1_000, 600)
-            } else if relaxed {
-                (5_000, 2_000)
-            } else if answer {
-                (2_000, 2_000)
-            } else {
-                (2_000, 1_000)
-            };
-            if gap <= limit {
-                continue;
-            }
-            out.push(Clip {
-                id: if first { clip.id.clone() } else { uuid::Uuid::new_v4().to_string() },
-                start_ms: start,
-                end_ms: a.end_ms + beat / 2,
-                ..Default::default()
-            });
-            first = false;
-            start = b.start_ms - beat / 2;
-        }
-        out.push(Clip {
-            id: if first { clip.id } else { uuid::Uuid::new_v4().to_string() },
-            start_ms: start,
-            end_ms: clip.end_ms,
-            ..Default::default()
-        });
-    }
-    if format.foia() {
-        let tightened: u64 = out.iter().map(|clip| clip.end_ms - clip.start_ms).sum();
-        if tightened < FOIA_FLOOR_MS {
-            // Under the floor: keep the pauses rather than go below it.
-            return original;
-        }
-    }
-    out
 }
 
 fn extract_json(text: &str) -> Option<Value> {

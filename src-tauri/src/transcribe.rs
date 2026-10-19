@@ -47,6 +47,9 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
     // the footage is still heard, in pieces cut on the clock.
     let peaks = media::peaks(source).unwrap_or_default();
     script.overview = media::overview(&peaks, 800);
+    if !peaks.is_empty() {
+        crate::tidy::keep_peaks(dir, &peaks);
+    }
     // A joined case is heard a recording at a time: no piece spans two, so
     // one recording's voices are never matched with another's.
     let pieces: Vec<(u64, u64)> = if script.parts.len() > 1 {

@@ -10,11 +10,13 @@ mod jobs;
 mod media;
 mod net;
 mod model;
+mod pages;
 mod proc;
 mod research;
 mod settings;
 mod speakers;
 mod store;
+mod tidy;
 mod tools;
 mod transcribe;
 mod watch;
@@ -421,8 +423,10 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
             research::run(&script, &dir)
         }
     };
+    // The sound, so pauses with speech the transcript missed are kept.
+    let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
-    let mut built = claude::build(&script, note, Some(&research))?;
+    let mut built = claude::build(&script, note, Some(&research), &peaks)?;
     let found = match (&research.problem, research.articles.len()) {
         (_, 0) => format!("Research: {}", research.problem.clone().unwrap_or_else(|| "nothing found.".into())),
         (_, n) => format!(
@@ -438,6 +442,13 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     script.updated_at = now_ms();
     store::write(&dir, &script)?;
     Ok((built.report, built.cost_usd))
+}
+
+/// The footage a script plays: its original where it is still on this Mac,
+/// else its preview.
+fn footage_path(dir: &Path, script: &model::Script) -> PathBuf {
+    let original = PathBuf::from(&script.original_path);
+    if original.is_file() { original } else { store::proxy_path(dir) }
 }
 
 /// A commentary script is written from its sources alone: no speakers to
