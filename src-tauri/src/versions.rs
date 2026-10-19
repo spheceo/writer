@@ -162,7 +162,7 @@ fn try_keep(dir: &Path, author: &str, before: &Snapshot, after: &Snapshot, resto
         list.push(Version { id, at: now - 1, author: "before".into(), summary: "Before the first recorded edit".into(), base: None, restored: None });
     }
     let last = list.last().cloned();
-    let merge = said.is_none() && last.as_ref().is_some_and(|last| last.author == author && now - last.at < MERGE_MS);
+    let merge = said.is_none() && last.as_ref().is_some_and(|last| last.author == author && last.restored.is_none() && now - last.at < MERGE_MS);
     if merge {
         let last = last.expect("merging needs a version");
         let base = last.base.as_deref().and_then(|base| read(dir, base).ok()).unwrap_or_else(|| before.clone());

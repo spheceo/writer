@@ -247,6 +247,10 @@ pub fn polish(clips: Vec<Clip>, words: &[Word], corrections: &BTreeMap<String, S
                     start_ms = word.start_ms;
                 }
             }
+            // Fixes at both ends of a short clip can cross: then it keeps its edges.
+            if end_ms < start_ms + 200 {
+                (start_ms, end_ms) = (clip.start_ms, clip.end_ms);
+            }
             let first = words.iter().find(|word| (word.start_ms + word.end_ms) / 2 >= start_ms);
             let last = words.iter().rev().find(|word| (word.start_ms + word.end_ms) / 2 < end_ms);
             let (Some(first), Some(last)) = (first, last) else { return Clip { start_ms, end_ms, ..clip } };
@@ -631,6 +635,14 @@ mod tests {
         assert_eq!(count, 1);
         // Back to "No." with room that stops short of "Yeah,".
         assert_eq!((fixed[0].start_ms, fixed[0].end_ms), (0, 440));
+    }
+
+    #[test]
+    fn fixes_that_cross_leave_a_short_clip_as_it_was() {
+        // Starts on a filler ("Okay.") and ends on one ("so"), whose fix goes back to "Okay.".
+        let said = words(&[("Okay.", "a", 0, 300), ("John,", "a", 400, 700), ("so", "a", 800, 1_000), ("Next.", "b", 3_000, 3_300)]);
+        let (fixed, _) = polish(vec![clip("c", 0, 1_100)], &said, &BTreeMap::new(), 10_000);
+        assert!(fixed[0].end_ms > fixed[0].start_ms);
     }
 
     #[test]

@@ -26,8 +26,17 @@ pub fn proxy_path(dir: &Path) -> PathBuf {
     dir.join("proxy.mp4")
 }
 
-pub fn detail(mut script: Script, dir: &Path) -> ScriptDetail {
+pub fn detail(script: Script, dir: &Path) -> ScriptDetail {
     let proxy = proxy_path(dir);
+    ScriptDetail {
+        proxy_path: proxy.is_file().then(|| proxy.to_string_lossy().into_owned()),
+        script,
+    }
+}
+
+pub fn read(dir: &Path) -> Result<Script, String> {
+    let bytes = fs::read(dir.join("script.json")).map_err(|_| "That script is missing.".to_string())?;
+    let mut script: Script = serde_json::from_slice(&bytes).map_err(|_| "That script could not be read.".to_string())?;
     // A script joined before its recordings kept their links gets them from
     // the import's own list, so its timestamps link as a new one's do.
     if script.parts.iter().any(|part| part.url.is_none()) {
@@ -37,15 +46,7 @@ pub fn detail(mut script: Script, dir: &Path) -> ScriptDetail {
             }
         }
     }
-    ScriptDetail {
-        proxy_path: proxy.is_file().then(|| proxy.to_string_lossy().into_owned()),
-        script,
-    }
-}
-
-pub fn read(dir: &Path) -> Result<Script, String> {
-    let bytes = fs::read(dir.join("script.json")).map_err(|_| "That script is missing.".to_string())?;
-    serde_json::from_slice(&bytes).map_err(|_| "That script could not be read.".to_string())
+    Ok(script)
 }
 
 pub fn write(dir: &Path, script: &Script) -> Result<(), String> {

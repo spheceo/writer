@@ -854,7 +854,9 @@ function ImportDialog({
                       <span className="video-check-what">
                         <strong className="truncate" title={row.title || row.url}>{row.title || row.url}</strong>
                         <span className={row.problem && !row.reuse ? "bad" : "faint"}>
-                          {row.reuse ? "Reused case: not imported; it takes only its transition." : row.problem ?? [row.durationMs ? clock(row.durationMs) : "", row.channel].filter(Boolean).join(" · ")}
+                          {row.reuse
+                            ? "Reused case: not imported; it takes only its transition."
+                            : (row.problem ?? row.warning ?? [row.durationMs ? clock(row.durationMs) : "", row.channel].filter(Boolean).join(" · "))}
                         </span>
                       </span>
                       <label className="faint toggle" title="A case the channel already covered: not imported, it takes only its transition">

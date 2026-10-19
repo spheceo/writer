@@ -444,7 +444,10 @@ impl Cloud {
             let (Some(name), Some(key)) = (file["name"].as_str(), file["key"].as_str()) else { continue };
             let size = file["size"].as_u64().unwrap_or(0);
             let Some(path) = inside(&dir, name) else { continue };
-            let present = fs::metadata(&path).map(|meta| meta.len() == size).unwrap_or(false);
+            // A small JSON file (the chat, versions, research) can change and
+            // keep its size, so on a newer script it is always fetched again.
+            let small_json = name.ends_with(".json") && size < 2_000_000;
+            let present = !small_json && fs::metadata(&path).map(|meta| meta.len() == size).unwrap_or(false);
             if !present {
                 self.download(&id, name, key, size, &path)?;
             }

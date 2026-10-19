@@ -18,7 +18,7 @@ type Drag =
   | { mode: "trim"; id: string; edge: "in" | "out"; x: number; clip: Clip; ms: number; snapped: boolean }
   | { mode: "bar"; x: number; scroll: number }
   /** Clips being dragged to a new place: where they would land, once the pointer has moved. */
-  | { mode: "move"; ids: string[]; clicked: string; x: number; moved: boolean; to: number | null };
+  | { mode: "move"; ids: string[]; clicked: string; x: number; moved: boolean; to: number | null; shrink: boolean };
 
 /**
  * The sequence, as Repack draws it: a time ruler, the picture track (footage
@@ -214,7 +214,7 @@ export function Timeline({
       if (drag.moved && drag.to !== null) {
         const next = moveItems(clips, drag.ids, drag.to);
         if (next !== clips) onEdit(next);
-      } else if (drag.ids.length > 1) onSelect([drag.clicked]);
+      } else if (drag.shrink) onSelect([drag.clicked]);
     }
     setDrag(null);
   };
@@ -342,7 +342,7 @@ export function Timeline({
                             : [clip.id];
                         onSelect(next);
                         if (disabled || !next.includes(clip.id) || event.button !== 0) return;
-                        setDrag({ mode: "move", ids: clips.filter((item) => next.includes(item.id)).map((item) => item.id), clicked: clip.id, x: event.clientX, moved: false, to: null });
+                        setDrag({ mode: "move", ids: clips.filter((item) => next.includes(item.id)).map((item) => item.id), clicked: clip.id, x: event.clientX, moved: false, to: null, shrink: !many && selected.length > 1 && selected.includes(clip.id) });
                       }}
                       onDoubleClick={() => player?.seek(starts[index])}
                     >

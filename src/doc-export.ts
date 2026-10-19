@@ -182,6 +182,8 @@ export function footageContent(script: Script, copy = false): DocContent {
     // A reused case with nothing written on it still prints a word for its link's comment.
     const narration = block.cue?.clip.narration?.trim() || (block.cue?.clip.reuse ? REUSE_MARK : "");
     if (block.cue && narration && isCutIn(block.cue.clip)) {
+      // Running on, a cut-in with no footage before it still needs a space after what came before.
+      if (inline && content.text && !/\s$/.test(content.text)) append(" ");
       const from = here();
       if (block.cue.clip.reuse) note(from, from + narration.length, `Reuse: ${block.cue.clip.reuse}`);
       for (const [a, b] of blurSpans(narration)) note(from + a, from + b, BLUR_NOTE);

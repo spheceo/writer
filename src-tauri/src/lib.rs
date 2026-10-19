@@ -429,7 +429,11 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     if script.speakers.is_empty() {
         jobs::stage(id, "Naming the speakers");
         if speakers::identify(&mut script).is_ok() {
-            store::write(&dir, &script)?;
+            // Read again: only the names and suspects are this step's to write.
+            let mut now = store::read(&dir)?;
+            now.speakers = script.speakers.clone();
+            now.suspects = script.suspects.clone();
+            store::write(&dir, &now)?;
         }
     }
     let research = match research::load(&dir).filter(|found| !found.articles.is_empty() || found.problem.is_none()) {
@@ -468,7 +472,13 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     built.report = format!("{}\n\n{found}", built.report.trim());
     let mut script = store::read(&dir)?;
     let before = script.clone();
-    script.clips = check_clips(built.clips, script.duration_ms)?;
+    script.clips = match check_clips(built.clips, script.duration_ms) {
+        Ok(clips) => clips,
+        Err(error) => {
+            chat::add(&dir, "editor", &error, None, true);
+            return Err(error);
+        }
+    };
     script.proposals.clear();
     script.revision += 1;
     script.updated_at = now_ms();
@@ -546,7 +556,14 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
         return Err(error);
     }
     let before = now.clone();
-    now.clips = check_clips(done.clips, now.duration_ms)?;
+    now.clips = match check_clips(done.clips, now.duration_ms) {
+        Ok(clips) => clips,
+        Err(error) => {
+            let error = format!("Claude's edits left the timeline unusable ({error}), so nothing was applied. Ask again.");
+            chat::add(&dir, "editor", &error, None, true);
+            return Err(error);
+        }
+    };
     now.corrections = done.corrections;
     now.proposals = done.proposals;
     now.revision += 1;

@@ -250,4 +250,4 @@ export type Version = { id: string; at: number; author: "you" | "claude" | "befo
 export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; heading: string | null };
 
 /** A compilation's line, checked before anything downloads. */
-export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null };
+export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };

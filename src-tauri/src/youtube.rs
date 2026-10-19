@@ -95,12 +95,17 @@ pub struct Probe {
     pub channel: String,
     pub duration_ms: Option<u64>,
     pub problem: Option<String>,
+    /// Something that couldn't be checked but may still import (through the proxy).
+    pub warning: Option<String>,
 }
 
 pub fn probe(url: &str) -> Probe {
     let said = match proc::run("yt-dlp", &["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", url], Duration::from_secs(90)) {
         Ok(text) => text,
-        Err(error) => return Probe { problem: Some(probe_trouble(&error)), ..Default::default() },
+        Err(error) => {
+            let (said, blocking) = probe_trouble(&error);
+            return if blocking { Probe { problem: Some(said), ..Default::default() } } else { Probe { warning: Some(said), ..Default::default() } };
+        }
     };
     let Ok(info) = serde_json::from_str::<serde_json::Value>(said.trim()) else {
         return Probe { problem: Some("YouTube didn't say what this video is.".into()), ..Default::default() };
@@ -122,24 +127,26 @@ pub fn probe(url: &str) -> Probe {
     } else {
         None
     };
-    Probe { title, channel, duration_ms, problem }
+    Probe { title, channel, duration_ms, problem, warning: None }
 }
 
-/// yt-dlp's failure as a reason a person can act on.
-fn probe_trouble(error: &str) -> String {
+/// yt-dlp's failure as a reason a person can act on, and whether it stops
+/// the import (a sign-in or connection trouble may not: the download can go
+/// through the proxy).
+fn probe_trouble(error: &str) -> (String, bool) {
     let lower = error.to_lowercase();
     if lower.contains("private video") {
-        "It's private.".into()
+        ("It's private.".into(), true)
     } else if lower.contains("confirm your age") || lower.contains("age-restricted") || lower.contains("inappropriate") {
-        "It's age-restricted, so it can't be downloaded.".into()
-    } else if lower.contains("unavailable") || lower.contains("removed") || lower.contains("does not exist") || lower.contains("terminated") {
-        "It's no longer available.".into()
+        ("It's age-restricted, so it can't be downloaded.".into(), true)
     } else if lower.contains("not a bot") || lower.contains("sign in") {
-        "YouTube asked this Mac to sign in, so it couldn't be checked. It may still import through the proxy.".into()
+        ("YouTube asked this Mac to sign in, so it couldn't be checked. It should still import through the proxy.".into(), false)
+    } else if lower.contains("unavailable") || lower.contains("removed") || lower.contains("does not exist") || lower.contains("terminated") {
+        ("It's no longer available.".into(), true)
     } else if lower.contains("premiere") || lower.contains("live event") {
-        "It hasn't premiered yet.".into()
+        ("It hasn't premiered yet.".into(), true)
     } else {
-        "YouTube couldn't be asked about it. Check the link.".into()
+        ("YouTube couldn't be asked about it, so it wasn't checked. Check the link opens.".into(), false)
     }
 }
 

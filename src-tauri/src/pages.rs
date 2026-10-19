@@ -140,7 +140,8 @@ fn asset_count(script: &Script) -> usize {
         urls.len()
     } else if script.source_kind == "compilation" && script.parts.len() > 1 {
         // One case across videos lists each video once.
-        urls.dedup();
+        let mut seen = std::collections::HashSet::new();
+        urls.retain(|url| seen.insert(*url));
         urls.len()
     } else {
         usize::from(link(&script.source_url))

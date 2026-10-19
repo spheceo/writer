@@ -40,6 +40,12 @@ pub struct Documents {
     /// Each PDF passed over, and why.
     #[serde(default)]
     pub skipped: Vec<String>,
+    /// Every PDF has been read or passed over; until then a retry carries on.
+    #[serde(default)]
+    pub complete: bool,
+    /// The Drive IDs already read or passed over.
+    #[serde(default)]
+    pub done: Vec<String>,
 }
 
 pub fn load(dir: &Path) -> Option<Documents> {
@@ -74,10 +80,10 @@ fn schema() -> Value {
 /// that can't be read is listed as passed over, and a folder that can't be
 /// listed leaves the case to the footage and research.
 pub fn run(dir: &Path, folder: &str, settings: &Settings, on_progress: &dyn Fn(usize, usize)) -> Documents {
-    if let Some(done) = load(dir) {
-        return done;
+    let mut documents = load(dir).unwrap_or_default();
+    if documents.complete {
+        return documents;
     }
-    let mut documents = Documents::default();
     let found = drive::access_token(settings).and_then(|token| Ok((drive::pdfs(&token, folder)?, token)));
     let (pdfs, token) = match found {
         Ok(found) => found,
@@ -86,21 +92,21 @@ pub fn run(dir: &Path, folder: &str, settings: &Settings, on_progress: &dyn Fn(u
             return documents;
         }
     };
-    if pdfs.is_empty() {
-        save(dir, &documents);
-        return documents;
-    }
     let (wanted, rest): (Vec<&Recording>, Vec<&Recording>) = pdfs.iter().partition(|pdf| pdf.size <= MAX_BYTES);
-    for pdf in &rest {
-        documents.skipped.push(format!("{}: larger than 100 MB.", pdf.name));
-    }
-    for pdf in wanted.iter().skip(MAX_PDFS) {
-        documents.skipped.push(format!("{}: more than {MAX_PDFS} PDFs in the folder.", pdf.name));
+    for pdf in rest.iter().chain(wanted.iter().skip(MAX_PDFS)) {
+        if !documents.done.contains(&pdf.id) {
+            let why = if pdf.size > MAX_BYTES { "larger than 100 MB.".to_string() } else { format!("more than {MAX_PDFS} PDFs in the folder.") };
+            documents.skipped.push(format!("{}: {why}", pdf.name));
+            documents.done.push(pdf.id.clone());
+        }
     }
     let wanted: Vec<&Recording> = wanted.into_iter().take(MAX_PDFS).collect();
     let folder_dir = dir.join("documents");
     let _ = fs::create_dir_all(&folder_dir);
     for (index, pdf) in wanted.iter().enumerate() {
+        if documents.done.contains(&pdf.id) {
+            continue;
+        }
         on_progress(index, wanted.len());
         let path = folder_dir.join(format!("{index:02}.pdf"));
         let url = format!("https://drive.google.com/file/d/{}/view", pdf.id);
@@ -109,6 +115,7 @@ pub fn run(dir: &Path, folder: &str, settings: &Settings, on_progress: &dyn Fn(u
             crate::claude::structured_reading("haiku", SYSTEM, &schema(), &ask, &folder_dir)
         });
         let _ = fs::remove_file(&path);
+        documents.done.push(pdf.id.clone());
         match read {
             Ok(answer) => {
                 let summary: String = answer["summary"].as_str().unwrap_or("").trim().chars().take(1_200).collect();
@@ -126,6 +133,7 @@ pub fn run(dir: &Path, folder: &str, settings: &Settings, on_progress: &dyn Fn(u
     }
     let _ = fs::remove_dir_all(&folder_dir);
     on_progress(wanted.len(), wanted.len());
+    documents.complete = true;
     save(dir, &documents);
     documents
 }

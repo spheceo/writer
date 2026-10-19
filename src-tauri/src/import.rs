@@ -204,6 +204,7 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
                                 channel: "Google Drive".into(),
                                 duration_ms: recordings.first().and_then(|recording| recording.claimed_ms),
                                 problem: recordings.first().is_some_and(|recording| recording.audio).then(|| "It's an audio recording, not a video.".into()),
+                                warning: None,
                             },
                             Err(error) => Probe { problem: Some(error), ..Default::default() },
                         }
@@ -453,7 +454,7 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
     // facts, as Repack reads them. Never stops the import.
     if script.source_kind == "drive" {
         if let Ok(drive::Link::Folder(folder)) = drive::parse(&script.source_url) {
-            let fresh = crate::casefiles::load(dir).is_none();
+            let fresh = !crate::casefiles::load(dir).is_some_and(|documents| documents.complete);
             let (id, title) = (script.id.clone(), script.title.clone());
             let documents = crate::casefiles::run(dir, &folder, &settings, &|done, count| {
                 emit_parts(app, &id, &title, "researching", 98, &format!("Reading the case's PDFs: {done} of {count}."));

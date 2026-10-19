@@ -211,8 +211,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setError(null);
     const mine = epoch.current;
     const run = queue.current.then(async () => {
-      if (mine !== epoch.current) return false;
       try {
+        // An edit queued behind a refused save is dropped, but still counted off below.
+        if (mine !== epoch.current) return false;
         const saved = await saveClips(script.id, revision.current, next);
         revision.current = saved.revision;
         onChange(saved);
@@ -245,7 +246,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
 
   const undo = () => {
     const previous = past.current.at(-1);
-    if (!previous) return;
+    if (!previous || busy) return;
     past.current = past.current.slice(0, -1);
     future.current = [...future.current, shown.current];
     setHistory((n) => n + 1);
@@ -254,7 +255,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
 
   const redo = () => {
     const next = future.current.at(-1);
-    if (!next) return;
+    if (!next || busy) return;
     future.current = future.current.slice(0, -1);
     past.current = [...past.current.slice(-29), shown.current];
     setHistory((n) => n + 1);
@@ -465,10 +466,13 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     const mine = epoch.current;
     pending.current += 1;
     const run = queue.current.then(async () => {
-      if (mine !== epoch.current) return;
       try {
+        if (mine !== epoch.current) return;
         const saved = await work();
         revision.current = saved.revision;
+        // Shown at once: a restore changes the clips, and the next edit builds on these.
+        shown.current = saved.clips;
+        setClips(saved.clips);
         onChange(saved);
       } catch (cause) {
         setError(message(cause));
@@ -526,10 +530,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             </span>
           )}
           <ViewTabs view={view} onChange={(next) => (setExpanded(false), setView(next))} />
-          <button type="button" className="icon-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!past.current.length} onClick={undo}>
+          <button type="button" className="icon-tool" aria-label="Undo" title="Undo (⌘Z)" disabled={!past.current.length || busy} onClick={undo}>
             <Icon name="undo" />
           </button>
-          <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length} onClick={redo}>
+          <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length || busy} onClick={redo}>
             <Icon name="redo" />
           </button>
           <button type="button" className="icon-tool" aria-label="Versions" title="Versions" onClick={() => setVersionsOpen(true)}>
@@ -652,7 +656,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   <button type="button" className="tool" disabled={busy} title="Insert these words at the very start" onClick={() => insertPicked(0)}>
                     At start
                   </button>
-                  {picked.count === 1 && (
+                  {picked.count === 1 && !busy && (
                     <button type="button" className="tool" title="Fix how this word is spelled; its timing stays" onClick={() => setSpelling(script.corrections?.[picked.first.id] ?? picked.first.text)}>
                       Fix spelling
                     </button>
@@ -662,7 +666,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   </button>
                 </div>
               )}
-              {picked && spelling !== null && (
+              {picked && spelling !== null && !busy && (
                 <form
                   className="selection"
                   onSubmit={(event) => {

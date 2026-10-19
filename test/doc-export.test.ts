@@ -171,3 +171,16 @@ test("a reused case's transition carries its link as a comment, and REUSE when n
   const notes = content.notes.map((note) => [content.text.slice(note.start - 1, note.end - 1), note.text]);
   expect(notes).toContainEqual(["REUSE", "Reuse: https://youtu.be/old"]);
 });
+
+test("a Courtroom cut-in with no footage before it still runs on after a space", () => {
+  const court = {
+    ...script,
+    kind: "courtroom",
+    clips: [
+      script.clips[0],
+      { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "The promise.\n\nThe backstory." },
+      { id: "n2", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Then." },
+    ],
+  } as unknown as Script;
+  expect(footageContent(court).text).toContain("The backstory. Then.");
+});
