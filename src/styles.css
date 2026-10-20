@@ -1117,15 +1117,6 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .reused-cases .moments li { display: flex; align-items: center; gap: 6px; padding-left: 6px; }
 .reused-cases .moments .icon-tool { width: 22px; height: 22px; flex: none; }
 .moment-quote { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
-/* A Courtroom script runs on after its first block, in one paragraph, as its Doc does. Floats push a line that would cross a sheet's margins onto the next sheet. */
-.page .flow { margin: 0; }
-.page .flow > [data-breaks] { display: contents; }
-.page .page-skip, .page .page-break { float: left; clear: left; }
-.page .page-skip { width: 0; }
-.page .page-break { width: 100%; }
-.page .flow .proposal { margin: 6pt 0; }
-.page .narration-inline { white-space: pre-wrap; outline: none; border-radius: 2px; cursor: text; transition: background 0.12s; }
-.page .narration-inline:hover:not([aria-disabled]) { background: #f6f6f6; }
-.page .narration-inline:focus { background: #eef3fb; }
-.page .narration-inline:empty::before { content: attr(data-placeholder); color: #9a9a9a; }
-.page .narration-inline[data-now] { text-decoration: underline 2px #e5484d; text-underline-offset: 6px; }
+/* A Courtroom script: after its first block, timestamps and cut-ins follow on without blank lines, as Repack's Script view shows the Doc's run-on. */
+.page .ranges[data-tight], .page > .page-body > .ranges[data-tight] { margin-bottom: 0; }
+.page .cue[data-tight] { margin-bottom: 0; }

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { blocks, clipRange, duration, generatedHeading, heading, isCutIn, keptMs } from "./clips";
 import { assetLinks, BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, rangeUrl } from "./doc-export";
-import { Grow, Inline, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
+import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import { wordDiff } from "./diff";
 import type { Clip, Note, Proposal, Script } from "./types";
@@ -211,14 +211,15 @@ export function FootageDoc({
       ])
     : null;
 
-  // A Courtroom case runs on after its first block, as its Doc does.
+  // A Courtroom case runs on after its first block in its Doc; here, as in
+  // Repack's Script view, its blocks only lose the blank lines between them.
   const running = script.kind === "courtroom" && !script.compilation;
 
-  /** A block's timestamps, each previewing its clip; inline ones run on with the narration. */
-  const ranges = (block: (typeof parts)[number], inline: boolean) =>
+  /** A block's timestamps, each previewing its clip. */
+  const ranges = (block: (typeof parts)[number]) =>
     block.clips.map(({ clip, index: at }, position) => (
       <Fragment key={clip.id}>
-        {position ? inline ? " + " : <span className="plus">+</span> : null}
+        {position ? <span className="plus">+</span> : null}
         <span
           className="range"
           data-range={clip.id}
@@ -247,27 +248,13 @@ export function FootageDoc({
       </Fragment>
     ));
 
-  /** A cut-in's narration, and any rewrite Claude proposed for it; inline, it runs on in the paragraph. */
-  const narration = (cue: Clip, index: number, inline: boolean) => {
+  /** A cut-in's narration, and any rewrite Claude proposed for it. */
+  const narration = (cue: Clip, index: number) => {
     const placeholder = cue.reuse ? "REUSE (a reused case's transition; write it, or leave REUSE)" : "Write the narration for this cut-in…";
     const proposal = script.proposals?.find((item) => item.cutIn === cue.id);
     return (
       <>
-        {inline ? (
-          <Inline
-            className="narration-inline"
-            label={`Narration ${index + 1}`}
-            value={cue.narration ?? ""}
-            disabled={disabled}
-            placeholder={placeholder}
-            data-cue={cue.id}
-            data-anchor={`cue-${cue.id}`}
-            data-now={nowId === cue.id || undefined}
-            onCommit={(text) => onNarration(cue.id, text)}
-          />
-        ) : (
-          <Grow className="narration" label={`Narration ${index + 1}`} value={cue.narration ?? ""} disabled={disabled} placeholder={placeholder} onCommit={(text) => onNarration(cue.id, text)} />
-        )}
+        <Grow className="narration" label={`Narration ${index + 1}`} value={cue.narration ?? ""} disabled={disabled} placeholder={placeholder} onCommit={(text) => onNarration(cue.id, text)} />
         {proposal && (
           <div className="proposal" aria-label="Proposed rewrite">
             <p className="proposal-text">
@@ -342,43 +329,28 @@ export function FootageDoc({
               The script appears here once it is built, laid out as its Google Doc will be.
             </p>
           )}
-          {running ? (
-            <>
-              {parts[0]?.clips.length ? (
-                <p className="ranges" data-block>
-                  {ranges(parts[0], false)}
+          {parts.map((block, index) => (
+            <Fragment key={block.cue?.clip.id ?? block.clips[0]?.clip.id ?? index}>
+              {cases.indexOf(index) > 0 && <hr className="case-divider" data-block />}
+              {block.clips.length > 0 && (
+                <p className="ranges" data-block data-tight={(running && index > 0) || undefined}>
+                  {ranges(block)}
                 </p>
-              ) : null}
-              {(parts[0]?.cue || parts.length > 1) && (
-                // After its first timestamps, a Courtroom script runs on in one paragraph, as its Doc does.
-                <div className="flow" data-block>
-                  <span data-breaks aria-hidden />
-                  {parts
-                    .flatMap((block, index) => [
-                      ...(index > 0 && block.clips.length ? [<Fragment key={`r-${block.clips[0].clip.id}`}>{ranges(block, true)}</Fragment>] : []),
-                      ...(block.cue ? [<Fragment key={`c-${block.cue.clip.id}`}>{narration(block.cue.clip, index, true)}</Fragment>] : []),
-                    ])
-                    .flatMap((piece, at) => (at ? [" ", piece] : [piece]))}
+              )}
+              {block.cue && (
+                <div
+                  className="cue"
+                  data-block
+                  data-tight={running || undefined}
+                  data-cue={block.cue.clip.id}
+                  data-anchor={`cue-${block.cue.clip.id}`}
+                  data-now={nowId === block.cue.clip.id || undefined}
+                >
+                  {narration(block.cue.clip, index)}
                 </div>
               )}
-            </>
-          ) : (
-            parts.map((block, index) => (
-              <Fragment key={block.cue?.clip.id ?? block.clips[0]?.clip.id ?? index}>
-                {cases.indexOf(index) > 0 && <hr className="case-divider" data-block />}
-                {block.clips.length > 0 && (
-                  <p className="ranges" data-block>
-                    {ranges(block, false)}
-                  </p>
-                )}
-                {block.cue && (
-                  <div className="cue" data-block data-cue={block.cue.clip.id} data-anchor={`cue-${block.cue.clip.id}`} data-now={nowId === block.cue.clip.id || undefined}>
-                    {narration(block.cue.clip, index, false)}
-                  </div>
-                )}
-              </Fragment>
-            ))
-          )}
+            </Fragment>
+          ))}
           {script.kind === "courtroom" && parts.length > 0 && (
             <p className="doc-total" data-block>
               Total length of clips: {duration(keptMs(clips.filter((clip) => !isCutIn(clip))))}

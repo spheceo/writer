@@ -145,34 +145,9 @@ export function Paper({
     const root = body.current;
     if (!root) return;
     const blocks = [...root.querySelectorAll<HTMLElement>(":scope > [data-block]")];
-    for (const block of blocks) {
-      block.style.paddingTop = "";
-      block.querySelector(":scope > [data-breaks]")?.replaceChildren();
-    }
+    for (const block of blocks) block.style.paddingTop = "";
     for (const block of blocks) {
       const top = MARGIN + block.offsetTop;
-      // A paragraph that runs on over pages (a Courtroom script's) breaks
-      // between its lines: a full-width float over each sheet's bottom
-      // margin, the gap and the next sheet's top margin pushes the line that
-      // would cross them onto the next sheet, as Docs breaks it.
-      const breaks = block.querySelector<HTMLElement>(":scope > [data-breaks]");
-      if (breaks) {
-        let reached = top;
-        for (let at = Math.floor(top / stride); at < 500; at++) {
-          const bottom = at * stride + sheet.height - MARGIN;
-          if (top + block.offsetHeight <= bottom) break;
-          const next = (at + 1) * stride + MARGIN;
-          const skip = document.createElement("span");
-          skip.className = "page-skip";
-          skip.style.height = `${Math.max(0, bottom - reached)}px`;
-          const gap = document.createElement("span");
-          gap.className = "page-break";
-          gap.style.height = `${next - Math.max(bottom, reached)}px`;
-          breaks.append(skip, gap);
-          reached = next;
-        }
-        continue;
-      }
       const height = block.offsetHeight;
       const at = Math.floor(top / stride);
       if (top + height > at * stride + sheet.height - MARGIN && height <= sheet.height - 2 * MARGIN) {
@@ -221,59 +196,6 @@ export function Paper({
         ) : null}
       </div>
     </div>
-  );
-}
-
-/**
- * Narration that runs on inside a paragraph, as a Courtroom script's Doc runs
- * it: edited in place, plain text only, saved when it loses focus. Escape
- * puts back what was saved.
- */
-export function Inline({
-  value,
-  disabled,
-  placeholder,
-  label,
-  className,
-  onCommit,
-  ...data
-}: {
-  value: string;
-  disabled: boolean;
-  placeholder?: string;
-  label?: string;
-  className?: string;
-  onCommit: (text: string) => void;
-} & { [key: `data-${string}`]: string | boolean | undefined }) {
-  const node = useRef<HTMLSpanElement>(null);
-  // The text is set here, not rendered, so typing is never redrawn under the caret.
-  useLayoutEffect(() => {
-    const element = node.current;
-    if (element && document.activeElement !== element && element.textContent !== value) element.textContent = value;
-  }, [value]);
-  return (
-    <span
-      {...data}
-      ref={node}
-      role="textbox"
-      aria-multiline
-      aria-label={label}
-      aria-disabled={disabled || undefined}
-      className={className}
-      data-placeholder={placeholder}
-      contentEditable={disabled ? false : "plaintext-only"}
-      suppressContentEditableWarning
-      spellCheck
-      onBlur={(event) => {
-        const text = event.currentTarget.innerText.replace(/\u00a0/g, " ").trimEnd();
-        if (text !== value.trimEnd()) onCommit(text);
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.currentTarget.textContent = value;
-        event.currentTarget.blur();
-      }}
-    />
   );
 }
 
