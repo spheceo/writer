@@ -1105,3 +1105,27 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .video-check { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .video-check-what { display: flex; flex-direction: column; min-width: 0; }
 .video-check.bad-row strong { color: var(--danger); }
+/* A compilation's reused cases: import their videos, then play or insert their picked moments. */
+.reused-cases { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
+.reused-cases p { margin: 0; }
+.reused-cases ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.reused-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.reused-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.reused-row .link-button, .reused-row .faint { flex: none; white-space: nowrap; }
+.reused-row a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.reused-cases .moments { margin: 4px 0 2px; padding-left: 4px; border-left: 2px solid var(--line); }
+.reused-cases .moments li { display: flex; align-items: center; gap: 6px; padding-left: 6px; }
+.reused-cases .moments .icon-tool { width: 22px; height: 22px; flex: none; }
+.moment-quote { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+/* A Courtroom script runs on after its first block, in one paragraph, as its Doc does. Floats push a line that would cross a sheet's margins onto the next sheet. */
+.page .flow { margin: 0; }
+.page .flow > [data-breaks] { display: contents; }
+.page .page-skip, .page .page-break { float: left; clear: left; }
+.page .page-skip { width: 0; }
+.page .page-break { width: 100%; }
+.page .flow .proposal { margin: 6pt 0; }
+.page .narration-inline { white-space: pre-wrap; outline: none; border-radius: 2px; cursor: text; transition: background 0.12s; }
+.page .narration-inline:hover:not([aria-disabled]) { background: #f6f6f6; }
+.page .narration-inline:focus { background: #eef3fb; }
+.page .narration-inline:empty::before { content: attr(data-placeholder); color: #9a9a9a; }
+.page .narration-inline[data-now] { text-decoration: underline 2px #e5484d; text-underline-offset: 6px; }

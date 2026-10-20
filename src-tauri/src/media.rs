@@ -162,6 +162,63 @@ pub fn join(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<
     Ok(())
 }
 
+/// Adds recordings to the end of a joined preview, each first encoded alone by
+/// `join`, so they share its codecs, size and rate: the streams are copied
+/// end to end and what is already joined is never encoded again. Pieces that
+/// don't match, or a copy that comes out the wrong length, are joined afresh
+/// instead. Says whether the streams were copied.
+pub fn append(base: &Path, more: &[&Path], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<bool, String> {
+    let pieces: Vec<(&Path, Streams)> = std::iter::once(base)
+        .chain(more.iter().copied())
+        .map(|path| streams(path).map(|found| (path, found)))
+        .collect::<Result<_, _>>()?;
+    let total: u64 = pieces.iter().map(|(_, found)| found.duration_ms).sum();
+    if total > MAX_CASE_MS {
+        return Err("Use footage between a second and twenty hours in all.".into());
+    }
+    // Copied end to end only when every piece's streams match the first's.
+    let first = format_of(base);
+    if first.is_none() || more.iter().any(|path| format_of(path) != first) {
+        let parts: Vec<JoinPart> = pieces.into_iter().map(|(path, streams)| JoinPart { path, streams }).collect();
+        return join(&parts, dest, on_percent).map(|_| false);
+    }
+    let list = dest.with_extension("txt");
+    let quote = |path: &Path| format!("file '{}'\n", path.to_string_lossy().replace('\'', "'\\''"));
+    std::fs::write(&list, pieces.iter().map(|(path, _)| quote(path)).collect::<String>()).map_err(|error| error.to_string())?;
+    let (list_text, dest_text) = (list.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned());
+    let copied = proc::run(
+        "ffmpeg",
+        &["-hide_banner", "-y", "-f", "concat", "-safe", "0", "-i", &list_text, "-c", "copy", "-movflags", "+faststart", &dest_text],
+        tool_time(total),
+    );
+    let _ = std::fs::remove_file(&list);
+    // Each join may drift by a frame; more than that and the copy went wrong.
+    let slack = 500 * pieces.len() as u64;
+    if copied.is_ok() && streams(dest).is_ok_and(|found| found.duration_ms.abs_diff(total) <= slack) {
+        on_percent(100);
+        return Ok(true);
+    }
+    let parts: Vec<JoinPart> = pieces.into_iter().map(|(path, streams)| JoinPart { path, streams }).collect();
+    join(&parts, dest, on_percent).map(|_| false)
+}
+
+/// A file's streams as a copy must match them: codecs, picture size, frame
+/// rate and pixel format, sound rate and channels. None when unreadable.
+fn format_of(path: &Path) -> Option<String> {
+    proc::run(
+        "ffprobe",
+        &[
+            "-v", "error",
+            "-show_entries", "stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels",
+            "-of", "csv=p=0",
+            &path.to_string_lossy(),
+        ],
+        Duration::from_secs(60),
+    )
+    .ok()
+    .filter(|text| !text.trim().is_empty())
+}
+
 /// 480p preview with sound, so the window can play the cut.
 /// `on_percent` is 0–100 of the encode. ffmpeg's progress clock is microseconds.
 pub fn encode_proxy(
@@ -419,7 +476,7 @@ mod tests {
 
 #[cfg(test)]
 mod join_tests {
-    use super::{join, streams, JoinPart};
+    use super::{append, join, streams, JoinPart};
     use std::path::Path;
     use std::process::Command;
 
@@ -447,6 +504,29 @@ mod join_tests {
         let found = streams(&out).unwrap();
         assert!(found.video && found.audio);
         assert!((6_900..=7_200).contains(&found.duration_ms), "{}", found.duration_ms);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg: cargo test -- --ignored appends_without_encoding_again
+    #[test]
+    #[ignore]
+    fn appends_without_encoding_again() {
+        let dir = std::env::temp_dir().join("writer-append-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b, c) = (dir.join("a.mp4"), dir.join("b.mp4"), dir.join("c.mov"));
+        make(&["-f", "lavfi", "-i", "testsrc=s=640x360:d=3", "-f", "lavfi", "-i", "sine=d=3", "-shortest"], &a);
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=4", "-f", "lavfi", "-i", "sine=f=330:d=4", "-shortest"], &c);
+        let one = |path: &Path, out: &Path| join(&[JoinPart { path, streams: streams(path).unwrap() }], out, &|_| {}).unwrap();
+        let (base, more) = (dir.join("base.mp4"), dir.join("more.mp4"));
+        one(&a, &base);
+        one(&c, &more);
+        assert!(append(&base, &[more.as_path()], &b, &|_| {}).unwrap(), "copied, not encoded again");
+        let found = streams(&b).unwrap();
+        assert!(found.video && found.audio);
+        assert!((6_800..=7_300).contains(&found.duration_ms), "{}", found.duration_ms);
+        // A piece that doesn't match is joined afresh, never copied.
+        assert!(!append(&a, &[more.as_path()], &b, &|_| {}).unwrap());
+        assert!((6_800..=7_300).contains(&streams(&b).unwrap().duration_ms));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

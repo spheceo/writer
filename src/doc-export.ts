@@ -114,7 +114,8 @@ export function rangeUrl(script: Pick<Script, "sourceUrl" | "sourceKind" | "part
  */
 export function assetLinks(script: Pick<Script, "sourceUrl" | "sourceKind" | "parts" | "compilation">) {
   if (script.compilation)
-    return (script.parts ?? []).flatMap((part, index) => (isLink(part.url) ? [{ label: `Footage ${index + 1}`, url: part.url }] : []));
+    // A reused case's footage is linked from its transition, not listed here.
+    return (script.parts ?? []).flatMap((part, index) => (isLink(part.url) && !part.reuse ? [{ label: `Footage ${index + 1}`, url: part.url }] : []));
   // One Courtroom case across several videos links each video once, in order.
   if (script.sourceKind === "compilation" && (script.parts?.length ?? 0) > 1) {
     const urls = [...new Set((script.parts ?? []).map((part) => part.url).filter(isLink))];

@@ -79,7 +79,7 @@ The guides below were written for Repack, where the editor has tools (read_scrip
 The plan: items in timeline order. A clip is {"kind":"clip","firstWordId":"w12","lastWordId":"w40"}, an inclusive range of word IDs from the transcript, first before last. A cut-in is {"kind":"cut-in","narration":"the finished paragraph"}. {shape_rule} The report is for the producer: one to three short sentences, under 80 words, naming any judgment call that changed the usual shape or any shortfall. Never show milliseconds or word IDs in it; give moments in the footage as [m:ss]."#;
 
 fn system_prompt(script: &Script, format: &Format) -> String {
-    let cases = if format.compilation { script.parts.len().max(1) } else { 1 };
+    let cases = if format.compilation { crate::model::case_count(&script.parts).max(1) } else { 1 };
     let (shape, length, sequence) = formats::shape_length_sequence(format, cases);
     let shape_rule = if format.compilation {
         "A full compilation starts with footage, gives every case in order (its transition directly after the previous case's outro, then the case's intro clips), and ends with the last case's outro."
@@ -411,13 +411,16 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
     let mut start = true;
     let mut turn_speaker: Option<&Option<String>> = None;
     let mut recording = usize::MAX;
+    let mut last_shown: Option<usize> = None;
     for (index, word) in script.words.iter().enumerate() {
         let here = part_at(parts, word.start_ms);
+        // A reused case's footage is shown by its picked moments, not in full.
+        if many && parts[here].reuse.is_some() {
+            continue;
+        }
         if many && here != recording {
-            if index > 0 {
-                if let Some(line) = lines.last_mut() {
-                    line.push_str(&format!(" (ends w{})", index - 1));
-                }
+            if let (Some(last), Some(line)) = (last_shown, lines.last_mut()) {
+                line.push_str(&format!(" (ends w{last})"));
             }
             recording = here;
             let unit = if script.compilation { "Video" } else { "Recording" };
@@ -443,9 +446,10 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
         }
         line.push_str(&word.text);
         start = ends_sentence(&word.text);
+        last_shown = Some(index);
     }
-    if let Some(line) = lines.last_mut() {
-        line.push_str(&format!(" (ends w{})", script.words.len() - 1));
+    if let (Some(last), Some(line)) = (last_shown, lines.last_mut()) {
+        line.push_str(&format!(" (ends w{last})"));
     }
     // Haiku's names where it gave them ("Detective", "Jane Doe (Suspect)").
     let named = !script.speakers.is_empty();
@@ -495,6 +499,9 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
             "\n\nREUSED CASES the producer marked, each in its place in the order (no footage here: each takes only its transition cut-in, with its reuseLink set to this link):\n{}",
             listed.join("\n")
         ));
+        if let Some(footage) = reused_footage(script) {
+            text.push_str(&footage);
+        }
     }
     if let Some(found) = research.filter(|found| !found.articles.is_empty()) {
         text.push_str(&format!(
@@ -503,6 +510,49 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
         ));
     }
     text
+}
+
+/// The reused cases whose whole video was brought in, by their picked
+/// moments, as Repack's evidence lists them; None when none was.
+fn reused_footage(script: &Script) -> Option<String> {
+    let listed: Vec<String> = script
+        .parts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, part)| {
+            let link = part.reuse.as_deref()?;
+            let moments: Vec<String> = part
+                .highlights
+                .iter()
+                .flatten()
+                .filter_map(|moment| {
+                    let (a, b) = (word_at(&script.words, Some(&moment.first_word_id))?, word_at(&script.words, Some(&moment.last_word_id))?);
+                    Some(format!("w{a}..w{b} [{}] \"{}\" ({})", clock(moment.start_ms), moment.quote, moment.why))
+                })
+                .collect();
+            let said = if moments.is_empty() { "No moments were picked from it, so leave it out.".to_string() } else { format!("Picked moments:\n{}", moments.join("\n")) };
+            Some(format!(
+                "Video {} · reused case \"{}\" ({link}), footage {}-{}. {said}",
+                index + 1,
+                part.title,
+                clock(part.start_ms),
+                clock(part.start_ms + part.duration_ms)
+            ))
+        })
+        .collect();
+    if listed.is_empty() {
+        return None;
+    }
+    let format = Format::new(script.kind, script.compilation, &script.title);
+    let use_it = if format.style == Style::When {
+        "Use them for the opening's intro clips only (clips before the first cut-in), beside the cases' own. A reused case shown in the opening is a promise its transition and the finished segment keep, so no return in this script's footage is needed."
+    } else {
+        "This is a hidden compilation, so leave that footage out unless the producer asks for it; even then it only opens the video, before the first cut-in."
+    };
+    Some(format!(
+        "\n\nREUSED CASES' FOOTAGE: the whole video of each reused case, imported after the compilation's own for intro clips only. It is never a case: it gets no transition, case opening, body or outro, and the reused case keeps its single transition cut-in. Its full transcript is left out here; these are its strongest short moments, each a word ID range to use as a clip. {use_it}\n{}",
+        listed.join("\n")
+    ))
 }
 
 /// Where a YouTube link starts, from its `t` (90, 90s, 1m30s, 1h2m3s).
@@ -620,6 +670,7 @@ pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Comp
     };
 
     let mut clips = Vec::with_capacity(items.len());
+    let mut opened = false;
     for item in items {
         match kind(item).as_str() {
             "cut-in" => {
@@ -642,6 +693,7 @@ pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Comp
                 if narration.chars().count() > 6_000 {
                     return Err("A cut-in holds at most 6,000 characters.".into());
                 }
+                opened = true;
                 clips.push(Clip {
                     id: uuid::Uuid::new_v4().to_string(),
                     start_ms: 0,
@@ -670,6 +722,11 @@ pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Comp
                     Some(part) if parts.len() > 1 => {
                         if part_at(parts, a.start_ms) != part_at(parts, b.start_ms) {
                             return Err("A clip cannot cross recording boundaries. Choose a separate word range for each recording.".into());
+                        }
+                        if part.reuse.is_some() && opened {
+                            return Err(format!(
+                                "w{first} to w{last} is a reused case's footage, which only opens the video as intro clips before the first cut-in. Move it into the opening or leave it out."
+                            ));
                         }
                         (part.start_ms, part.start_ms + part.duration_ms)
                     }
@@ -1015,8 +1072,8 @@ mod tests {
     fn heads_each_recording_and_keeps_clips_inside_one() {
         let mut two = script();
         two.parts = vec![
-            crate::model::Part { title: "Interview".into(), start_ms: 0, duration_ms: 6_800, audio: false, claimed_ms: None, url: None },
-            crate::model::Part { title: "Jail call".into(), start_ms: 6_800, duration_ms: 3_200, audio: true, claimed_ms: None, url: None },
+            crate::model::Part { title: "Interview".into(), start_ms: 0, duration_ms: 6_800, audio: false, ..Default::default() },
+            crate::model::Part { title: "Jail call".into(), start_ms: 6_800, duration_ms: 3_200, audio: true, ..Default::default() },
         ];
         let text = evidence(&two, None);
         assert!(text.contains("Recording 1 · Interview\n[0:00] A: w0 Hi,"));
@@ -1105,6 +1162,65 @@ mod tests {
         assert!(compile(&many, &plan("https://youtu.be/made-up")).unwrap_err().contains("not one of this compilation's reused cases"));
         assert!(evidence(&many, None).contains("REUSED CASES"));
         assert!(compile(&script(), &plan("https://youtu.be/old")).is_err());
+    }
+
+    #[test]
+    fn a_reused_cases_footage_only_opens_the_video() {
+        // Two cases (w0–w3, w4–w6), then a reused case's footage (w7–w9).
+        let mut many = script();
+        many.compilation = true;
+        many.title = "When Liars Get Caught".into();
+        many.source_kind = "compilation".into();
+        let old = "https://youtu.be/old".to_string();
+        many.reuses = vec![crate::model::Reuse { url: old.clone(), title: "An earlier case".into(), after: 1 }];
+        many.parts = vec![
+            crate::model::Part { title: "One".into(), start_ms: 0, duration_ms: 4_000, ..Default::default() },
+            crate::model::Part { title: "Two".into(), start_ms: 4_000, duration_ms: 3_000, ..Default::default() },
+            crate::model::Part {
+                title: "An earlier case".into(),
+                start_ms: 7_000,
+                duration_ms: 3_000,
+                url: Some(old.clone()),
+                reuse: Some(old.clone()),
+                highlights: Some(vec![crate::model::Highlight {
+                    first_word_id: "w00008".into(),
+                    last_word_id: "w00009".into(),
+                    start_ms: 8_000,
+                    end_ms: 9_500,
+                    quote: "All night.".into(),
+                    why: "A lie.".into(),
+                }]),
+                ..Default::default()
+            },
+        ];
+        let said = evidence(&many, None);
+        assert!(said.contains("REUSED CASES' FOOTAGE") && said.contains("w8..w9 [0:08] \"All night.\""));
+        // Its words are left out of the transcript, and the last case ends where it did.
+        assert!(!said.contains("w7 Home.") && said.contains("(ends w6)"));
+        assert_eq!(crate::model::case_count(&many.parts), 2);
+        let plan = |first: &str, last: &str, opening: bool| {
+            let reused = json!({ "kind": "clip", "firstWordId": first, "lastWordId": last });
+            let mut items = vec![json!({ "kind": "clip", "firstWordId": "w0", "lastWordId": "w1" })];
+            if opening {
+                items.push(reused.clone());
+            }
+            items.extend([
+                json!({ "kind": "cut-in", "narration": "Hook." }),
+                json!({ "kind": "cut-in", "narration": "Title line." }),
+                json!({ "kind": "clip", "firstWordId": "w2", "lastWordId": "w3" }),
+                json!({ "kind": "cut-in", "narration": "Outro of the first case." }),
+                json!({ "kind": "cut-in", "narration": "Moving on…", "reuseLink": old }),
+                json!({ "kind": "cut-in", "narration": "Next, a case where…" }),
+                json!({ "kind": "clip", "firstWordId": "w4", "lastWordId": "w6" }),
+            ]);
+            if !opening {
+                items.push(reused);
+            }
+            items.push(json!({ "kind": "cut-in", "narration": "Outro." }));
+            json!({ "items": items })
+        };
+        assert!(compile(&many, &plan("w8", "w9", true)).is_ok());
+        assert!(compile(&many, &plan("w8", "w9", false)).unwrap_err().contains("only opens the video"));
     }
 
     #[test]

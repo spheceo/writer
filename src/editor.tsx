@@ -1,17 +1,18 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Asked, ChatLog, Composer, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, inTauri, message, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, inTauri, message, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { DocsDialog } from "./docs-dialog";
 import { VersionsDialog } from "./versions-dialog";
 import { scriptText } from "./doc-export";
 import { FootageDoc } from "./footage-doc";
+import { ReusedCases } from "./reused-cases";
 import { Monitor } from "./monitor";
 import { CutPlayer, clipStarts, editedPosition, Playhead } from "./playback";
 import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
-import type { BuildStatus, ChatTurn, Clip, Kind, Research, Script } from "./types";
+import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
 import { Icon } from "./ui";
@@ -182,7 +183,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const speakers = useSpeakers(script.words, script.speakers);
   const labels = useMemo(() => purposes(script), [script]);
   const cueCount = clips.filter(isCutIn).length;
-  const src = !script.proxyPath ? "" : inTauri() ? convertFileSrc(script.proxyPath) : `/api/scripts/${script.id}/proxy`;
+  // The footage's length in the address: a reused case joined onto it is a new file at the same path.
+  const src = !script.proxyPath ? "" : `${inTauri() ? convertFileSrc(script.proxyPath) : `/api/scripts/${script.id}/proxy`}?v=${script.durationMs}`;
   const busy = started !== null;
 
   // Undo and redo: up to 30 earlier timelines, cut edits and narration alike.
@@ -390,8 +392,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       player.pause();
       try {
         const before = latest.current;
-        onChange(await getScript(script.id));
-        if (before.length) remember(before);
+        const fresh = await getScript(script.id);
+        onChange(fresh);
+        // Undo brings back what the job changed; bringing in footage changes no clip.
+        if (before.length && JSON.stringify(before) !== JSON.stringify(fresh.clips)) remember(before);
       } catch (cause) {
         setError(message(cause));
       }
@@ -461,6 +465,24 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     }
   };
 
+  /** Brings reused cases' videos into the footage, followed as a build is. */
+  const bringReuses = async (urls?: string[]) => {
+    setError(null);
+    setStage("Bringing in the reused cases");
+    try {
+      const job = await importReuses(script.id, urls);
+      setSent("Import the reused cases' videos for the opening.");
+      follow(job.startedAt);
+    } catch (cause) {
+      setError(message(cause));
+    }
+  };
+  /** A reused case's moment as an intro clip at the very start, with breathing room. */
+  const insertMoment = (moment: Highlight) => {
+    const clip: Clip = { id: crypto.randomUUID(), ...breathe(script.words, moment.startMs, moment.endMs, script.durationMs || moment.endMs) };
+    void persist(insertAt(clips, 0, clip));
+  };
+
   /** Runs a change that saves on its own (spelling, heading, a declined proposal) after the edits queued before it. */
   const change = (work: () => Promise<Script>) => {
     const mine = epoch.current;
@@ -526,7 +548,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {busy && (
             <span className="agent-working">
               <span className="dot live" />
-              Claude writing
+              {/reused|^Adding the footage/i.test(stage) ? "Importing footage" : "Claude writing"}
             </span>
           )}
           <ViewTabs view={view} onChange={(next) => (setExpanded(false), setView(next))} />
@@ -730,6 +752,13 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 {script.noSpeech && <p>No words were heard in this footage, so it has no transcript. Cut it by time on the timeline.</p>}
               </div>
             )}
+            <ReusedCases
+              script={script}
+              busy={busy}
+              onImport={(urls) => void bringReuses(urls)}
+              onPlay={(moment: Highlight) => player.audition(moment.startMs)}
+              onInsert={insertMoment}
+            />
             {notesShown && !!script.notes?.length && (
               <div className="turn notes">
                 <ul>
@@ -773,7 +802,13 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               <Working
                 stage={stage}
                 since={started}
-                hint={stage === "Editing the script" ? "Edits usually take a minute or two." : "Long footage takes 5 to 15 minutes. You can keep reading the transcript meanwhile."}
+                hint={
+                  stage === "Editing the script"
+                    ? "Edits usually take a minute or two."
+                    : /reused/i.test(stage) || stage.startsWith("Adding the footage")
+                      ? "Each reused case is downloaded, transcribed and read for its strongest moments. A long video takes several minutes."
+                      : "Long footage takes 5 to 15 minutes. You can keep reading the transcript meanwhile."
+                }
               />
             )}
           </ChatLog>

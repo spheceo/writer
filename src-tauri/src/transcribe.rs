@@ -69,48 +69,21 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
         return Err("This footage has no length.".into());
     }
     let transcript_dir = dir.join("transcript");
-    std::fs::create_dir_all(&transcript_dir).map_err(|error| error.to_string())?;
-    // Three pieces are heard at once. After a failure no new piece starts;
-    // the ones under way finish and are saved, so a retry has less to do.
-    let count = pieces.len();
-    let next = AtomicUsize::new(0);
-    let finished = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Result<Vec<Word>, String>>>> = Mutex::new((0..count).map(|_| None).collect());
-    on_piece(0, count);
-    std::thread::scope(|scope| {
-        for _ in 0..count.min(PIECES_AT_ONCE) {
-            scope.spawn(|| loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let Some(&(start_ms, end_ms)) = pieces.get(index) else { break };
-                let outcome = hear(source, settings, &transcript_dir, index, count, start_ms, end_ms);
-                let failed = outcome.is_err();
-                if let Ok(mut slots) = results.lock() {
-                    slots[index] = Some(outcome);
+    let heard: Vec<Word> = hear_all(source, settings, &transcript_dir, &pieces, on_piece)?
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, words)| {
+            // Scribe names voices per piece: its speaker_0 in one piece is not
+            // its speaker_0 in the next.
+            let count = pieces.len();
+            words.into_iter().map(move |mut word| {
+                if count > 1 {
+                    word.speaker = word.speaker.map(|speaker| format!("{}:{speaker}", index + 1));
                 }
-                on_piece(finished.fetch_add(1, Ordering::Relaxed) + 1, count);
-                if failed {
-                    next.store(count, Ordering::Relaxed);
-                    break;
-                }
-            });
-        }
-    });
-    let mut heard = Vec::new();
-    for (index, slot) in results.into_inner().unwrap_or_default().into_iter().enumerate() {
-        let words = match slot {
-            Some(Ok(words)) => words,
-            Some(Err(error)) => return Err(error),
-            None => continue,
-        };
-        // Scribe names voices per piece: its speaker_0 in one piece is not
-        // its speaker_0 in the next.
-        heard.extend(words.into_iter().map(|mut word| {
-            if count > 1 {
-                word.speaker = word.speaker.map(|speaker| format!("{}:{speaker}", index + 1));
-            }
-            word
-        }));
-    }
+                word
+            })
+        })
+        .collect();
     if heard.is_empty() {
         return Err(NO_WORDS.into());
     }
@@ -132,6 +105,75 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
     }
     script.updated_at = now_ms();
     Ok(())
+}
+
+/// Every piece, three at once. After a failure no new piece starts; the
+/// ones under way finish and are saved, so a retry has less to do.
+fn hear_all(source: &Path, settings: &Settings, transcript_dir: &Path, pieces: &[(u64, u64)], on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<Vec<Vec<Word>>, String> {
+    std::fs::create_dir_all(transcript_dir).map_err(|error| error.to_string())?;
+    let count = pieces.len();
+    let next = AtomicUsize::new(0);
+    let finished = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<Result<Vec<Word>, String>>>> = Mutex::new((0..count).map(|_| None).collect());
+    on_piece(0, count);
+    std::thread::scope(|scope| {
+        for _ in 0..count.min(PIECES_AT_ONCE) {
+            scope.spawn(|| loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                let Some(&(start_ms, end_ms)) = pieces.get(index) else { break };
+                let outcome = hear(source, settings, transcript_dir, index, count, start_ms, end_ms);
+                let failed = outcome.is_err();
+                if let Ok(mut slots) = results.lock() {
+                    slots[index] = Some(outcome);
+                }
+                on_piece(finished.fetch_add(1, Ordering::Relaxed) + 1, count);
+                if failed {
+                    next.store(count, Ordering::Relaxed);
+                    break;
+                }
+            });
+        }
+    });
+    let mut heard = Vec::with_capacity(count);
+    for slot in results.into_inner().unwrap_or_default() {
+        match slot {
+            Some(Ok(words)) => heard.push(words),
+            Some(Err(error)) => return Err(error),
+            None => heard.push(Vec::new()),
+        }
+    }
+    Ok(heard)
+}
+
+/// One stretch of the footage heard alone (a reused case's video joined to
+/// the end of a compilation), on the footage's clock. Its voices are its own,
+/// marked with `tag`, never matched with the rest of the footage's. Its
+/// pieces are kept in `transcript_dir`, so a retry never pays twice. No
+/// speech at all is no words, not a failure.
+pub fn hear_span(
+    source: &Path,
+    settings: &Settings,
+    transcript_dir: &Path,
+    span: (u64, u64),
+    peaks: &[f32],
+    tag: &str,
+    on_piece: &(dyn Fn(usize, usize) + Sync),
+) -> Result<Vec<Word>, String> {
+    let (from, to) = span;
+    let mut pieces = media::plan_pieces_between(from, to, peaks);
+    if pieces.is_empty() && to > from {
+        pieces = vec![(from, to)];
+    }
+    Ok(hear_all(source, settings, transcript_dir, &pieces, on_piece)?
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, words)| {
+            words.into_iter().map(move |mut word| {
+                word.speaker = Some(format!("{tag}:{}:{}", index + 1, word.speaker.as_deref().unwrap_or("speaker")));
+                word
+            })
+        })
+        .collect())
 }
 
 /// One piece: from its saved answer, or heard now and saved before anything

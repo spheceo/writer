@@ -184,3 +184,28 @@ test("a Courtroom cut-in with no footage before it still runs on after a space",
   } as unknown as Script;
   expect(footageContent(court).text).toContain("The backstory. Then.");
 });
+
+test("a reused case's footage opens the video linked to its own video, never listed as an asset", () => {
+  const old = "https://youtu.be/old";
+  const compilation = {
+    ...script,
+    title: "When Liars Get Caught",
+    sourceKind: "compilation",
+    sourceUrl: "https://youtu.be/a\nhttps://youtu.be/b",
+    compilation: true,
+    reuses: [{ url: old, title: "Earlier", after: 1 }],
+    parts: [
+      { title: "A", startMs: 0, durationMs: 60_000, audio: false, url: "https://youtu.be/a" },
+      { title: "B", startMs: 60_000, durationMs: 60_000, audio: false, url: "https://youtu.be/b" },
+      { title: "Earlier", startMs: 120_000, durationMs: 60_000, audio: false, url: old, reuse: old },
+    ],
+    clips: [
+      { id: "r1", startMs: 125_000, endMs: 128_000 },
+      { id: "n1", startMs: 0, endMs: 3_000, kind: "cut-in", narration: "Hook." },
+    ],
+  } as unknown as Script;
+  const content = footageContent(compilation);
+  expect(content.text).toContain("Assets:\n-\tFootage 1\n-\tFootage 2\n\n");
+  expect(content.text).toContain("(0:05‑0:08)");
+  expect(content.styles.filter((style) => style.url).map((style) => style.url)).toContain(`${old}?t=5`);
+});

@@ -85,7 +85,7 @@ pub struct DocExport {
     pub exported_at: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Part {
     /// The recording's file name.
@@ -101,6 +101,31 @@ pub struct Part {
     /// the script's timestamps and assets link to, as Repack's do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Footage of a compilation's reused case, joined after its own videos
+    /// for the opening's intro clips: the reuse link it belongs to. It is
+    /// never a case of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reuse: Option<String>,
+    /// A reused case's strongest short moments for intro clips, picked once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<Vec<Highlight>>,
+}
+
+/// A short moment of a reused case, on the joined footage's clock.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Highlight {
+    pub first_word_id: String,
+    pub last_word_id: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub quote: String,
+    pub why: String,
+}
+
+/// The compilation's own videos, its cases: every part but a reused case's footage.
+pub fn case_count(parts: &[Part]) -> usize {
+    parts.iter().filter(|part| part.reuse.is_none()).count()
 }
 
 /// A question that pauses an import, as Repack asks it on the script.

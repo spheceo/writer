@@ -89,10 +89,12 @@ pub fn stage(id: &str, text: &str) {
     }
 }
 
-/// What a job does: write the whole script, or revise a built one.
+/// What a job does: write the whole script, revise a built one, or bring a
+/// compilation's reused cases into its footage.
 pub enum Work {
     Build { note: String, kind: Option<crate::formats::Kind> },
     Revise { request: String, focus: crate::revise::Focus },
+    Reuse { urls: Vec<String> },
 }
 
 pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, String> {
@@ -106,7 +108,11 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         }
         let job = BuildStatus {
             running: true,
-            stage: if matches!(work, Work::Revise { .. }) { "Editing the script".into() } else { "Starting".into() },
+            stage: match work {
+                Work::Revise { .. } => "Editing the script".into(),
+                Work::Reuse { .. } => "Bringing in the reused cases".into(),
+                Work::Build { .. } => "Starting".into(),
+            },
             started_at: now_ms(),
             finished_at: None,
             report: None,
@@ -124,6 +130,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &work {
             Work::Build { note, kind } => crate::build_once(&app, &id, note, *kind),
             Work::Revise { request, focus } => crate::revise_once(&app, &id, request, focus),
+            Work::Reuse { urls } => crate::reuse::import(&app, &id, urls),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
         if let Ok(mut jobs) = jobs().lock() {

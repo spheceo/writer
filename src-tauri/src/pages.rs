@@ -135,7 +135,8 @@ pub fn heading(script: &Script) -> String {
 /// How many of the script's assets it lists: a compilation's videos, else its one link.
 fn asset_count(script: &Script) -> usize {
     let link = |url: &str| (url.starts_with("http://") || url.starts_with("https://")) && !url.contains(char::is_whitespace);
-    let mut urls: Vec<&str> = script.parts.iter().filter_map(|part| part.url.as_deref()).filter(|url| link(url)).collect();
+    // A reused case's footage is linked from its transition, not listed.
+    let mut urls: Vec<&str> = script.parts.iter().filter(|part| part.reuse.is_none()).filter_map(|part| part.url.as_deref()).filter(|url| link(url)).collect();
     if script.compilation {
         urls.len()
     } else if script.source_kind == "compilation" && script.parts.len() > 1 {

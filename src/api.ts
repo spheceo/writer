@@ -108,6 +108,12 @@ export const startRevision = (id: string, request: string, focus: Focus) =>
     ? invoke<BuildStatus>("start_revision", { id, request, focus })
     : http<BuildStatus>(`/api/scripts/${id}/revise`, json({ request, focus }));
 
+/** Brings a compilation's reused cases' videos into its footage for intro clips (all not yet in, by default); followed as a build is. */
+export const importReuses = (id: string, urls: string[] = []) =>
+  inTauri()
+    ? invoke<BuildStatus>("start_reuse_import", { id, urls })
+    : http<BuildStatus>(`/api/scripts/${id}/reuses`, json({ urls }));
+
 /** The script's conversation with the editor. */
 export const getChat = (id: string) =>
   inTauri() ? invoke<ChatTurn[]>("get_chat", { id }) : http<ChatTurn[]>(`/api/scripts/${id}/chat`);

@@ -65,7 +65,7 @@ const REVISE_EDITS: &str = r#"Edits name timeline items by their IDs in CURRENT 
 A clip stays inside one recording. The reply is for the producer: one to four short sentences on what you changed or proposed and why, or the answer to their question. Never show milliseconds or word IDs in it; give moments as [m:ss] footage times."#;
 
 fn system_prompt(script: &Script, format: &Format) -> String {
-    let cases = if format.compilation { script.parts.len().max(1) } else { 1 };
+    let cases = if format.compilation { crate::model::case_count(&script.parts).max(1) } else { 1 };
     let (shape, length, sequence) = formats::shape_length_sequence(format, cases);
     let mut prompt = format!(
         "{REVISE_HEAD}\n{shape}\n{length}\n{sequence} {}\n{REVISE_EDGES}\n{REVISE_EDITS}\nProject title: {}\n\nPRODUCER'S CUT-IN GUIDE\n{}\n\nPRODUCER'S JUDGMENT CALLS\n{}",
@@ -214,7 +214,11 @@ fn current(script: &Script, format: &Format) -> String {
             continue;
         }
         let (first, last) = inside(&script.words, clip);
-        let recording = if many { format!(" recording {}", tidy::part_at(&script.parts, clip.start_ms) + 1) } else { String::new() };
+        let recording = match many.then(|| tidy::part_at(&script.parts, clip.start_ms)) {
+            Some(at) if script.parts[at].reuse.is_some() => " reused case's footage".to_string(),
+            Some(at) => format!(" recording {}", at + 1),
+            None => String::new(),
+        };
         let said = match (first, last) {
             (Some(a), Some(b)) => {
                 let head: Vec<&str> = (a..=b.min(a + 7)).map(|i| shown(script, i)).collect();

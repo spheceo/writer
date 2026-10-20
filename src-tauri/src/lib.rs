@@ -15,6 +15,7 @@ mod model;
 mod pages;
 mod proc;
 mod research;
+mod reuse;
 mod revise;
 mod settings;
 mod speakers;
@@ -450,6 +451,13 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
         }
     };
     let research = casefiles::with_documents(&dir, research);
+    // A reused case brought in whose moments weren't picked yet, as Repack
+    // picks them before the editor's next turn. A failure leaves them out.
+    if script.parts.iter().any(|part| part.reuse.is_some() && part.highlights.is_none()) {
+        jobs::stage(id, "Picking the reused cases' moments");
+        let _ = reuse::pick_missing(&dir);
+        script = store::read(&dir)?;
+    }
     // The sound, so pauses with speech the transcript missed are kept.
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
@@ -538,6 +546,13 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
     }
     let earlier = chat::recent(&dir);
     chat::add(&dir, "producer", request, None, false);
+    let script = if script.parts.iter().any(|part| part.reuse.is_some() && part.highlights.is_none()) {
+        jobs::stage(id, "Picking the reused cases' moments");
+        let _ = reuse::pick_missing(&dir);
+        store::read(&dir)?
+    } else {
+        script
+    };
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     let research = casefiles::with_documents(&dir, research::load(&dir).unwrap_or_default());
     let done = revise::revise(&script, request, focus, &earlier, Some(&research), &peaks);
@@ -578,6 +593,24 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
 fn start_revision(app: AppHandle, id: String, request: String, focus: Option<revise::Focus>) -> Result<jobs::BuildStatus, String> {
     store::script_dir(&data_dir(&app)?, &id)?;
     jobs::start(app, id, jobs::Work::Revise { request, focus: focus.unwrap_or_default() })
+}
+
+/// Brings a compilation's reused cases' videos into its footage, for the
+/// opening's intro clips. Runs as a job; the page follows it as a build.
+pub fn start_reuse_import_now(app: AppHandle, data: &Path, id: String, urls: Vec<String>) -> Result<jobs::BuildStatus, String> {
+    let dir = store::script_dir(data, &id)?;
+    let script = store::read(&dir)?;
+    let urls = if urls.is_empty() { reuse::missing(&script) } else { urls };
+    if urls.is_empty() {
+        return Err("Every reused case is already imported.".into());
+    }
+    jobs::start(app, id, jobs::Work::Reuse { urls })
+}
+
+#[tauri::command]
+fn start_reuse_import(app: AppHandle, id: String, urls: Option<Vec<String>>) -> Result<jobs::BuildStatus, String> {
+    let data = data_dir(&app)?;
+    start_reuse_import_now(app, &data, id, urls.unwrap_or_default())
 }
 
 #[tauri::command]
@@ -808,6 +841,7 @@ pub fn run() {
             check_videos,
             start_build,
             start_revision,
+            start_reuse_import,
             build_status,
             get_chat,
             clear_chat,

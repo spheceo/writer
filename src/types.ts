@@ -31,7 +31,14 @@ export type Part = {
   claimedMs?: number;
   /** The recording's YouTube or Drive link, which its timestamps link to. */
   url?: string;
+  /** Footage of a compilation's reused case, joined after its own videos for intro clips: the reuse link. Never a case. */
+  reuse?: string;
+  /** A reused case's strongest short moments, picked once. */
+  highlights?: Highlight[];
 };
+
+/** A short moment of a reused case, on the joined footage's clock. */
+export type Highlight = { firstWordId: string; lastWordId: string; startMs: number; endMs: number; quote: string; why: string };
 
 /** A question a paused import waits on, as Repack asks it. */
 export type Decision =

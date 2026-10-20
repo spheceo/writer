@@ -169,7 +169,7 @@ export const Transcript = memo(function Transcript({
             <div key={line.words[0].id}>
               {opens && parts && (
                 <div className="recording">
-                  Recording {part + 1} · {parts[part].title}
+                  {parts[part].reuse ? "Reused case, for intro clips" : `Recording ${part + 1}`} · {parts[part].title}
                   {parts[part].audio && <span>audio</span>}
                 </div>
               )}

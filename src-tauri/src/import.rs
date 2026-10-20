@@ -602,7 +602,10 @@ fn fetch_youtube(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script, 
         script.title = youtube::title(&url, None);
         store::write(dir, script)?;
     }
-    youtube_to(app, data, &script.id, &script.title, &url, &dest, settings, (5, 14), "Downloading from YouTube.")?;
+    let (id, title) = (script.id.clone(), script.title.clone());
+    youtube_to(data, &url, &dest, settings, &|percent, said| {
+        emit_parts(app, &id, &title, "downloading", 5 + (u32::from(percent) * 14 / 100) as u8, said.unwrap_or("Downloading from YouTube."));
+    })?;
     script.original_path = dest.to_string_lossy().into_owned();
     store::write(dir, script)?;
     Ok(())
@@ -621,32 +624,19 @@ fn ensure_yt_dlp() -> Result<(), String> {
 /// One YouTube video to `dest`, resuming a download already under way. It
 /// goes out on this Mac's own address unless this is a busy hour; a bot check
 /// or a dropped connection with nothing pulled yet gets one more try, through
-/// the relay's proxy on a fresh exit, as Repack does. `span` places its
-/// progress within the import's.
-#[allow(clippy::too_many_arguments)]
-fn youtube_to(
-    app: &AppHandle,
-    data: &Path,
-    id: &str,
-    title: &str,
-    url: &str,
-    dest: &Path,
-    settings: &Settings,
-    span: (u8, u8),
-    detail: &str,
-) -> Result<(), String> {
+/// the relay's proxy on a fresh exit, as Repack does. `on` hears how far the
+/// download is (0 to 100) and, now and then, what is happening instead.
+fn youtube_to(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
     ensure_yt_dlp()?;
     let relay_proxy = || crate::net::Relay::new(settings).and_then(|relay| relay.proxy()).ok().flatten();
     let mut proxy = if busy_on_youtube(data) { relay_proxy() } else { None };
     let folder = dest.parent().unwrap_or(data);
-    emit_parts(app, id, title, "downloading", span.0, detail);
+    on(0, None);
     let mut tried_again = false;
     loop {
         let file = proxy_file(folder, proxy.as_deref())?;
         let guard = file.as_ref().map(|path| DeleteFile(path.as_path()));
-        let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), &|percent| {
-            emit_parts(app, id, title, "downloading", span.0 + (u32::from(percent) * u32::from(span.1) / 100) as u8, detail);
-        });
+        let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), &|percent| on(percent, None));
         drop(guard);
         let error = match result {
             Ok(()) => break,
@@ -664,7 +654,7 @@ fn youtube_to(
                 if proxy.is_none() {
                     std::thread::sleep(Duration::from_secs(10));
                 }
-                emit_parts(app, id, title, "downloading", span.0, "Trying YouTube again.");
+                on(0, Some("Trying YouTube again."));
             }
             Trouble::Blocked if proxied => {
                 return Err("YouTube kept blocking the download, through the proxy too. Retry in a few minutes.".into())
@@ -683,6 +673,22 @@ fn youtube_to(
     Ok(())
 }
 
+/// One video, from YouTube or a Drive file link, to `dest`: a compilation's,
+/// or a reused case's brought in later. One already downloaded is kept.
+pub(crate) fn fetch_video(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
+    if readable(dest) {
+        return Ok(());
+    }
+    if url.contains("drive.google.com") {
+        let token = drive::access_token(settings)?;
+        let (_, recordings) = drive::recordings(&token, &drive::parse(url)?)?;
+        let recording = recordings.first().ok_or("That Drive link has no video.")?;
+        let size = recording.size.max(1);
+        return drive::download(&token, recording, dest, &|bytes| on((bytes.min(size) * 100 / size) as u8, None));
+    }
+    youtube_to(data, url, dest, settings, on)
+}
+
 /// Bytes of a YouTube download already on disk, finished or not.
 fn pulled(dest: &Path) -> u64 {
     let stem = dest.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
@@ -698,7 +704,7 @@ fn pulled(dest: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn readable(path: &Path) -> bool {
+pub(crate) fn readable(path: &Path) -> bool {
     path.is_file() && media::streams(path).map(|found| found.duration_ms > 0).unwrap_or(false)
 }
 
@@ -990,7 +996,7 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
         if held < claimed {
             note(script, format!("{title} is cut short: it claims {} but holds {}. Writer joined what it holds.", clock(claimed), clock(held)));
         }
-        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone() });
+        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone(), ..Default::default() });
         start_ms += held;
         join.push(media::JoinPart { path: path.as_path(), streams: media::Streams { duration_ms: held, ..found } });
     }
@@ -1138,21 +1144,10 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         let base = 5 + (step * 33 / count) as u8;
         let span = (33 / count).max(1) as u8;
         let detail = format!("Downloading video {} of {count}.", step + 1);
-        let result = if readable(&dest) {
-            Ok(())
-        } else if video.url.contains("drive.google.com") {
-            drive::access_token(settings).and_then(|token| {
-                let (_, recordings) = drive::recordings(&token, &drive::parse(&video.url)?)?;
-                let recording = recordings.first().ok_or("That Drive link has no video.")?;
-                let (id, title) = (script.id.clone(), script.title.clone());
-                drive::download(&token, recording, &dest, &|bytes| {
-                    let part = (bytes.min(recording.size.max(1)) * u64::from(span) / recording.size.max(1)) as u8;
-                    emit_parts(app, &id, &title, "downloading", base + part, &detail);
-                })
-            })
-        } else {
-            youtube_to(app, data, &script.id, &script.title, &video.url, &dest, settings, (base, span), &detail)
-        };
+        let (id, title) = (script.id.clone(), script.title.clone());
+        let result = fetch_video(data, &video.url, &dest, settings, &|percent, said| {
+            emit_parts(app, &id, &title, "downloading", base + (u32::from(percent) * u32::from(span) / 100) as u8, said.unwrap_or(&detail));
+        });
         match result.and_then(|_| if readable(&dest) { Ok(()) } else { Err("Couldn't be read as video, so it was dropped.".into()) }) {
             Ok(()) => items.push((video.title.clone(), dest, Some(video.url.clone()))),
             Err(error) => {

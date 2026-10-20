@@ -216,6 +216,12 @@ fn route(
             let focus = serde_json::from_value(value["focus"].clone()).ok();
             json_result(stream, start_revision(app, (*id).to_string(), request, focus))
         }
+        ("POST", ["api", "scripts", id, "reuses"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let urls: Vec<String> = serde_json::from_value(value["urls"].clone()).unwrap_or_default();
+            let data = data_dir(&app)?;
+            json_result(stream, crate::start_reuse_import_now(app, &data, (*id).to_string(), urls))
+        }
         ("GET", ["api", "scripts", id, "chat"]) => {
             json_result(stream, store::script_dir(&data_dir(&app)?, id).map(|dir| crate::chat::read(&dir)))
         }
