@@ -228,7 +228,13 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
         let _ = fs::write(dir.join("edit-share.json"), serde_json::to_vec_pretty(&plan).unwrap_or_default());
         return Ok(format!("Would share {} recordings with Edit (switched off until Edit confirms).", plan.len()));
     }
-    Ok(if done.is_empty() { "Edit has every recording and transcript already.".into() } else { done.join("; ") })
+    Ok(if recordings.is_empty() {
+        "no footage on this Mac to share (a file from disk that's no longer there, or none at all)".into()
+    } else if done.is_empty() {
+        "Edit has every recording and transcript already.".into()
+    } else {
+        done.join("; ")
+    })
 }
 
 /// Puts the script's recordings in Edit's originals over what's there: for
