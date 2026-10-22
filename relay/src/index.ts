@@ -27,6 +27,9 @@ declare const FixedLengthStream: {
  *   GET  /v1/docs/exports?script=ID → every Doc exported from that script
  *   GET  /v1/docs/comments?script=ID&doc=DOC → the comments people left on
  *                           one of that script's Docs
+ *   GET  /v1/trello/cards?list=raw|comp → the cards waiting for a script on
+ *                           Repack's Trello lists, read only, as Repack reads
+ *                           them (its key and token stay here)
  *   POST /v1/cloud/*      scripts and their files, synced between Macs:
  *                         presigned R2 URLs and Writer's Convex functions
  *                         (cloud.ts)
@@ -50,6 +53,9 @@ export interface Env extends CloudEnv {
   GOOGLE_DOCS_CLIENT_ID?: string;
   GOOGLE_DOCS_CLIENT_SECRET?: string;
   GOOGLE_DOCS_REFRESH_TOKEN?: string;
+  /** Repack's Trello key and token, as its TRELLO_API_KEY and TRELLO_TOKEN. */
+  TRELLO_API_KEY?: string;
+  TRELLO_TOKEN?: string;
   /** Vercel AI Gateway, for the watcher. */
   AI_GATEWAY_API_KEY?: string;
   WATCH_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
@@ -79,6 +85,7 @@ export default {
         proxy: Boolean(env.PROXY_URL),
         docs: docsReady(env),
         watch: Boolean(env.AI_GATEWAY_API_KEY),
+        trello: Boolean(env.TRELLO_API_KEY && env.TRELLO_TOKEN),
         cloud: Boolean(env.CLIENT_TOKEN && env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
       });
     }
@@ -94,6 +101,10 @@ export default {
     if (url.pathname === "/v1/proxy") {
       if (request.method !== "GET") return json(405, { error: "GET the proxy." });
       return json(200, { proxyUrl: env.PROXY_URL || null });
+    }
+    if (url.pathname === "/v1/trello/cards") {
+      if (request.method !== "GET") return json(405, { error: "GET a list's cards." });
+      return trelloCards(url.searchParams.get("list") ?? "", env);
     }
     if (url.pathname === "/v1/watch") {
       if (request.method !== "POST") return json(405, { error: "POST a clip to watch." });
@@ -480,6 +491,47 @@ function multipart(
     await writer.close();
   })().catch((error) => writer.abort(error));
   return { body: readable, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+/**
+ * The Trello lists scripts come from, as Repack's workspaces name them. Only
+ * these are read, and nothing is ever written to Trello.
+ */
+const TRELLO_LISTS: Record<string, { id: string; name: string }> = {
+  // Raw Channels board: one case a card, footage in a Drive folder.
+  raw: { id: "69eb256a4a7d292ca721520a", name: "Raw Channels · Script (Sphe)" },
+  // Interrogation board: a compilation a card, its cases' links in the description.
+  comp: { id: "6abfd240d4c0d819f06458e9", name: "Interrogation · Ready for script (comp)" },
+};
+
+async function trelloCards(list: string, env: Env): Promise<Response> {
+  if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) return json(503, { error: "Trello is not configured on the relay yet." });
+  const wanted = TRELLO_LISTS[list];
+  if (!wanted) return json(400, { error: `Choose a list: ${Object.keys(TRELLO_LISTS).join(" or ")}.` });
+  const query = new URLSearchParams({
+    fields: "name,desc,url,dateLastActivity,labels",
+    attachments: "true",
+    attachment_fields: "name,url",
+    key: env.TRELLO_API_KEY,
+    token: env.TRELLO_TOKEN,
+  });
+  const answer = await fetch(`https://api.trello.com/1/lists/${wanted.id}/cards?${query}`, { signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  if (!answer) return json(502, { error: "Trello did not answer." });
+  if (!answer.ok) return json(502, { error: `Trello answered ${answer.status}.` });
+  type Card = { id: string; name: string; desc?: string; url: string; dateLastActivity?: string; labels?: { name?: string }[]; attachments?: { name?: string; url?: string }[] };
+  const cards = (await answer.json()) as Card[];
+  return json(200, {
+    list: wanted.name,
+    cards: cards.map((card) => ({
+      id: card.id,
+      name: card.name,
+      desc: card.desc ?? "",
+      url: card.url,
+      activity: card.dateLastActivity ?? null,
+      labels: (card.labels ?? []).map((label) => label.name ?? "").filter(Boolean),
+      attachments: (card.attachments ?? []).map((item) => item.url ?? "").filter((link) => link.startsWith("http")),
+    })),
+  });
 }
 
 function json(status: number, body: unknown) {

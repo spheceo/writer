@@ -13,9 +13,10 @@ import {
   message,
   renameScript,
   resumeImport,
+  trelloCards,
 } from "./api";
 import { clock } from "./clips";
-import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, VideoCheck } from "./types";
+import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
 
 type Source = "youtube" | "drive" | "file" | "compilation" | "commentary";
@@ -599,10 +600,51 @@ const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
     hint: "A video essay in the Internet Janitor's style, written from sources rather than one case's footage. The first link is the brief; add more sources, and past scripts for the style, once it's made.",
   },
   compilation: {
-    placeholder: "One YouTube or Drive video link per line, a case each. REUSE before a link marks a case the channel already covered.",
-    hint: "2 to 20 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case. A reused case isn't imported: it takes only its transition, with its link.",
+    placeholder: "One YouTube or Drive video link per line, a case each. REUSE before a link marks a case the channel already covered; a Google Doc link is the script of one, reused as it is.",
+    hint: "2 to 20 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case. A reused case isn't imported or rewritten: it takes only its transition, with its link. A script's Doc gives that transition its narration to lead into.",
   },
 };
+
+/** A Google Doc link: the script of a case the channel already made, always a reused case. */
+const isDoc = (url: string) => url.includes("docs.google.com/document/d/");
+
+/** One of Repack's Trello lists, as its "Not scripted yet" cards; a card fills the dialog. */
+function TrelloPicker({ list, problem, all, onUse }: { list?: TrelloCards; problem: string | null; all: boolean; onUse: (card: TrelloCard) => void }) {
+  if (problem) return <p className="bad">{problem}</p>;
+  if (!list) return <p className="faint">Reading Trello…</p>;
+  const shown = list.cards.filter((card) => all || !card.scripted);
+  const hidden = list.cards.length - shown.length;
+  return (
+    <div className="trello-picker">
+      <p className="hint">
+        {list.list} · {shown.length} {shown.length === 1 ? "card" : "cards"}
+        {hidden ? ` · ${hidden} already scripted, hidden` : ""}
+      </p>
+      <div className="checklist video-checks">
+        {shown.length === 0 && <p className="faint trello-empty">Nothing waiting for a script.</p>}
+        {shown.map((card) => (
+          <div key={card.id} className={card.problem ? "video-check trello-card bad-row" : "video-check trello-card"}>
+            <span className="video-check-what">
+              <a className="truncate" href={card.url} target="_blank" rel="noreferrer" title={card.name}>
+                <strong>{card.name}</strong>
+              </a>
+              <span className={card.problem ? "bad" : "faint"}>
+                {card.problem ??
+                  (card.kind === "case"
+                    ? [card.footage?.includes("/folders/") ? "Drive folder" : "Drive video", card.article ? "article" : ""].filter(Boolean).join(" · ")
+                    : [`${card.videos} ${card.videos === 1 ? "video" : "videos"}`, card.reuses ? `${card.reuses} reused` : ""].filter(Boolean).join(" · "))}
+                {card.scripted ? " · scripted" : ""}
+              </span>
+            </span>
+            <button type="button" className="sm" disabled={!!card.problem} onClick={() => onUse(card)}>
+              Use
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -630,6 +672,13 @@ function ImportDialog({
   // One Courtroom case whose hearing runs across the videos, rather than a case each.
   const [oneCase, setOneCase] = useState(false);
   const [checking, setChecking] = useState(false);
+  // Repack's Trello lists, open in place of the fields while a card is picked.
+  const [trello, setTrello] = useState<TrelloList | null>(null);
+  const [cards, setCards] = useState<Partial<Record<TrelloList, TrelloCards>>>({});
+  const [cardsProblem, setCardsProblem] = useState<string | null>(null);
+  const [allCards, setAllCards] = useState(false);
+  // A Raw Channels card's name, kept as the Drive import's title.
+  const [cardTitle, setCardTitle] = useState("");
   const fields = useRef<HTMLDivElement>(null);
   // A new tab puts the cursor in its first field, ready to paste.
   useEffect(() => {
@@ -654,11 +703,42 @@ function ImportDialog({
     if (typeof picked === "string") setValue(picked);
   };
 
-  const check = async () => {
+  const openTrello = async (list: TrelloList, again = false) => {
+    setTrello(list);
+    setCardsProblem(null);
+    if (cards[list] && !again) return;
+    try {
+      const found = await trelloCards(list);
+      setCards((known) => ({ ...known, [list]: found }));
+    } catch (cause) {
+      setCardsProblem(message(cause));
+    }
+  };
+  // A card fills the dialog as Repack's Start script does: a case card's
+  // footage, article and name; a compilation card's title and links, checked.
+  const useCard = (card: TrelloCard) => {
+    setTrello(null);
+    setError(null);
+    setChecked(null);
+    if (card.kind === "case") {
+      setSource("drive");
+      setValue(card.footage ?? "");
+      setArticle(card.article ?? "");
+      setCardTitle(card.name);
+      return;
+    }
+    setSource("compilation");
+    setOneCase(false);
+    setTitle(card.name);
+    setValue(card.lines.join("\n"));
+    if (card.lines.length >= 2) void check(card.lines);
+  };
+
+  const check = async (lines = links) => {
     setChecking(true);
     setError(null);
     try {
-      setChecked(await checkVideos(links));
+      setChecked(await checkVideos(lines));
     } catch (cause) {
       setError(message(cause));
     } finally {
@@ -673,6 +753,8 @@ function ImportDialog({
     ? null
     : imported.some((row) => row.problem)
       ? "Remove or replace the videos that can't be imported."
+      : checked.some((row) => isDoc(row.url) && row.problem)
+        ? "Remove or replace the script Docs that can't be read."
       : oneCase && checked.some((row) => row.reuse)
         ? "A reused case belongs in a compilation, not one Courtroom case."
         : imported.length < 2
@@ -722,7 +804,7 @@ function ImportDialog({
       source === "youtube"
         ? importYoutube(input, article.trim())
         : source === "drive"
-          ? importDrive(input, article.trim())
+          ? importDrive(input, article.trim(), cardTitle)
           : source === "compilation"
             ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
             : importFile(input, article.trim());
@@ -740,6 +822,7 @@ function ImportDialog({
     setValue("");
     setTitle("");
     setArticle("");
+    setCardTitle("");
     setChecked(null);
     setOneCase(false);
     onClose();
@@ -800,6 +883,8 @@ function ImportDialog({
             setValue("");
             setChecked(null);
             setError(null);
+            setCardTitle("");
+            setTrello(null);
           }}
           options={[
             { value: "youtube", label: <><Icon name="youtube" size={14} />YouTube</> },
@@ -809,6 +894,30 @@ function ImportDialog({
             { value: "commentary", label: <><Icon name="file" size={14} />Commentary</> },
           ]}
         />
+        <div className="trello-bar">
+          {trello ? (
+            <>
+              {(["raw", "comp"] as const).map((list) => (
+                <button key={list} type="button" className={trello === list ? "sm on" : "sm ghost"} onClick={() => void openTrello(list)}>
+                  {list === "raw" ? "Raw Channels" : "Compilations"}
+                </button>
+              ))}
+              <span className="spacer" />
+              <label className="faint toggle">
+                <input type="checkbox" checked={allCards} onChange={(event) => setAllCards(event.target.checked)} /> Show scripted
+              </label>
+              <button type="button" className="link-button faint" onClick={() => void openTrello(trello, true)}>Refresh</button>
+              <button type="button" className="link-button faint" onClick={() => setTrello(null)}>Close</button>
+            </>
+          ) : (
+            <button type="button" className="link-button" onClick={() => void openTrello(source === "compilation" ? "comp" : "raw")}>
+              <Icon name="stack" size={13} /> Import from Trello
+            </button>
+          )}
+        </div>
+        {trello ? (
+          <TrelloPicker list={cards[trello]} problem={cardsProblem} all={allCards} onUse={useCard} />
+        ) : (
         <div className="source" key={source} ref={fields}>
           {source === "commentary" ? (
             <>
@@ -849,18 +958,20 @@ function ImportDialog({
               ) : (
                 <div className="checklist video-checks">
                   {checked.map((row, index) => (
-                    <div key={`${row.url}-${index}`} className={row.problem && !row.reuse ? "video-check bad-row" : "video-check"}>
+                    <div key={`${row.url}-${index}`} className={row.problem && (!row.reuse || isDoc(row.url)) ? "video-check bad-row" : "video-check"}>
                       <span className="faint mono">{row.reuse ? "↺" : checked.slice(0, index + 1).filter((item) => !item.reuse).length}</span>
                       <span className="video-check-what">
                         <strong className="truncate" title={row.title || row.url}>{row.title || row.url}</strong>
-                        <span className={row.problem && !row.reuse ? "bad" : "faint"}>
-                          {row.reuse
+                        <span className={row.problem && (!row.reuse || isDoc(row.url)) ? "bad" : "faint"}>
+                          {isDoc(row.url)
+                            ? (row.problem ?? `Reused script Doc: kept as written; it takes only its transition.${row.warning ? ` ${row.warning}` : ""}`)
+                            : row.reuse
                             ? "Reused case: not imported; it takes only its transition."
                             : (row.problem ?? row.warning ?? [row.durationMs ? clock(row.durationMs) : "", row.channel].filter(Boolean).join(" · "))}
                         </span>
                       </span>
                       <label className="faint toggle" title="A case the channel already covered: not imported, it takes only its transition">
-                        <input type="checkbox" checked={row.reuse} onChange={(event) => setChecked(checked.map((item, at) => (at === index ? { ...item, reuse: event.target.checked } : item)))} /> Reuse
+                        <input type="checkbox" checked={row.reuse} disabled={isDoc(row.url)} onChange={(event) => setChecked(checked.map((item, at) => (at === index ? { ...item, reuse: event.target.checked } : item)))} /> Reuse
                       </label>
                       <button type="button" className="link-button faint" aria-label="Remove" title="Remove" onClick={() => setChecked(checked.filter((_, at) => at !== index))}>
                         ×
@@ -925,7 +1036,14 @@ function ImportDialog({
               <p className="hint">If given, Writer reads it when the import starts and uses it for the case's facts instead of searching.</p>
             </>
           )}
+          {source === "drive" && cardTitle && (
+            <p className="hint">
+              Titled from Trello: <strong>{cardTitle}</strong> ·{" "}
+              <button type="button" className="link-button" onClick={() => setCardTitle("")}>Use the folder's name</button>
+            </p>
+          )}
         </div>
+        )}
       </form>
     </Dialog>
   );

@@ -111,10 +111,12 @@ pub fn from_youtube(app: &AppHandle, data: &Path, url: &str, link: Option<&str>)
 
 /// A Drive file, or a folder of recordings joined in name order, as Repack
 /// takes them. Downloads go straight from Google to this Mac.
-pub fn from_drive(app: &AppHandle, data: &Path, url: &str, link: Option<&str>) -> Result<ScriptDetail, String> {
+/// A title given (a Trello card's) is kept in place of the folder's name.
+pub fn from_drive(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, title: Option<&str>) -> Result<ScriptDetail, String> {
     drive::parse(url)?;
     let found = article(link)?;
-    start(app, data, new_script("Google Drive footage".into(), "drive", url.trim().to_string(), String::new()), found)
+    let title = title.map(|title| title.trim().chars().take(180).collect::<String>()).filter(|title| !title.is_empty());
+    start(app, data, new_script(title.unwrap_or_else(|| "Google Drive footage".into()), "drive", url.trim().to_string(), String::new()), found)
 }
 
 /// Several videos, one case each, joined as one compilation. The title sets
@@ -136,15 +138,21 @@ fn lines_for(lines: &[String], case: bool) -> Result<(Vec<String>, Vec<crate::mo
             Some((mark, rest)) if mark.eq_ignore_ascii_case("reuse") || mark.eq_ignore_ascii_case("reuse:") => (true, rest.trim()),
             _ => (false, line),
         };
-        if url.contains("drive.google.com") {
+        // A Google Doc is the script of a case the channel already made: a reused case, always.
+        let doc = crate::reuse::is_doc(url);
+        if doc {
+            if !url.starts_with("https://docs.google.com/document/d/") || url.chars().any(char::is_whitespace) {
+                return Err("That Google Docs link is not complete.".into());
+            }
+        } else if url.contains("drive.google.com") {
             if !matches!(drive::parse(url)?, drive::Link::File(_)) {
                 return Err("In a compilation, each Drive link is one video, not a folder.".into());
             }
         } else {
             youtube::check_url(url)?;
         }
-        if reuse {
-            reuses.push(crate::model::Reuse { url: url.to_string(), title: String::new(), after: urls.len() });
+        if reuse || doc {
+            reuses.push(crate::model::Reuse { url: url.to_string(), title: String::new(), after: urls.len(), footage: None, narration: None });
         } else {
             urls.push(url.to_string());
         }
@@ -187,7 +195,7 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
         wanted.push((url.clone(), false));
     }
     wanted.extend(reuse.map(|item| (item.url.clone(), true)));
-    if wanted.iter().any(|(url, _)| !url.contains("drive.google.com")) {
+    if wanted.iter().any(|(url, _)| !url.contains("drive.google.com") && !crate::reuse::is_doc(url)) {
         ensure_yt_dlp()?;
     }
     let settings = settings::load(data);
@@ -197,7 +205,18 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
             let (wanted, checks, settings) = (&wanted, &checks, &settings);
             scope.spawn(move || {
                 for (index, (url, reuse)) in wanted.iter().enumerate().skip(lane).step_by(4) {
-                    let probe = if url.contains("drive.google.com") {
+                    let probe = if crate::reuse::is_doc(url) {
+                        match crate::reuse::read_doc(url, settings) {
+                            Ok(doc) => Probe {
+                                title: doc.title,
+                                channel: "Google Doc".into(),
+                                duration_ms: None,
+                                problem: doc.narration.trim().is_empty().then(|| "That Doc holds no script to reuse.".into()),
+                                warning: doc.footage.is_none().then(|| "Lists no footage, so its video can't be brought in for intro clips.".into()),
+                            },
+                            Err(error) => Probe { problem: Some(error), ..Default::default() },
+                        }
+                    } else if url.contains("drive.google.com") {
                         match drive::access_token(settings).and_then(|token| drive::recordings(&token, &drive::parse(url)?)) {
                             Ok((title, recordings)) => Probe {
                                 title,
@@ -1108,6 +1127,15 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
                 continue;
             }
             let url = script.reuses[index].url.clone();
+            // An earlier script's Doc: its title, footage and narration, read once.
+            if crate::reuse::is_doc(&url) {
+                let doc = crate::reuse::read_doc(&url, settings).map_err(|error| format!("The reused case's Doc couldn't be read: {error}"))?;
+                let reuse = &mut script.reuses[index];
+                reuse.title = if doc.title.is_empty() { "Reused case".into() } else { doc.title };
+                reuse.footage = doc.footage;
+                reuse.narration = Some(doc.narration).filter(|text| !text.trim().is_empty());
+                continue;
+            }
             let title = if url.contains("drive.google.com") {
                 drive::access_token(settings)
                     .and_then(|token| drive::recordings(&token, &drive::parse(&url)?))

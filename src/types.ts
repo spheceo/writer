@@ -91,7 +91,8 @@ export type Script = {
   /** Words the producer respelled, by word ID. */
   corrections?: Record<string, string>;
   /** A compilation's reused cases: each takes only its transition, carrying its link. */
-  reuses?: { url: string; title: string; after: number }[];
+  /** A reused case given as its earlier script's Doc carries the footage it lists and its narration. */
+  reuses?: { url: string; title: string; after: number; footage?: string; narration?: string }[];
   /** Rewrites of saved narration waiting for the producer to accept or decline. */
   proposals?: Proposal[];
   /** The last full export to Google Docs. */
@@ -257,4 +258,22 @@ export type Version = { id: string; at: number; author: "you" | "claude" | "befo
 export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; heading: string | null };
 
 /** A compilation's line, checked before anything downloads. */
+/** A card waiting on one of Repack's Trello lists, parsed for what a script needs. */
+export type TrelloCard = {
+  id: string;
+  name: string;
+  url: string;
+  labels: string[];
+  activity: string | null;
+  kind: "case" | "compilation";
+  footage: string | null;
+  article: string | null;
+  lines: string[];
+  videos: number;
+  reuses: number;
+  problem: string | null;
+  scripted: boolean;
+};
+export type TrelloList = "raw" | "comp";
+export type TrelloCards = { list: string; cards: TrelloCard[] };
 export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };

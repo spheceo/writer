@@ -23,6 +23,7 @@ mod store;
 mod tidy;
 mod tools;
 mod transcribe;
+mod trello;
 mod versions;
 mod watch;
 mod youtube;
@@ -75,10 +76,10 @@ async fn import_youtube(app: AppHandle, url: String, article: Option<String>) ->
 }
 
 #[tauri::command]
-async fn import_drive(app: AppHandle, url: String, article: Option<String>) -> Result<ScriptDetail, String> {
+async fn import_drive(app: AppHandle, url: String, article: Option<String>, title: Option<String>) -> Result<ScriptDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_drive(&app, &data, &url, article.as_deref())
+        import::from_drive(&app, &data, &url, article.as_deref(), title.as_deref())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -519,6 +520,19 @@ fn build_commentary(dir: &Path, id: &str, script: &model::Script, note: &str) ->
     Ok((built.report, built.cost_usd))
 }
 
+/// The cards waiting on one of Repack's Trello lists (`raw` or `comp`).
+pub(crate) fn trello_now(data: &std::path::Path, list: &str) -> Result<trello::Cards, String> {
+    let titles: Vec<String> = store::list(data)?.into_iter().map(|row| row.title.trim().to_lowercase()).collect();
+    trello::cards(&settings::load(data), list, &titles)
+}
+
+#[tauri::command]
+async fn trello_cards(app: AppHandle, list: String) -> Result<trello::Cards, String> {
+    tauri::async_runtime::spawn_blocking(move || trello_now(&data_dir(&app)?, &list))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn check_videos(app: AppHandle, lines: Vec<String>) -> Result<Vec<import::VideoCheck>, String> {
     tauri::async_runtime::spawn_blocking(move || import::check_videos(&data_dir(&app)?, &lines))
@@ -839,6 +853,7 @@ pub fn run() {
             check_relay,
             claude_status,
             check_videos,
+            trello_cards,
             start_build,
             start_revision,
             start_reuse_import,

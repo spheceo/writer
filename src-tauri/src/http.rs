@@ -138,8 +138,10 @@ fn route(
         ("POST", ["api", "scripts", "drive"]) => {
             let url = json_str(body, "url")?;
             let article = json_str(body, "article").ok();
-            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref()))
+            let title = json_str(body, "title").ok();
+            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref(), title.as_deref()))
         }
+        ("GET", ["api", "trello", list]) => json_result(stream, crate::trello_now(&data_dir(&app)?, list)),
         ("POST", ["api", "scripts", "commentary"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let title = value["title"].as_str().unwrap_or("").to_string();

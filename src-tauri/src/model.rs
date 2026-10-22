@@ -58,6 +58,14 @@ pub struct Reuse {
     #[serde(default)]
     pub title: String,
     pub after: usize,
+    /// A reused case given as the Google Doc of its earlier script: the
+    /// footage that Doc lists, for bringing its video in for intro clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footage: Option<String>,
+    /// That script's narration as written, which its transition is written
+    /// from. It is never rewritten here: the editor lifts the segment whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub narration: Option<String>,
 }
 
 /// A rewrite of narration the producer had already saved, waiting for them

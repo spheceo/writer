@@ -107,6 +107,11 @@ impl Relay {
             .ok_or_else(|| "Writer's service sent no Google Drive access.".into())
     }
 
+    /// The cards on one of Repack's Trello lists (`raw` or `comp`), as the relay reads them.
+    pub fn trello_cards(&self, list: &str) -> Result<Value, String> {
+        self.get_json(&format!("/v1/trello/cards?list={list}"))
+    }
+
     /// The proxy YouTube downloads go through, if the relay has one.
     pub fn proxy(&self) -> Result<Option<String>, String> {
         let value = self.get_json("/v1/proxy")?;

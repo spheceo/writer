@@ -3,6 +3,9 @@ import { clock } from "./clips";
 import type { Highlight, Script } from "./types";
 import { Icon } from "./ui";
 
+/** A reused case given as the Google Doc of its earlier script. */
+const isDoc = (url: string) => url.includes("docs.google.com/document/d/");
+
 /**
  * A compilation's reused cases, as Repack's Videos tab lists them: each one
  * not yet in the footage can be imported (its whole video, for the opening's
@@ -28,7 +31,9 @@ export function ReusedCases({
   const reuses = script.reuses ?? [];
   if (!script.compilation || script.sourceKind !== "compilation" || !reuses.length) return null;
   const parts = script.parts ?? [];
-  const missing = reuses.filter((reuse) => !parts.some((part) => part.reuse === reuse.url));
+  // A reused case given as its earlier script's Doc can bring in only the footage that Doc lists.
+  const noFootage = (reuse: (typeof reuses)[number]) => isDoc(reuse.url) && !reuse.footage;
+  const missing = reuses.filter((reuse) => !parts.some((part) => part.reuse === reuse.url) && !noFootage(reuse));
   return (
     <div className="reused-cases">
       <div className="reused-head">
@@ -63,7 +68,7 @@ export function ReusedCases({
                     <span className="faint" title="Picked before the next build or request">Imported</span>
                   )
                 ) : (
-                  <span className="faint">Linked only</span>
+                  <span className="faint">{isDoc(reuse.url) ? (reuse.footage ? "Script Doc · linked only" : "Script Doc · lists no footage") : "Linked only"}</span>
                 )}
               </div>
               {open === reuse.url && moments.length > 0 && (

@@ -1120,3 +1120,12 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 /* A Courtroom script: after its first block, timestamps and cut-ins follow on without blank lines, as Repack's Script view shows the Doc's run-on. */
 .page .ranges[data-tight], .page > .page-body > .ranges[data-tight] { margin-bottom: 0; }
 .page .cue[data-tight] { margin-bottom: 0; }
+
+/* Repack's Trello lists in New script. */
+.trello-bar { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 12.5px; }
+.trello-bar .link-button { display: inline-flex; align-items: center; gap: 5px; }
+.trello-card { grid-template-columns: 1fr auto; }
+.trello-card a { color: inherit; text-decoration: none; }
+.trello-card a:hover { text-decoration: underline; }
+.trello-empty { padding: 10px 12px; margin: 0; }
+.trello-bar button.on { background: var(--hover); color: var(--text); }

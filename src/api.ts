@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, Version, VideoCheck } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -48,8 +48,15 @@ export const importYoutube = (url: string, article?: string) =>
     ? invoke<Script>("import_youtube", { url, article: article || null })
     : http<Script>("/api/scripts/youtube", json({ url, article }));
 
-export const importDrive = (url: string, article?: string) =>
-  inTauri() ? invoke<Script>("import_drive", { url, article: article || null }) : http<Script>("/api/scripts/drive", json({ url, article }));
+/** A title given (a Trello card's) is kept in place of the folder's name. */
+export const importDrive = (url: string, article?: string, title?: string) =>
+  inTauri()
+    ? invoke<Script>("import_drive", { url, article: article || null, title: title || null })
+    : http<Script>("/api/scripts/drive", json({ url, article, title }));
+
+/** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
+export const trelloCards = (list: TrelloList) =>
+  inTauri() ? invoke<TrelloCards>("trello_cards", { list }) : http<TrelloCards>(`/api/trello/${list}`);
 
 export const renameScript = (id: string, title: string) =>
   inTauri()

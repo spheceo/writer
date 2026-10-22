@@ -50,6 +50,125 @@ fn wanted(script: &Script, urls: &[String]) -> Result<Vec<Reuse>, String> {
     Ok(wanted)
 }
 
+/// Whether a link is a Google Doc: a reused case given as its earlier script.
+pub fn is_doc(url: &str) -> bool {
+    url.contains("docs.google.com/document/d/")
+}
+
+/// Where a reused case's video is: its own link, or the footage its script's Doc lists.
+fn footage_of(reuse: &Reuse) -> Result<String, String> {
+    if !is_doc(&reuse.url) {
+        return Ok(reuse.url.clone());
+    }
+    reuse.footage.clone().ok_or_else(|| format!("{}'s Doc lists no YouTube or Drive footage to bring in.", title_of(reuse)))
+}
+
+/// A reused case's earlier script, read from its Google Doc as Writer and
+/// Repack lay one out: the Doc's name, the footage under "Assets:" (or the
+/// first video its timestamps link to), and its narration, the paragraphs
+/// that aren't timestamps. Nothing in it is rewritten; the transition into
+/// it is written from that narration.
+pub struct DocCase {
+    pub title: String,
+    pub footage: Option<String>,
+    pub narration: String,
+}
+
+pub fn read_doc(url: &str, settings: &settings::Settings) -> Result<DocCase, String> {
+    let (name, text) = crate::commentary::fetch(url, settings)?;
+    Ok(parse_doc(&name, &text))
+}
+
+/// The most of a script's narration a build is given for its transition.
+const NARRATION_CHARS: usize = 5_000;
+
+fn parse_doc(name: &str, text: &str) -> DocCase {
+    let title = name.trim().trim_start_matches("(DRAFT)").trim().chars().take(180).collect::<String>();
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    // A link written after its words, "Footage <https://…>", as the Doc reader writes it.
+    let linked = |line: &str| -> Vec<String> {
+        line.split('<')
+            .skip(1)
+            .filter_map(|part| part.split_once('>').map(|(url, _)| url.trim().to_string()))
+            .filter(|url| url.starts_with("http"))
+            .collect()
+    };
+    let video = |url: &str| crate::youtube::check_url(url).is_ok() || crate::drive::parse(url).is_ok();
+    let assets = lines.iter().position(|line| line.eq_ignore_ascii_case("assets:"));
+    let listed = assets.and_then(|at| {
+        lines[at + 1..]
+            .iter()
+            .take_while(|line| !line.to_ascii_lowercase().starts_with("total"))
+            .flat_map(|line| linked(line))
+            .find(|url| video(url))
+    });
+    let footage = listed
+        .or_else(|| lines.iter().flat_map(|line| linked(line)).find(|url| video(url)))
+        .map(|url| without_time(&url));
+    let timestamp = |line: &str| line.starts_with('(') && line.chars().nth(1).is_some_and(|c| c.is_ascii_digit());
+    let mut narration = String::new();
+    for (index, line) in lines.iter().enumerate() {
+        let lower = line.to_ascii_lowercase();
+        let skip = index == 0
+            || timestamp(line)
+            || lower == "assets:"
+            || lower.starts_with("total duration")
+            || lower.starts_with("total length")
+            || assets.is_some_and(|at| index > at && !linked(line).is_empty() && line.chars().count() < 120)
+            || lower.starts_with("note to editor")
+            || comment_mark(line).is_some();
+        if skip {
+            continue;
+        }
+        // A link's address is for the reader, not the narration; nor is where a comment sits.
+        let mut plain = without_marks(line);
+        for url in linked(line) {
+            plain = plain.replace(&format!(" <{url}>"), "");
+        }
+        if narration.len() + plain.len() > NARRATION_CHARS {
+            narration.push_str("\n\n[…]");
+            break;
+        }
+        if !narration.is_empty() {
+            narration.push_str("\n\n");
+        }
+        narration.push_str(&plain);
+    }
+    DocCase { title, footage, narration }
+}
+
+/// Where a Google Doc's export puts a comment: "[a]" to "[zz]", at its words
+/// and again before its text at the end. The length of the mark, if `text` opens with one.
+fn comment_mark(text: &str) -> Option<usize> {
+    let rest = text.strip_prefix('[')?;
+    let letters = rest.chars().take_while(char::is_ascii_lowercase).count();
+    ((1..=3).contains(&letters) && rest[letters..].starts_with(']')).then_some(letters + 2)
+}
+
+fn without_marks(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(at) = rest.find('[') {
+        out.push_str(&rest[..at]);
+        match comment_mark(&rest[at..]) {
+            Some(length) => rest = &rest[at + length..],
+            None => {
+                out.push('[');
+                rest = &rest[at + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("  ", " ").trim().to_string()
+}
+
+/// A YouTube link to a moment, as the whole video.
+fn without_time(url: &str) -> String {
+    let Some((base, query)) = url.split_once('?') else { return url.to_string() };
+    let kept: Vec<&str> = query.split('&').filter(|pair| !pair.starts_with("t=") && !pair.starts_with("start=")).collect();
+    if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) }
+}
+
 /// Whether a reused case's footage is in the script, and its moments picked.
 pub fn missing(script: &Script) -> Vec<String> {
     script
@@ -98,7 +217,8 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
         let segment = folder.join(format!("{slot:02}-joined.mp4"));
         if !crate::import::readable(&segment) {
             let label = which(step);
-            crate::import::fetch_video(data, &reuse.url, &download, &settings, &|percent, said| {
+            let source = footage_of(reuse)?;
+            crate::import::fetch_video(data, &source, &download, &settings, &|percent, said| {
                 jobs::stage(id, &said.map(str::to_string).unwrap_or_else(|| format!("Downloading the reused case{label} · {percent}%")));
             })
             .map_err(|error| format!("{} couldn't be downloaded: {error}", title_of(reuse)))?;
@@ -125,7 +245,7 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
             start_ms,
             duration_ms: found.duration_ms,
             audio: !found.video,
-            url: Some(reuse.url.clone()),
+            url: Some(footage_of(reuse)?),
             reuse: Some(reuse.url.clone()),
             ..Default::default()
         });
@@ -367,6 +487,21 @@ fn placed(script: &Script, lines: &[Vec<usize>], moment: &Value) -> Option<Highl
 mod tests {
     use super::*;
 
+    #[test]
+    fn reads_an_earlier_scripts_doc() {
+        let text = "INTERRO Brian Smith - Man Lies About Crash\n\nAssets:\n-\tFootage <https://www.youtube.com/watch?v=abcdefghijk>\n\
+                    Total Duration: 20:31\n\n(0:05\u{2011}0:20 <https://www.youtube.com/watch?v=abcdefghijk&t=5>)\n\n\
+                    In March 2024, Brian [b]Smith told police he wasn't driving…\n\n(1:00\u{2011}2:00 <https://www.youtube.com/watch?v=abcdefghijk&t=60>)\n\n\
+                    In the end, Smith was charged with leaving the scene.[c][d]\n\n[a]Hey....yeah\n\n[c]Blur this";
+        let doc = parse_doc("(DRAFT) Man Lies About Crash", text);
+        assert_eq!(doc.title, "Man Lies About Crash");
+        assert_eq!(doc.footage.as_deref(), Some("https://www.youtube.com/watch?v=abcdefghijk"));
+        assert_eq!(doc.narration, "In March 2024, Brian Smith told police he wasn't driving…\n\nIn the end, Smith was charged with leaving the scene.");
+        // Without an Assets list, the first video a timestamp links to, from its start.
+        let bare = parse_doc("Old case", "Heading\n(0:05-0:20 <https://youtu.be/abcdefghijk?t=5>)\nNarration.");
+        assert_eq!(bare.footage.as_deref(), Some("https://youtu.be/abcdefghijk"));
+    }
+
     fn script() -> Script {
         let mut script: Script = serde_json::from_value(json!({
             "id": "a1", "title": "When Liars Get Caught", "sourceKind": "compilation", "sourceUrl": "",
@@ -375,7 +510,7 @@ mod tests {
         }))
         .unwrap();
         script.compilation = true;
-        script.reuses = vec![Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1 }];
+        script.reuses = vec![Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1, footage: None, narration: None }];
         let said = ["I", "did", "not", "do", "it.", "You", "did,", "we", "have", "video."];
         script.words = said
             .iter()
