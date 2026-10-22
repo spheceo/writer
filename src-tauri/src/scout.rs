@@ -773,8 +773,7 @@ fn heard(video: &Video, dir: &Path, settings: &crate::settings::Settings) -> Res
             audio().ok_or("Its audio didn't download.")?
         }
     };
-    let peaks = crate::media::peaks(&path)?;
-    let words = crate::transcribe::hear_span(&path, settings, &folder, (0, video.duration_ms), &peaks, "v", &|_, _| {})?;
+    let words = crate::transcribe::hear_span(&path, settings, &folder, (0, video.duration_ms), &[], "v", &|_, _| {})?;
     let mut last: Option<String> = None;
     let lines = group(
         words

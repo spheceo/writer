@@ -262,7 +262,8 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
         peaks.extend(heard);
     }
 
-    // Each video's words, heard alone.
+    // Each video's words, heard alone, listening for the case's names.
+    let keyterms = crate::names::case_names(dir, &script, &settings);
     let mut words: Vec<Word> = Vec::new();
     for (step, part) in parts.iter().enumerate() {
         let slot = script.reuses.iter().position(|known| Some(&known.url) == part.reuse.as_ref()).unwrap_or(step);
@@ -272,7 +273,7 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
             &settings,
             &dir.join("transcript").join(format!("reuse-{slot:02}")),
             (part.start_ms, part.start_ms + part.duration_ms),
-            &peaks,
+            &keyterms,
             &format!("reuse{}", slot + 1),
             &|done, pieces| jobs::stage(id, &format!("Transcribing the reused case{label} · {done} of {pieces}")),
         )?;

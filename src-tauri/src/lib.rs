@@ -11,10 +11,13 @@ mod drive;
 mod feedback;
 mod fixing;
 mod formats;
+mod handoff;
+mod hearing;
 mod http;
 mod import;
 mod jobs;
 mod media;
+mod names;
 mod net;
 mod model;
 mod pages;
@@ -842,7 +845,12 @@ fn fix_notes(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
 
 /// Marks the script ready for Edit, or clears the mark.
 pub fn send_to_edit_now(data: &Path, id: &str, ready: bool) -> Result<Option<cloud::Handoff>, String> {
-    cloud::set_handoff(data, id, ready)
+    let mark = cloud::set_handoff(data, id, ready)?;
+    // Its recordings and words, where Edit finds them, if they aren't there yet.
+    if ready {
+        handoff::share_soon(data.to_path_buf(), id.to_string());
+    }
+    Ok(mark)
 }
 
 #[tauri::command]

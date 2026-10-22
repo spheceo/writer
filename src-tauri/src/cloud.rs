@@ -182,6 +182,35 @@ pub fn put_bytes(data: &Path, key: &str, bytes: &[u8], content_type: &str) -> Re
     Ok(())
 }
 
+/// Uploads a file to a key, its progress shown under `script` as the sync's is.
+pub fn put_file(data: &Path, script: &str, key: &str, path: &Path) -> Result<u64, String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("file").to_string();
+    cloud.upload(script, &name, path, key).map_err(|problem| problem.message)
+}
+
+/// The size of what is at a key, or nothing there.
+pub fn head(data: &Path, key: &str) -> Result<Option<u64>, String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let answer = cloud.relay("r2/head", json!({ "key": key })).map_err(|problem| problem.message)?;
+    Ok((answer["exists"] == true).then(|| answer["size"].as_u64().unwrap_or(0)))
+}
+
+/// What is at a key, or nothing there.
+pub fn get_bytes(data: &Path, key: &str) -> Result<Option<Vec<u8>>, String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let url = cloud.url(key, "GET").map_err(|problem| problem.message)?;
+    match cloud.long.get(&url).call() {
+        Ok(response) => {
+            let mut bytes = Vec::new();
+            response.into_reader().read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+            Ok(Some(bytes))
+        }
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(error) => Err(transfer_problem(error, key).message),
+    }
+}
+
 /// Who this Mac is, as commits and claims name it.
 pub fn holder_name() -> String {
     holder()
@@ -492,7 +521,7 @@ impl Cloud {
                 continue;
             }
             let known = ledger.scripts.get(&id).cloned();
-            let files = local_files(&dir);
+            let files = local_files(&dir, &script);
             if known.as_ref().is_some_and(|known| known.body == hash(&body) && same_files(&known.files, &files)) {
                 continue;
             }
@@ -665,8 +694,12 @@ fn busy(id: &str) -> bool {
     import::importing(id) || jobs::running(id)
 }
 
-/// Every file of a script but its body, by its path inside the script's folder.
-fn local_files(dir: &Path) -> BTreeMap<String, Kept> {
+/// Every file of a script but its body, by its path inside the script's
+/// folder. A joined case's recordings are left out: they are Edit's
+/// originals (shared under edit/originals/), and the joined preview is what
+/// another Mac plays.
+fn local_files(dir: &Path, script: &Script) -> BTreeMap<String, Kept> {
+    let original = Path::new(&script.original_path);
     let mut found = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(at) = stack.pop() {
@@ -686,6 +719,10 @@ fn local_files(dir: &Path) -> BTreeMap<String, Kept> {
             // A build's state belongs to the Mac running it: another Mac
             // would read a build running there as one Writer closed on.
             if relative == "script.json" || relative == "build.json" {
+                continue;
+            }
+            let recording = (relative.starts_with("drive/") || relative.starts_with("compilation/")) && !relative.ends_with(".json");
+            if recording && path != original {
                 continue;
             }
             let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);

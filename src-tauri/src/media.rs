@@ -6,9 +6,6 @@ use crate::proc;
 
 /// A joined case may run as long as Repack lets one run.
 pub const MAX_CASE_MS: u64 = 20 * 3_600_000;
-const PIECE_MS: u64 = 2 * 3_600_000;
-const SEARCH_MS: u64 = 30_000;
-const PEAK_MS: u64 = 20;
 
 /// What a file holds: its length and whether it has picture and sound.
 pub struct Streams {
@@ -361,117 +358,6 @@ pub fn overview(peaks: &[f32], buckets: usize) -> Vec<f32> {
         }
     }
     out
-}
-
-/// Pieces of at most about two hours, split at the quietest moment near the
-/// mark so a word is less likely to be cut in half. Each piece's Opus file
-/// stays under the relay's upload cap.
-pub fn plan_pieces(duration_ms: u64, peaks: &[f32]) -> Vec<(u64, u64)> {
-    plan_pieces_between(0, duration_ms, peaks)
-}
-
-/// Pieces of about two hours between `from` and `duration_ms`, each cut at a
-/// quiet moment near its end.
-pub fn plan_pieces_between(from: u64, duration_ms: u64, peaks: &[f32]) -> Vec<(u64, u64)> {
-    let mut pieces = Vec::new();
-    let mut start = from;
-    while start + 1000 < duration_ms {
-        if duration_ms - start <= PIECE_MS + SEARCH_MS {
-            pieces.push((start, duration_ms));
-            break;
-        }
-        let mark = start + PIECE_MS;
-        let cut = quiet_at(peaks, mark).max(start + 1000).min(duration_ms - 1000);
-        if cut <= start {
-            pieces.push((start, duration_ms));
-            break;
-        }
-        pieces.push((start, cut));
-        start = cut;
-    }
-    pieces
-}
-
-fn quiet_at(peaks: &[f32], mark_ms: u64) -> u64 {
-    if peaks.is_empty() {
-        return mark_ms;
-    }
-    let end = ((mark_ms / PEAK_MS) as usize).min(peaks.len() - 1);
-    let start = mark_ms.saturating_sub(SEARCH_MS) / PEAK_MS;
-    let start = (start as usize).min(end);
-    let mut best = end;
-    let mut loud = f32::MAX;
-    for index in start..=end {
-        if peaks[index] < loud {
-            loud = peaks[index];
-            best = index;
-        }
-    }
-    best as u64 * PEAK_MS
-}
-
-pub fn encode_opus(source: &Path, dest: &Path, start_ms: u64, end_ms: u64) -> Result<(), String> {
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let start = format!("{:.3}", start_ms as f64 / 1000.0);
-    let end = format!("{:.3}", end_ms as f64 / 1000.0);
-    let source_text = source.to_string_lossy().to_string();
-    let dest_text = dest.to_string_lossy().to_string();
-    proc::run(
-        "ffmpeg",
-        &[
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-ss",
-            &start,
-            "-to",
-            &end,
-            "-i",
-            &source_text,
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "libopus",
-            "-b:a",
-            "32k",
-            "-application",
-            "voip",
-            &dest_text,
-        ],
-        Duration::from_secs(30 * 60),
-    )?;
-    if !dest.is_file() {
-        return Err("Could not prepare audio for transcription.".into());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_short_recording_is_one_piece() {
-        assert_eq!(plan_pieces(60_000, &[]), vec![(0, 60_000)]);
-    }
-
-    #[test]
-    fn a_long_recording_splits_at_the_quiet_point() {
-        let count = 3 * 3600 * 50;
-        let mut peaks = vec![0.5f32; count];
-        let mark = 2 * 3600 * 1000 - 10_000;
-        peaks[(mark / 20) as usize] = 0.0;
-        let pieces = plan_pieces(3 * 3600 * 1000, &peaks);
-        assert_eq!(pieces.len(), 2);
-        assert_eq!(pieces[0], (0, mark));
-        assert_eq!(pieces[1].1, 3 * 3600 * 1000);
-    }
 }
 
 #[cfg(test)]

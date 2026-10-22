@@ -9,20 +9,23 @@ preview_urls = false
 
 [vars]
 # Daily audio per client IP and across everyone, in bytes of 32 kbps Opus
-# (~14.4 MB per hour). A long interview is a few hours, heard in pieces.
-DAILY_BYTES_PER_IP = "115200000"  # ~8 hours
-DAILY_BYTES_TOTAL = "345600000"   # ~24 hours
+# (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
+# its words and whole for its voices, so an hour of footage is ~2.2 hours of
+# audio here. A long interview is a few hours.
+DAILY_BYTES_PER_IP = "288000000"  # ~20 hours of audio, ~9 hours of footage
+DAILY_BYTES_TOTAL = "288000000"   # ~20 hours, Edit's cap too (~16.6k credits a day at most)
 MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
 
-# Bursts: requests a minute per IP. Writer hears three pieces at once and can
-# run imports side by side, so a busy minute is about a dozen. The daily byte
-# caps above still bound the spend. Namespace is not Edit's (7701).
+# Bursts: requests a minute per IP. Writer hears four 48 s pieces at once, as
+# Edit does, and can run imports side by side: Edit's relay takes 60 a
+# minute. The daily byte caps above still bound the spend. Namespace is not
+# Edit's (7701).
 [[ratelimits]]
 name = "BURST"
 namespace_id = "7702"
 
 [ratelimits.simple]
-limit = 12
+limit = 60
 period = 60
 
 # The watcher: Gemini windows a minute per IP. An import watches a few

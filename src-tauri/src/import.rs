@@ -350,7 +350,12 @@ enum Step {
 fn run(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Result<ScriptDetail, String> {
     let outcome = catch_unwind(AssertUnwindSafe(|| pipeline(app, data, dir, script)));
     match outcome {
-        Ok(Ok(Step::Done)) | Ok(Ok(Step::Paused)) => Ok(store::detail(script.clone(), dir)),
+        Ok(Ok(Step::Done)) => {
+            // Its recordings and words, shared with Edit in the background.
+            crate::handoff::share_soon(data.to_path_buf(), script.id.clone());
+            Ok(store::detail(script.clone(), dir))
+        }
+        Ok(Ok(Step::Paused)) => Ok(store::detail(script.clone(), dir)),
         Ok(Err(error)) => fail(app, dir, script, error),
         Err(panic) => {
             let what = panic
@@ -431,6 +436,30 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         ensure_preview(app, dir, script, &source)?;
     }
 
+    // A Drive case folder's PDFs (reports, court papers), read for the case's
+    // facts, as Repack reads them, before the footage is heard: their names
+    // are what the transcriber listens for. Never stops the import.
+    if script.source_kind == "drive" {
+        if let Ok(drive::Link::Folder(folder)) = drive::parse(&script.source_url) {
+            let fresh = !crate::casefiles::load(dir).is_some_and(|documents| documents.complete);
+            let (id, title) = (script.id.clone(), script.title.clone());
+            let documents = crate::casefiles::run(dir, &folder, &settings, &|done, count| {
+                emit_parts(app, &id, &title, "researching", 58, &format!("Reading the case's PDFs: {done} of {count}."));
+            });
+            if fresh && !documents.skipped.is_empty() {
+                let shown: Vec<&str> = documents.skipped.iter().take(3).map(String::as_str).collect();
+                let more = documents.skipped.len().saturating_sub(3);
+                note(script, format!(
+                    "{} of the folder's PDFs {} passed over: {}{}",
+                    documents.skipped.len(),
+                    if documents.skipped.len() == 1 { "was" } else { "were" },
+                    shown.join("; "),
+                    if more > 0 { format!("; and {more} more.") } else { String::new() }
+                ));
+            }
+        }
+    }
+
     // The words.
     if script.no_speech {
         script.words.clear();
@@ -445,7 +474,7 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         let (id, title) = (script.id.clone(), script.title.clone());
         let heard = transcribe::transcribe(script, dir, &settings, &|done, count| {
             let percent = 60 + ((done as u32 * 30) / count.max(1) as u32) as u8;
-            let detail = if count > 1 { format!("Transcribing: {done} of {count} parts done.") } else { "Transcribing.".into() };
+            let detail = format!("Transcribing: {}%.", done * 100 / count.max(1));
             emit_parts(app, &id, &title, "transcribing", percent, &detail);
         });
         match heard {
@@ -469,28 +498,6 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         }
     }
 
-    // A Drive case folder's PDFs (reports, court papers), read for the case's
-    // facts, as Repack reads them. Never stops the import.
-    if script.source_kind == "drive" {
-        if let Ok(drive::Link::Folder(folder)) = drive::parse(&script.source_url) {
-            let fresh = !crate::casefiles::load(dir).is_some_and(|documents| documents.complete);
-            let (id, title) = (script.id.clone(), script.title.clone());
-            let documents = crate::casefiles::run(dir, &folder, &settings, &|done, count| {
-                emit_parts(app, &id, &title, "researching", 98, &format!("Reading the case's PDFs: {done} of {count}."));
-            });
-            if fresh && !documents.skipped.is_empty() {
-                let shown: Vec<&str> = documents.skipped.iter().take(3).map(String::as_str).collect();
-                let more = documents.skipped.len().saturating_sub(3);
-                note(script, format!(
-                    "{} of the folder's PDFs {} passed over: {}{}",
-                    documents.skipped.len(),
-                    if documents.skipped.len() == 1 { "was" } else { "were" },
-                    shown.join("; "),
-                    if more > 0 { format!("; and {more} more.") } else { String::new() }
-                ));
-            }
-        }
-    }
 
     script.status = "ready".into();
     script.stage = "ready".into();
@@ -994,10 +1001,9 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
         .map(|((_, recording), path)| (drive::stem(&recording.name), path, Some(drive_link(&recording.id))))
         .collect();
     join_preview(app, dir, script, &items, "recordings")?;
-    // The recordings are in the joined footage now; the list stays for Retry.
-    for path in &paths {
-        let _ = fs::remove_file(path);
-    }
+    // The recordings stay: each is heard from its own file, and they are the
+    // full-quality footage Edit cuts from. The joined footage is a preview.
+    let _ = paths;
     Ok(Fetched::Joined)
 }
 
@@ -1044,6 +1050,51 @@ fn drive_link(id: &str) -> String {
 /// The links of a joined script's recordings, in play order, for one joined
 /// before its parts kept them: a Drive folder's chosen recordings, or a
 /// compilation's videos less those left out. None when they no longer line up.
+/// Each recording's own file, where it is kept on this Mac, in the order of
+/// the script's parts (a reused case's footage, joined later, has none).
+pub fn part_files(dir: &Path, script: &Script) -> Vec<Option<PathBuf>> {
+    let files: Vec<PathBuf> = if script.source_kind == "compilation" {
+        let Some(videos) = Videos::read(dir) else { return Vec::new() };
+        (0..videos.videos.len()).filter(|index| !videos.skipped.contains(&index.to_string())).map(|index| dir.join("compilation").join(format!("{index:02}.mp4"))).collect()
+    } else if script.source_kind == "drive" {
+        let Some(manifest) = Manifest::read(dir) else { return Vec::new() };
+        manifest.wanted().iter().map(|(index, recording)| drive_file(&dir.join("drive"), *index, recording)).collect()
+    } else {
+        return Vec::new();
+    };
+    script.parts.iter().enumerate().map(|(index, part)| if part.reuse.is_some() { None } else { files.get(index).filter(|file| readable(file)).cloned() }).collect()
+}
+
+/// Where each of the script's recordings comes from, as Edit's footage
+/// registry names it (`drive:<file id>`, `youtube:<video id>`), with its
+/// file name, in the order of `transcribe::recordings`. None for a file from
+/// disk (named by its content, `sha256:`, by the handoff) or a reused case.
+pub fn part_sources(dir: &Path, script: &Script) -> Vec<Option<(String, String)>> {
+    let of_link = |url: &str, title: &str| -> Option<(String, String)> {
+        if let Ok(drive::Link::File(id)) = drive::parse(url) {
+            return Some((format!("drive:{id}"), format!("{title}.mp4")));
+        }
+        crate::handoff::youtube_id(url).map(|id| (format!("youtube:{id}"), format!("{title}.mp4")))
+    };
+    let joined = script.parts.len() > 1;
+    let listed: Vec<Option<(String, String)>> = match script.source_kind.as_str() {
+        "drive" => match Manifest::read(dir) {
+            Some(manifest) => manifest.wanted().iter().map(|(_, recording)| Some((format!("drive:{}", recording.id), recording.name.clone()))).collect(),
+            None => vec![of_link(&script.source_url, &script.title)],
+        },
+        "compilation" => match Videos::read(dir) {
+            Some(videos) => videos.videos.iter().enumerate().filter(|(index, _)| !videos.skipped.contains(&index.to_string())).map(|(_, video)| of_link(&video.url, &video.title)).collect(),
+            None => Vec::new(),
+        },
+        "youtube" => vec![of_link(&script.source_url, &script.title)],
+        _ => vec![None],
+    };
+    if !joined {
+        return vec![listed.into_iter().next().flatten()];
+    }
+    script.parts.iter().enumerate().map(|(index, part)| if part.reuse.is_some() { None } else { listed.get(index).cloned().flatten() }).collect()
+}
+
 pub fn part_links(dir: &Path, script: &Script) -> Option<Vec<String>> {
     let links: Vec<String> = if script.source_kind == "compilation" {
         let videos = Videos::read(dir)?;
@@ -1200,10 +1251,9 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         };
         return pause(app, dir, script, Decision::FailedRecordings { summary, failed, total: count }).map(|_| Fetched::Paused);
     }
+    // The videos stay: each is heard from its own file, and they are the
+    // full-quality footage Edit cuts from. The joined footage is a preview.
     join_preview(app, dir, script, &items, "videos")?;
-    for (_, path, _) in &items {
-        let _ = fs::remove_file(path);
-    }
     Ok(Fetched::Joined)
 }
 

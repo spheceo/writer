@@ -141,6 +141,12 @@ impl Relay {
         self.post_json("/v1/watch", &body, 5)
     }
 
+    /// Gemini answers on text alone, in `schema`'s shape (the case's names for the transcriber).
+    pub fn ask_text(&self, system: &str, text: &str, schema: &Value) -> Result<Value, Failed> {
+        let body = serde_json::json!({ "system": system, "text": text, "schema": schema });
+        self.post_json("/v1/watch", &body, 2)
+    }
+
     /// Exports a script, as a Word file in base64, to a new Google Doc open to
     /// anyone with its link. Answers the Doc as the relay lists it.
     pub fn export_doc(&self, name: &str, script_id: &str, draft: bool, docx: &str) -> Result<Value, String> {
@@ -158,8 +164,9 @@ impl Relay {
         self.get_json(&format!("/v1/docs/comments?script={script_id}&doc={doc}"))
     }
 
-    /// Sends one piece of Opus audio to be heard. Waits up to half an hour.
-    pub fn transcribe(&self, audio: &Path) -> Result<Value, Failed> {
+    /// Sends one piece of Opus audio to be heard, listening for the case's
+    /// names (`keyterms`), as Edit asks it. Waits up to half an hour.
+    pub fn transcribe(&self, audio: &Path, keyterms: &[String]) -> Result<Value, Failed> {
         let size = std::fs::metadata(audio).map_err(|error| Failed::Network(error.to_string()))?.len();
         let file = File::open(audio).map_err(|error| Failed::Network(error.to_string()))?;
         let slow = ureq::AgentBuilder::new()
@@ -167,8 +174,11 @@ impl Relay {
             .timeout(Duration::from_secs(30 * 60))
             .user_agent("Writer")
             .build();
-        let response = self
-            .request(&slow, "POST", "/v1/transcribe?language=en")
+        let mut request = self.request(&slow, "POST", "/v1/transcribe");
+        for term in keyterms {
+            request = request.query("keyterm", term);
+        }
+        let response = request
             .set("content-type", "audio/ogg")
             .set("content-length", &size.to_string())
             .send(file)?;

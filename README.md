@@ -67,7 +67,7 @@ Footage comes from three places, as in Repack:
 - **This Mac.** The file stays where it is.
 - **A compilation.** 2 to 12 YouTube or Drive video links, one case each, joined in order with a "Video N" header per case.
 
-Work runs side by side: up to 3 imports at once, 3 Drive recordings downloading at once, and 3 transcription pieces heard at once (the relay allows 12 requests a minute per Mac).
+Work runs side by side: up to 3 imports at once, 3 Drive recordings downloading at once, and 4 transcription pieces heard at once (the relay allows 60 requests a minute per Mac, as Edit's does).
 
 When an import goes wrong it stops in a state you can act on, as in Repack:
 
@@ -89,7 +89,7 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 
 `relay/` holds Writer's keys. Everything but `/health` needs the client token:
 
-- `POST /v1/transcribe` forwards Opus audio to ElevenLabs Scribe v2. It caps bursts and a day's audio per IP and across everyone. Byte caps stand in for duration; they are not a hard dollar cap.
+- `POST /v1/transcribe` forwards Opus audio to ElevenLabs Scribe v2 with Edit's parameters, the case's names as `keyterm`s. It caps bursts and a day's audio per IP and across everyone (~20 hours, as Edit's). Byte caps stand in for duration; they are not a hard dollar cap.
 - `GET /v1/drive/token` gives a one-hour access token for Repack's Drive account. The refresh token stays on the relay.
 - `GET /v1/proxy` gives the DataImpulse proxy for YouTube downloads.
 - `POST /v1/watch` sends a few minutes of footage to Gemini 3.8 Flash through the Vercel AI Gateway (the relay picks the model; 40 a minute per IP).
@@ -123,7 +123,9 @@ done
 
 Anyone with the client token can read that Drive account for an hour at a time and use the proxy, so treat the token like a password. The app looks for `https://writer-relay.sphe-g-personal.workers.dev` until you change that URL.
 
-Long recordings are sent in pieces of about two hours, split near a quiet moment. A piece that already succeeded is kept, so a retry does not pay ElevenLabs again.
+Footage is heard as Edit hears it, one system for both apps (`hearing.rs`, a port of Edit's `transcribe.ts`): a recording up to 90 s in one go; a longer one twice at once, in 40 s pieces (4 s either side) for its words and times, and whole for who speaks, the two lined up by what they say. A joined case is heard recording by recording, from each one's own file (joined cases now keep their recordings). Every request listens for the case's names (`names.rs`, Edit's `names.ts`: Gemini lists the people and places its articles, case files and narration give, each word checked against them, surnames on their own too); case PDFs are read before the footage is heard, so their names count. What's heard is kept as it comes in, so a retry never pays twice; each recording's transcript is `transcript/<recording>/transcript.json` in Edit's format.
+
+**The handoff to Edit** (`handoff.rs`): after an import, and on **Send to Edit**, each recording goes to Edit's footage registry (`edit:putMedia`, under `drive:<id>`, `youtube:<id>` or `sha256:<hex>`) with its original on R2 under `edit/originals/`, and its words to `edit/analysis/<source>/transcript.json`; before hearing a recording, Writer reads Edit's transcript of it if there is one. Until Edit confirms the format this is switched off (`handoff::SHARE`), and what would be shared is written to `edit-share.json` beside the script. Send to Edit marks the script on its Convex row (`writer:setHandoff`) for Edit's home screen.
 
 ## Cloud
 

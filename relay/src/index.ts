@@ -11,14 +11,19 @@ declare const FixedLengthStream: {
  * Writer's relay. Holds Writer's keys so the desktop app never does, and
  * nobody installing Writer needs Infisical or a key of their own.
  *
- *   POST /v1/transcribe   body: audio/ogg (Opus), Content-Length required
- *                         → ElevenLabs Scribe v2 JSON (words, timings, speakers)
+ *   POST /v1/transcribe?keyterm=…&keyterm=…   body: audio/ogg (Opus), Content-Length required
+ *                         → ElevenLabs Scribe v2 JSON (words, timings, speakers),
+ *                           asked exactly as Edit's relay asks it: the case's
+ *                           names as keyterms (at most 100, each under 50
+ *                           characters), no language given
  *   GET  /v1/drive/token  → a one-hour access token for Repack's Drive account
  *                           (its refresh token stays here)
  *   GET  /v1/proxy        → the DataImpulse proxy for YouTube downloads, or null
- *   POST /v1/watch        body: { system, text, clip (base64 MP4), schema }
+ *   POST /v1/watch        body: { system, text, clip? (base64 MP4), schema }
  *                         → Gemini's answer on a few minutes of footage, through
- *                           the Vercel AI Gateway (who speaks each line)
+ *                           the Vercel AI Gateway (who speaks each line); with
+ *                           no clip, on the text alone (the case's names for
+ *                           the transcriber, as Edit's names.ts asks them)
  *   POST /v1/docs/export  body: { name, scriptId, draft, docx (base64) }
  *                         → a new Google Doc made from the Word file, comments
  *                           and all, in the "Writer scripts" folder of the
@@ -144,6 +149,11 @@ export default {
     }
     const language = url.searchParams.get("language");
     if (language && !/^[a-zA-Z]{2,3}$/.test(language)) return json(400, { error: "Invalid language code." });
+    // The case's names to listen for (Scribe's keyterms), checked as Edit's relay checks them.
+    const keyterms = url.searchParams.getAll("keyterm");
+    if (keyterms.length > 100 || keyterms.some((term) => term.length < 1 || term.length >= 50 || /[<>{}[\]\\\u0000-\u001f]/.test(term))) {
+      return json(400, { error: "Invalid keyterms: at most 100, each under 50 characters." });
+    }
     const day = new Date().toISOString().slice(0, 10);
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
     const client = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -154,13 +164,14 @@ export default {
     }));
     if (!reserved.ok) return reserved;
 
-    const form = multipart(request.body!, size, type, {
-      model_id: MODEL,
-      diarize: "true",
-      timestamps_granularity: "word",
-      tag_audio_events: "false",
-      ...(language ? { language_code: language } : {}),
-    });
+    const form = multipart(request.body!, size, type, [
+      ["model_id", MODEL],
+      ["diarize", "true"],
+      ["timestamps_granularity", "word"],
+      ["tag_audio_events", "false"],
+      ...(language ? [["language_code", language] as [string, string]] : []),
+      ...keyterms.map((term): [string, string] => ["keyterms", term]),
+    ]);
     const upstream = await fetch(SCRIBE, {
       method: "POST",
       headers: { "xi-api-key": env.ELEVENLABS_API_KEY, "content-type": form.contentType },
@@ -235,8 +246,8 @@ async function watch(request: Request, env: Env): Promise<Response> {
     clip?: unknown;
     schema?: unknown;
   } | null;
-  if (!body || typeof body.system !== "string" || typeof body.text !== "string" || typeof body.clip !== "string" || typeof body.schema !== "object" || !body.schema) {
-    return json(400, { error: "Send system, text, clip and schema." });
+  if (!body || typeof body.system !== "string" || typeof body.text !== "string" || (body.clip !== undefined && typeof body.clip !== "string") || typeof body.schema !== "object" || !body.schema) {
+    return json(400, { error: "Send system, text, schema and (to watch footage) clip." });
   }
   // The model is the relay's choice, so the key only ever pays for the watcher.
   const upstream = await fetch(GATEWAY, {
@@ -250,11 +261,13 @@ async function watch(request: Request, env: Env): Promise<Response> {
           role: "user",
           content: [
             { type: "text", text: body.text },
-            { type: "file", file: { filename: "window.mp4", file_data: `data:video/mp4;base64,${body.clip}` } },
+            ...(typeof body.clip === "string" ? [{ type: "file", file: { filename: "window.mp4", file_data: `data:video/mp4;base64,${body.clip}` } }] : []),
           ],
         },
       ],
       response_format: { type: "json_schema", json_schema: { name: "watched", strict: true, schema: body.schema } },
+      // Text alone is a quick listing (names.ts asks with low effort too).
+      ...(typeof body.clip === "string" ? {} : { reasoning: { effort: "low" } }),
     }),
   });
   return new Response(upstream.body, {
@@ -467,12 +480,12 @@ function multipart(
   audio: ReadableStream<Uint8Array>,
   audioSize: number,
   audioType: string,
-  fields: Record<string, string>,
+  fields: [string, string][],
 ) {
   const boundary = `writer-${crypto.randomUUID()}`;
   const encoder = new TextEncoder();
   const head = encoder.encode(
-    Object.entries(fields)
+    fields
       .map(([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`)
       .join("") +
       `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="audio.ogg"\r\nContent-Type: ${audioType}\r\n\r\n`,
