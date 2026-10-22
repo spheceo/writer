@@ -847,28 +847,6 @@ fn fix_notes(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
     fix_notes_now(app, &data, id)
 }
 
-/// Marks the script ready for Edit, or clears the mark.
-pub fn send_to_edit_now(data: &Path, id: &str, ready: bool) -> Result<Option<cloud::Handoff>, String> {
-    let mark = cloud::set_handoff(data, id, ready)?;
-    // Its recordings and words, where Edit finds them, if they aren't there yet.
-    if ready {
-        handoff::share_soon(data.to_path_buf(), id.to_string());
-    }
-    Ok(mark)
-}
-
-#[tauri::command]
-async fn send_to_edit(app: AppHandle, id: String, ready: bool) -> Result<Option<cloud::Handoff>, String> {
-    tauri::async_runtime::spawn_blocking(move || send_to_edit_now(&data_dir(&app)?, &id, ready))
-        .await
-        .map_err(|error| error.to_string())?
-}
-
-#[tauri::command]
-fn get_handoff(app: AppHandle, id: String) -> Result<Option<cloud::Handoff>, String> {
-    Ok(cloud::handoff(&data_dir(&app)?, &id))
-}
-
 /// Approves the script's latest shared version, or (`approve` false) takes the approval back.
 pub fn approve_review_now(data: &Path, id: &str, approve: bool) -> Result<serde_json::Value, String> {
     if approve {
@@ -1146,8 +1124,6 @@ pub fn run() {
             set_auto_fix,
             approve_review,
             restore_script,
-            send_to_edit,
-            get_handoff,
             set_pacing,
             get_finds,
             pull_feedback,

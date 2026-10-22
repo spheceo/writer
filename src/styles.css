@@ -1255,7 +1255,6 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 /* A note for the video editor ("edit: …"): Edit's agent follows it in that section. */
 .comment[data-edit] { border-left: 3px solid var(--cut-in); }
 .comment[data-edit] .avatar { background: var(--cut-in); color: #000; }
-.sent-button { color: var(--ok); }
 /* An approved review: done, the link closed to notes. */
 .review-button.approved, .approved-mark { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 .review-approved { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 8px; color: var(--text); line-height: 1.45; }

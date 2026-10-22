@@ -166,7 +166,7 @@ fn transcript_of(dir: &Path, script: &Script, recording: &Shared) -> Transcript 
 /// each original uploaded and registered unless the registry has it ready,
 /// each transcript unless one is there. Answers what it did.
 /// `hear`: a recording not yet heard Edit's way is heard first, so its words
-/// can go too (an import, Send to Edit). Without it (the backfill, a
+/// can go too (an import). Without it (the backfill, a
 /// restore), footage goes and words only where a hearing is already there.
 pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
     let dir = store::script_dir(data, id)?;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { approveReview, fixNotes, restoreScript, getHandoff, type Handoff, message, onReviews, reviewCounts, reviewNotes, sendToEdit, setAutoFix, shareScript } from "./api";
+import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, setAutoFix, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { Dialog, Icon } from "./ui";
 
@@ -387,58 +387,6 @@ export function ReviewDialog({
         </ul>
       )}
     </Dialog>
-  );
-}
-
-// ---- Send to Edit ---------------------------------------------------------------
-
-/**
- * Marks the script ready for Edit, whose home screen lists it to make a
- * project from. Saved since it was sent, it can be sent again; sent and
- * unchanged, a click takes the mark back.
- */
-export function SendToEditButton({ script, disabled, onProblem }: { script: Script; disabled: boolean; onProblem: (text: string) => void }) {
-  const [mark, setMark] = useState<Handoff | null>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let live = true;
-    const ask = () => void getHandoff(script.id).then((found) => live && setMark(found), () => {});
-    ask();
-    // The cloud catches up a few seconds after a save.
-    const timer = window.setInterval(ask, 15_000);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, [script.id, script.revision]);
-  const send = async (ready: boolean) => {
-    setBusy(true);
-    try {
-      setMark(await sendToEdit(script.id, ready));
-    } catch (cause) {
-      onProblem(message(cause));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const sent = !!mark && !mark.changed;
-  const title = !mark
-    ? "Mark the script ready for Edit: its home screen lists it, with its footage and transcripts"
-    : `Sent to Edit by ${mark.by}, ${when(mark.at)}.${mark.changed ? " The script has changed since: send it again." : " Click to take it back."}`;
-  return (
-    <button
-      type="button"
-      className={sent ? "secondary sm sent-button" : "secondary sm"}
-      disabled={disabled || busy}
-      title={title}
-      onClick={() => {
-        if (sent && !window.confirm("Take the script back from Edit's list?")) return;
-        void send(!sent);
-      }}
-    >
-      <Icon name={sent ? "check" : "send"} size={14} />
-      {busy ? "Sending…" : !mark ? "Send to Edit" : mark.changed ? "Send again to Edit" : "Sent to Edit"}
-    </button>
   );
 }
 

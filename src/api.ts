@@ -337,15 +337,6 @@ export function onReviews(then: () => void): () => void {
   };
 }
 
-/** A script marked ready for Edit (writer:setHandoff), and whether it has been saved since. */
-export type Handoff = { at: number; by: string; rev: number; changed: boolean };
-
-export const getHandoff = (id: string) =>
-  inTauri() ? invoke<Handoff | null>("get_handoff", { id }) : http<Handoff | null>(`/api/scripts/${id}/handoff`);
-
-/** Marks the script ready for Edit, or (`ready` false) takes the mark back. */
-export const sendToEdit = (id: string, ready: boolean) =>
-  inTauri() ? invoke<Handoff | null>("send_to_edit", { id, ready }) : http<Handoff | null>(`/api/scripts/${id}/handoff`, { ...json({ ready }), method: "PUT" });
 
 /** Brings an archived script's footage back from its links (or Edit's originals); followed as a build. */
 export const restoreScript = (id: string) =>

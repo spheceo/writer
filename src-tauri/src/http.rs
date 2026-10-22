@@ -269,11 +269,6 @@ fn route(
             let data = data_dir(&app)?;
             json_result(stream, crate::restore_now(app, &data, id))
         }
-        ("GET", ["api", "scripts", id, "handoff"]) => write_json(stream, 200, &crate::cloud::handoff(&data_dir(&app)?, id)),
-        ("PUT", ["api", "scripts", id, "handoff"]) => {
-            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
-            json_result(stream, crate::send_to_edit_now(&data_dir(&app)?, id, value["ready"].as_bool().unwrap_or(true)))
-        }
         ("GET", ["api", "reviews"]) => write_json(stream, 200, &crate::reviews::counts(&data_dir(&app)?)),
         ("GET", ["api", "scripts", id, "review"]) => json_result(stream, crate::review_notes_now(&data_dir(&app)?, id)),
         ("PUT", ["api", "scripts", id, "review", "approval"]) => {
