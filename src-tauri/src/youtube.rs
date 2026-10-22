@@ -267,7 +267,8 @@ pub fn write_proxy_file(dir: &Path, proxy: &str) -> Result<std::path::PathBuf, S
     }
     let mut file = options.open(&path).map_err(|error| error.to_string())?;
     use std::io::Write;
-    writeln!(file, "proxy = \"{proxy}\"").map_err(|error| error.to_string())?;
+    // A yt-dlp config file holds command-line options, one set per line.
+    writeln!(file, "--proxy \"{proxy}\"").map_err(|error| error.to_string())?;
     Ok(path)
 }
 
@@ -291,6 +292,15 @@ mod tests {
         assert_eq!(trouble("ERROR: The read operation timed out"), Trouble::Connection);
         assert!(matches!(trouble("ERROR: Private video. Sign in"), Trouble::Final(text) if text.contains("private")));
         assert!(matches!(trouble("WARNING: older than 90 days ERROR: Video unavailable"), Trouble::Final(text) if text.contains("brew upgrade")));
+    }
+
+    #[test]
+    fn writes_the_proxy_as_yt_dlp_reads_it() {
+        let dir = std::env::temp_dir().join(format!("writer-proxy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = write_proxy_file(&dir, "http://user;ttl.120:secret@gw.dataimpulse.com:10001").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "--proxy \"http://user;ttl.120:secret@gw.dataimpulse.com:10001\"\n");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
