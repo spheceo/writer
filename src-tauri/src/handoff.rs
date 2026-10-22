@@ -8,9 +8,8 @@
 //! them). Before hearing a recording, Writer reads that transcript if Edit
 //! (or another Mac) heard it already. Edit's cloud_media.ts has the layout.
 //!
-//! `SHARE` is off until Edit confirms the format: then nothing is written
-//! under edit/, and what would be is set out in `edit-share.json` beside the
-//! script.
+//! With `SHARE` off, nothing is written under edit/, and what would be is
+//! set out in `edit-share.json` beside the script.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -21,11 +20,11 @@ use sha2::{Digest, Sha256};
 
 use crate::hearing::{self, Transcript};
 use crate::model::Script;
-use crate::{cloud, store, transcribe};
+use crate::{cloud, settings, store, transcribe};
 
-/// Writes to edit/ (originals, the registry, transcripts). Off until Edit
-/// confirms the format and keys.
-pub const SHARE: bool = false;
+/// Writes to edit/ (originals, the registry, transcripts), in the format and
+/// keys Edit confirmed on 2026-10-22. Off, only `edit-share.json` is written.
+pub const SHARE: bool = true;
 
 /// A YouTube video's ID from its link.
 pub fn youtube_id(url: &str) -> Option<String> {
@@ -125,10 +124,17 @@ fn shared(dir: &Path, script: &Script) -> Vec<Shared> {
         .collect()
 }
 
-/// A recording's words in Edit's format, from the script as it stands: the
-/// words as heard, with the voices the watcher and naming settled.
+/// A recording's hearing in Edit's format (hearing.rs), if it has one.
+fn heard_of(dir: &Path, recording: &Shared) -> Option<Transcript> {
+    fs::read(dir.join("transcript").join(&recording.key).join("transcript.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+/// A recording's words in Edit's format. When the script's words are that
+/// hearing's, they go as the script has them, with the voices Writer's
+/// watcher and naming settled and the names given to them; a hearing made
+/// after the script's words goes as heard.
 fn transcript_of(dir: &Path, script: &Script, recording: &Shared) -> Transcript {
-    let heard: Transcript = fs::read(dir.join("transcript").join(&recording.key).join("transcript.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let heard = heard_of(dir, recording).unwrap_or_default();
     let strip = |speaker: &str| -> Option<String> {
         match &recording.tag {
             Some(tag) => speaker.strip_prefix(&format!("{tag}:")).map(str::to_string),
@@ -147,6 +153,11 @@ fn transcript_of(dir: &Path, script: &Script, recording: &Shared) -> Transcript 
             speaker: word.speaker.as_deref().and_then(strip),
         })
         .collect();
+    let words: Vec<hearing::Word> = words;
+    let derived = !heard.words.is_empty() && heard.words.len() == words.len() && heard.words.iter().zip(&words).all(|(a, b)| a.text == b.text);
+    if !heard.words.is_empty() && !derived {
+        return heard;
+    }
     let speakers = script.speakers.iter().filter_map(|(label, name)| strip(label).map(|label| (label, name.clone()))).collect();
     Transcript { model: if heard.model.is_empty() { "scribe_v2".into() } else { heard.model }, language: heard.language, words, speakers, keyterms: heard.keyterms }
 }
@@ -164,8 +175,8 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
         let size = fs::metadata(&recording.file).map(|meta| meta.len()).unwrap_or(0);
         let duration = crate::media::streams(&recording.file).map(|found| found.duration_ms as f64 / 1000.0).ok();
         let key = original_key(&recording.source, &recording.name);
-        let transcript = (!script.words.is_empty()).then(|| hearing::serialize(&transcript_of(&dir, &script, recording)));
         if !SHARE {
+            let transcript = (!script.words.is_empty()).then(|| hearing::serialize(&transcript_of(&dir, &script, recording)));
             plan.push(json!({
                 "source": recording.source,
                 "file": recording.file,
@@ -176,8 +187,8 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
             continue;
         }
         let record = cloud::call(data, "query", "edit:getMedia", json!({ "source": recording.source }))?;
-        if record["originalReady"] != true {
-            let key = record["originalKey"].as_str().map(str::to_string).unwrap_or(key);
+        let record = if record["originalReady"] != true {
+            let key = record["originalKey"].as_str().map(str::to_string).unwrap_or_else(|| key.clone());
             if record.is_null() {
                 cloud::call(data, "mutation", "edit:putMedia", json!({ "source": recording.source, "name": recording.name, "originalKey": key, "size": size }))?;
             }
@@ -186,15 +197,24 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
             if let Some(duration) = duration {
                 ready["duration"] = json!(duration);
             }
-            cloud::call(data, "mutation", "edit:putMedia", ready)?;
+            let record = cloud::call(data, "mutation", "edit:putMedia", ready)?;
             done.push(format!("uploaded {}", recording.name));
-        }
-        if let Some(text) = transcript {
-            let at = transcript_key(&recording.source);
-            if cloud::head(data, &at)?.is_none() {
-                cloud::put_bytes(data, &at, text.as_bytes(), "application/json")?;
-                done.push(format!("shared the words of {}", recording.name));
+            record
+        } else {
+            record
+        };
+        keep_shared(&dir, &recording.file, &recording.source, record["originalKey"].as_str().unwrap_or(&key));
+        let at = transcript_key(&recording.source);
+        if !script.words.is_empty() && cloud::head(data, &at)?.is_none() {
+            // Heard as Edit hears it, with the case's names, if it wasn't yet
+            // (a script transcribed before Writer heard footage Edit's way).
+            let keyterms = crate::names::case_names(&dir, &script, &settings::load(data));
+            if heard_of(&dir, recording).is_none_or(|heard| !hearing::covers(&heard.keyterms, &keyterms)) {
+                hearing::hear(&hearing::Recording { file: &recording.file, span: None }, &dir.join("transcript").join(&recording.key), &settings::load(data), &keyterms, &|_, _| {})?;
             }
+            let text = hearing::serialize(&transcript_of(&dir, &script, recording));
+            cloud::put_bytes(data, &at, text.as_bytes(), "application/json")?;
+            done.push(format!("shared the words of {}", recording.name));
         }
     }
     if !SHARE {
@@ -202,6 +222,24 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
         return Ok(format!("Would share {} recordings with Edit (switched off until Edit confirms).", plan.len()));
     }
     Ok(if done.is_empty() { "Edit has every recording and transcript already.".into() } else { done.join("; ") })
+}
+
+/// What of the script is in Edit's originals: its file (by its path in the
+/// script's folder), source and key. Writer stops syncing its own copy of
+/// those (cloud.rs), and another Mac finds them there.
+fn keep_shared(dir: &Path, file: &Path, source: &str, key: &str) {
+    let path = dir.join("edit-shared.json");
+    let mut kept: Vec<serde_json::Value> = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let relative = file.strip_prefix(dir).map(|rest| rest.to_string_lossy().replace('\\', "/")).ok();
+    kept.retain(|entry| entry["source"] != source);
+    kept.push(json!({ "source": source, "key": key, "file": relative }));
+    let _ = fs::write(&path, serde_json::to_vec_pretty(&kept).unwrap_or_default());
+}
+
+/// The files of a script's folder that are in Edit's originals.
+pub fn shared_files(dir: &Path) -> Vec<String> {
+    let kept: Vec<serde_json::Value> = fs::read(dir.join("edit-shared.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    kept.iter().filter_map(|entry| entry["file"].as_str().map(str::to_string)).collect()
 }
 
 /// Shares the script with Edit in the background; a failure is kept for the next try.

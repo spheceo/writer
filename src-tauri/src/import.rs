@@ -1074,7 +1074,9 @@ pub fn part_sources(dir: &Path, script: &Script) -> Vec<Option<(String, String)>
         if let Ok(drive::Link::File(id)) = drive::parse(url) {
             return Some((format!("drive:{id}"), format!("{title}.mp4")));
         }
-        crate::handoff::youtube_id(url).map(|id| (format!("youtube:{id}"), format!("{title}.mp4")))
+        // Named as Edit names its downloads: "<title> [<id>].mp4", the title without Writer's "(channel, link)".
+        let title = match title.rsplit_once(" (") { Some((name, rest)) if rest.contains("http") => name, _ => title };
+        crate::handoff::youtube_id(url).map(|id| (format!("youtube:{id}"), format!("{} [{id}].mp4", title.chars().take(120).collect::<String>().trim())))
     };
     let joined = script.parts.len() > 1;
     let listed: Vec<Option<(String, String)>> = match script.source_kind.as_str() {

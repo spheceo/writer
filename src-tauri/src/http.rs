@@ -263,6 +263,8 @@ fn route(
             let data = data_dir(&app)?;
             json_result(stream, crate::settings::set_auto_fix(&data, value["on"].as_bool().unwrap_or(true)).map(|_| crate::reviews::counts(&data)))
         }
+        // Shares the recordings and words with Edit now, without marking the script sent.
+        ("POST", ["api", "scripts", id, "edit-share"]) => json_result(stream, crate::handoff::share(&data_dir(&app)?, id)),
         ("GET", ["api", "scripts", id, "handoff"]) => write_json(stream, 200, &crate::cloud::handoff(&data_dir(&app)?, id)),
         ("PUT", ["api", "scripts", id, "handoff"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

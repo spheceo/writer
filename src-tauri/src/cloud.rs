@@ -695,11 +695,13 @@ fn busy(id: &str) -> bool {
 }
 
 /// Every file of a script but its body, by its path inside the script's
-/// folder. A joined case's recordings are left out: they are Edit's
-/// originals (shared under edit/originals/), and the joined preview is what
-/// another Mac plays.
+/// folder. A joined case's recordings, and any original in Edit's originals
+/// (edit-shared.json), are left out: they are shared under edit/originals/,
+/// and the preview is what another Mac plays.
 fn local_files(dir: &Path, script: &Script) -> BTreeMap<String, Kept> {
     let original = Path::new(&script.original_path);
+    // In Edit's originals now: found there, not kept twice.
+    let shared = crate::handoff::shared_files(dir);
     let mut found = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
     while let Some(at) = stack.pop() {
@@ -723,6 +725,9 @@ fn local_files(dir: &Path, script: &Script) -> BTreeMap<String, Kept> {
             }
             let recording = (relative.starts_with("drive/") || relative.starts_with("compilation/")) && !relative.ends_with(".json");
             if recording && path != original {
+                continue;
+            }
+            if shared.contains(&relative) {
                 continue;
             }
             let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);

@@ -150,6 +150,9 @@ fn probe_trouble(error: &str) -> (String, bool) {
     }
 }
 
+/// The video Edit downloads (its youtube.ts FORMAT): H.264 up to 1080p over HTTPS with M4A sound.
+pub const FORMAT: &str = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b";
+
 pub fn download(
     url: &str,
     dest: &Path,
@@ -169,12 +172,12 @@ pub fn download(
         "--continue",
         "--socket-timeout",
         "30",
+        // Edit's format, so both apps download the same file: it is shared
+        // under the video's ID (edit/originals/youtube/<id>/).
         "-f",
-        "bv*[height<=720]+ba/b[height<=720]/b",
+        FORMAT,
         "--merge-output-format",
         "mp4",
-        "--max-filesize",
-        "1000M",
         "-o",
         &dest_text,
     ];
