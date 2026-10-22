@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::commentary::{clock, Cite, Paragraph, Piece};
 use crate::model::{Part, Script};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Block {
     pub id: String,
@@ -22,6 +22,27 @@ pub struct Block {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub text: String,
+    /// A footage clip's transcript just outside it, about 25 words each
+    /// side, for "start earlier" and "end later" notes (anchor `side`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// Where a footage clip plays in the preview (the proxy), ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_ms: Option<[u64; 2]>,
+    /// Each word of `text`, in order, as [start, end] ms in the preview.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub words: Vec<[u64; 2]>,
+    /// How long narration takes to read, at the channel's 150 words a minute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_ms: Option<u64>,
+    /// How long the block runs in the video: a clip's length, narration's read time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    /// Notes for the video editor on it ("edit: …").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edit_notes: Vec<String>,
 }
 
 /// Part of a block's text a fix changed. Empty (`start == end`) marks where
@@ -34,11 +55,60 @@ pub struct Range {
     pub end: usize,
 }
 
+/// Narration is read at the channel's pace.
+pub fn read_ms(text: &str) -> u64 {
+    text.split_whitespace().count() as u64 * 60_000 / crate::commentary::WORDS_PER_MINUTE as u64
+}
+
+/// The `edit:` lines of a note or notes.
+pub fn edit_lines<'a>(notes: impl Iterator<Item = &'a str>) -> Vec<String> {
+    notes.flat_map(str::lines).map(str::trim).filter(|line| line.to_lowercase().starts_with("edit:")).map(str::to_string).collect()
+}
+
+/// Words of context either side of a footage clip.
+const CONTEXT_WORDS: usize = 25;
+
 pub fn of(script: &Script) -> Vec<Block> {
     match script.commentary.as_ref() {
         Some(commentary) => commentary.draft.as_ref().map(commentary_blocks).unwrap_or_default(),
         None => footage_blocks(script),
     }
+}
+
+/// Which stretch of a footage block a note's offsets are into.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Side {
+    Text,
+    Before,
+    After,
+}
+
+/// A footage clip's words as its block shows them: each word's index in the
+/// script's words and its UTF-16 span in the stretch's text.
+pub fn word_spans(script: &Script, clip: &crate::model::Clip, side: Side) -> Vec<(usize, usize, usize)> {
+    let indexes: Vec<usize> = match side {
+        Side::Text => (0..script.words.len()).filter(|&at| script.words[at].start_ms < clip.end_ms && script.words[at].end_ms > clip.start_ms).collect(),
+        Side::Before => {
+            let all: Vec<usize> = (0..script.words.len()).filter(|&at| script.words[at].end_ms <= clip.start_ms).collect();
+            all[all.len().saturating_sub(CONTEXT_WORDS)..].to_vec()
+        }
+        Side::After => (0..script.words.len()).filter(|&at| script.words[at].start_ms >= clip.end_ms).take(CONTEXT_WORDS).collect(),
+    };
+    let mut at = 0;
+    indexes
+        .into_iter()
+        .map(|index| {
+            let word = &script.words[index];
+            let length = script.corrections.get(&word.id).unwrap_or(&word.text).encode_utf16().count();
+            let span = (index, at, at + length);
+            at += length + 1;
+            span
+        })
+        .collect()
+}
+
+fn spoken(script: &Script, indexes: impl Iterator<Item = usize>) -> String {
+    indexes.map(|at| script.corrections.get(&script.words[at].id).unwrap_or(&script.words[at].text).as_str()).collect::<Vec<_>>().join(" ")
 }
 
 fn footage_blocks(script: &Script) -> Vec<Block> {
@@ -47,16 +117,28 @@ fn footage_blocks(script: &Script) -> Vec<Block> {
         .iter()
         .map(|clip| {
             if clip.is_cut_in() {
-                Block { id: clip.id.clone(), kind: "narration".into(), label: None, text: clip.narration.clone().unwrap_or_default() }
+                let text = clip.narration.clone().unwrap_or_default();
+                let read = read_ms(&text);
+                Block { id: clip.id.clone(), kind: "narration".into(), read_ms: Some(read), duration_ms: Some(read), text, ..Default::default() }
             } else {
-                let text = script
-                    .words
-                    .iter()
-                    .filter(|word| word.start_ms < clip.end_ms && word.end_ms > clip.start_ms)
-                    .map(|word| script.corrections.get(&word.id).unwrap_or(&word.text).as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                Block { id: clip.id.clone(), kind: "footage".into(), label: Some(range(clip.start_ms, clip.end_ms, &script.parts)), text }
+                let inside = word_spans(script, clip, Side::Text);
+                let context = |side| {
+                    let found = word_spans(script, clip, side);
+                    (!found.is_empty()).then(|| spoken(script, found.iter().map(|(index, _, _)| *index)))
+                };
+                Block {
+                    id: clip.id.clone(),
+                    kind: "footage".into(),
+                    label: Some(range(clip.start_ms, clip.end_ms, &script.parts)),
+                    text: spoken(script, inside.iter().map(|(index, _, _)| *index)),
+                    before: context(Side::Before),
+                    after: context(Side::After),
+                    preview_ms: Some([clip.start_ms, clip.end_ms]),
+                    words: inside.iter().map(|(index, _, _)| [script.words[*index].start_ms, script.words[*index].end_ms]).collect(),
+                    duration_ms: Some(clip.end_ms.saturating_sub(clip.start_ms)),
+                    edit_notes: edit_lines(clip.notes.iter().map(|note| note.text.as_str())),
+                    ..Default::default()
+                }
             }
         })
         .collect()
@@ -65,17 +147,124 @@ fn footage_blocks(script: &Script) -> Vec<Block> {
 fn commentary_blocks(draft: &crate::commentary::Draft) -> Vec<Block> {
     let mut out = Vec::new();
     if !draft.open.is_empty() {
-        out.push(Block { id: "open".into(), kind: "montage".into(), label: None, text: draft.open.iter().map(cite_line).collect::<Vec<_>>().join("\n") });
+        let clips: u64 = draft.open.iter().map(|cite| cite.end_ms.saturating_sub(cite.start_ms)).sum();
+        out.push(Block { id: "open".into(), kind: "montage".into(), text: draft.open.iter().map(cite_line).collect::<Vec<_>>().join("\n"), duration_ms: Some(clips), ..Default::default() });
     }
     for section in &draft.sections {
         if let Some(first) = section.paragraphs.first() {
-            out.push(Block { id: format!("{}:heading", first.id), kind: "heading".into(), label: None, text: section.heading.clone() });
+            out.push(Block { id: format!("{}:heading", first.id), kind: "heading".into(), text: section.heading.clone(), ..Default::default() });
         }
         for paragraph in &section.paragraphs {
-            out.push(Block { id: paragraph.id.clone(), kind: "paragraph".into(), label: None, text: paragraph_text(paragraph) });
+            let said: String = paragraph.pieces.iter().filter_map(|piece| match piece { Piece::Say { text } => Some(text.as_str()), Piece::Clip(_) => None }).collect::<Vec<_>>().join(" ");
+            let clips: u64 = paragraph.pieces.iter().filter_map(|piece| match piece { Piece::Clip(cite) => Some(cite.end_ms.saturating_sub(cite.start_ms)), Piece::Say { .. } => None }).sum();
+            let read = read_ms(&said);
+            out.push(Block {
+                id: paragraph.id.clone(),
+                kind: "paragraph".into(),
+                text: paragraph_text(paragraph),
+                read_ms: Some(read),
+                duration_ms: Some(read + clips),
+                edit_notes: edit_lines(paragraph.note.iter().map(String::as_str)),
+                ..Default::default()
+            });
         }
     }
     out
+}
+
+/// A paragraph's pieces with their UTF-16 spans in its block text (each on its own line).
+pub fn piece_spans(paragraph: &Paragraph) -> Vec<(usize, usize)> {
+    let mut at = 0;
+    paragraph
+        .pieces
+        .iter()
+        .map(|piece| {
+            let length = match piece {
+                Piece::Say { text } => text.encode_utf16().count(),
+                Piece::Clip(cite) => cite_line(cite).encode_utf16().count(),
+            };
+            let span = (at, at + length);
+            at += length + 1;
+            span
+        })
+        .collect()
+}
+
+/// A place in the script to jump to, for the review page's outline rail.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Mark {
+    pub block_id: String,
+    pub title: String,
+    /// `section`, `case` (a compilation's) or `recording` (a joined case's).
+    pub kind: String,
+}
+
+/// Where the script's parts begin: a commentary's sections; a footage
+/// script's opening, each case or recording, and its ending.
+pub fn outline(script: &Script, blocks: &[Block]) -> Vec<Mark> {
+    let mark = |block_id: &str, title: String, kind: &str| Mark { block_id: block_id.to_string(), title, kind: kind.to_string() };
+    if script.commentary.is_some() {
+        return blocks
+            .iter()
+            .filter_map(|block| match block.kind.as_str() {
+                "montage" => Some(mark(&block.id, "Montage".into(), "section")),
+                "heading" => Some(mark(&block.id, block.text.clone(), "section")),
+                _ => None,
+            })
+            .collect();
+    }
+    let mut out = Vec::new();
+    if let Some(first) = script.clips.first() {
+        out.push(mark(&first.id, "Opening".into(), "section"));
+    }
+    if script.parts.len() > 1 {
+        let mut case = 0;
+        for (index, part) in script.parts.iter().enumerate() {
+            let end = part.start_ms + part.duration_ms;
+            let Some(clip) = script.clips.iter().find(|clip| !clip.is_cut_in() && clip.start_ms >= part.start_ms && clip.start_ms < end) else { continue };
+            let (title, kind) = if part.reuse.is_some() {
+                (format!("Reused: {}", part.title), "case")
+            } else if script.compilation {
+                case += 1;
+                (format!("Case {case}: {}", part.title), "case")
+            } else {
+                (format!("Recording {}: {}", index + 1, part.title), "recording")
+            };
+            if !out.iter().any(|kept: &Mark| kept.block_id == clip.id) {
+                out.push(mark(&clip.id, title, kind));
+            }
+        }
+    }
+    if let Some(ending) = script.clips.iter().rfind(|clip| clip.narration_role.as_deref() == Some("conclusion")) {
+        out.push(mark(&ending.id, "Ending".into(), "section"));
+    }
+    // In play order.
+    let order = |id: &str| blocks.iter().position(|block| block.id == id).unwrap_or(usize::MAX);
+    out.sort_by_key(|mark| order(&mark.block_id));
+    out
+}
+
+/// The format's length, as its guide sets it: (low, aim, high) ms. None
+/// where it sets no runtime (a compilation measured in pages, a commentary).
+pub fn target_ms(script: &Script) -> Option<(u64, u64, u64)> {
+    use crate::formats::Kind;
+    let minutes = |low: f64, aim: f64, high: f64| Some(((low * 60_000.0) as u64, (aim * 60_000.0) as u64, (high * 60_000.0) as u64));
+    if script.commentary.is_some() {
+        return None;
+    }
+    if script.compilation {
+        let cases = crate::model::case_count(&script.parts).max(1) as f64;
+        return match script.kind {
+            Kind::Courtroom => minutes(8.0 * cases, 10.0 * cases, 12.0 * cases),
+            _ => None,
+        };
+    }
+    match script.kind {
+        Kind::Interrogation => minutes(30.0, 40.0, 50.0),
+        Kind::Foia => minutes(20.0, 25.0, 30.0),
+        Kind::Courtroom => minutes(18.0, 21.5, 25.0),
+    }
 }
 
 /// A paragraph as one text: narration as written, each clip on its own line
@@ -251,7 +440,7 @@ mod tests {
     use super::*;
 
     fn block(id: &str, text: &str) -> Block {
-        Block { id: id.into(), kind: "narration".into(), label: None, text: text.into() }
+        Block { id: id.into(), kind: "narration".into(), text: text.into(), ..Default::default() }
     }
 
     #[test]

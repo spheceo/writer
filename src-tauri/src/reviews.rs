@@ -75,6 +75,19 @@ pub struct Note {
     /// Its guest deleted it (and so its replies): dropped when it comes in.
     #[serde(default, skip_serializing)]
     pub deleted: bool,
+    /// What the reviewer means it to change (spec v2): wording, fact, cut,
+    /// pacing, question, fyi, editor. It limits what a fix may touch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    /// `here` or `everywhere`: the ask across the whole script.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// The exact words to put in place of the anchored ones, applied as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    /// On a footage clip: `cut`, `extend` or `restore` (with the anchor's `side`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -108,6 +121,10 @@ impl Note {
             attempted: value["attempt"].is_object(),
             from_app: value["fromApp"] == true,
             deleted: value["deleted"] == true,
+            intent: text("intent").filter(|intent| !intent.trim().is_empty()),
+            scope: text("scope"),
+            suggestion: text("suggestion"),
+            action: text("action").filter(|action| !action.trim().is_empty()),
             created_at: number("createdAt").unwrap_or(0),
             updated_at: number("updatedAt").or_else(|| number("createdAt")).unwrap_or(0),
         })
@@ -253,11 +270,7 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     // are kept by the script's ID instead.
     let key = format!("writer/reviews/{id}/v{next}/script.json");
     cloud::put_bytes(data, &key, &body, "application/json")?;
-    let meta = json!({
-        "format": if script.commentary.is_some() { "commentary" } else { "footage" },
-        "revision": script.revision,
-        "blocks": found,
-    });
+    let meta = meta_of(data, id, &script, found)?;
     let published = publish(data, id, &script.title, &key, meta, script.revision)?;
     script.review = Some(Link {
         review_id: published.review_id.clone(),
@@ -275,6 +288,44 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     });
     poll_soon();
     Ok(store::detail(script, &dir))
+}
+
+/// The most a version's meta may be (Repack's cap is 512 KB).
+const META_BYTES: usize = 480_000;
+
+/// What the review page shows and plays: the blocks, the outline rail with
+/// running times against the format's target, and the preview the clips
+/// play from. Word timings that would take the meta past Repack's cap go in
+/// a file of their own (`wordsKey`).
+fn meta_of(data: &Path, id: &str, script: &crate::model::Script, mut found: Vec<blocks::Block>) -> Result<Value, String> {
+    let footage = script.commentary.is_none();
+    let mut meta = json!({
+        "format": if footage { "footage" } else { "commentary" },
+        "revision": script.revision,
+        "outline": blocks::outline(script, &found),
+    });
+    if let Some((low, aim, high)) = blocks::target_ms(script) {
+        meta["targetMs"] = json!(aim);
+        meta["targetRangeMs"] = json!([low, high]);
+    }
+    if footage {
+        // The proxy the script syncs: the clips' times are on its clock.
+        if let Some((key, size)) = cloud::file_key(data, id, "proxy.mp4") {
+            meta["preview"] = json!({ "key": key, "durationMs": script.duration_ms, "sizeBytes": size });
+        }
+    }
+    meta["blocks"] = json!(found);
+    if serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0) > META_BYTES {
+        let words: serde_json::Map<String, Value> = found.iter_mut().filter(|block| !block.words.is_empty()).map(|block| (block.id.clone(), json!(std::mem::take(&mut block.words)))).collect();
+        let key = format!("writer/reviews/{id}/{}/words.json", uuid::Uuid::new_v4());
+        cloud::put_bytes(data, &key, &serde_json::to_vec(&words).map_err(|error| error.to_string())?, "application/json")?;
+        meta["blocks"] = json!(found);
+        meta["wordsKey"] = json!(key);
+        if serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0) > META_BYTES {
+            return Err("This script is too long to share in one review page.".into());
+        }
+    }
+    Ok(meta)
 }
 
 // ---- What this Mac knows ----------------------------------------------------------

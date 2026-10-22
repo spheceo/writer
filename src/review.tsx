@@ -363,7 +363,13 @@ export function ReviewDialog({
                   {note.status === "done" ? `Fixed in v${note.doneInVersion ?? "?"}` : note.attempted ? "Tried" : "Open"}
                 </span>
               </span>
-              {note.anchor?.quote && <blockquote>{note.anchor.quote}</blockquote>}
+              {note.anchor?.quote && <blockquote>{note.anchor.side ? `${note.anchor.side === "before" ? "Before" : "After"} the clip: ` : ""}{note.anchor.quote}</blockquote>}
+              {(note.intent || note.action || note.scope === "everywhere") && (
+                <span className="review-intent">
+                  {[note.intent, note.action, note.scope === "everywhere" ? "everywhere" : null].filter(Boolean).join(" · ")}
+                </span>
+              )}
+              {note.suggestion && <p className="review-suggestion">→ “{note.suggestion}”</p>}
               <p>{note.text}</p>
               {note.fixSummary && (
                 <p className="review-fix">

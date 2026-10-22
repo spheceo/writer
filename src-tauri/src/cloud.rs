@@ -218,6 +218,13 @@ pub fn get_file(data: &Path, script: &str, key: &str, size: u64, path: &Path) ->
     cloud.download(script, &name, key, size, path).map_err(|problem| problem.message)
 }
 
+/// A script file's key and size in the cloud, as this Mac last synced it.
+pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64)> {
+    let ledger = load(data);
+    let kept = ledger.scripts.get(id)?.files.get(name)?;
+    Some((kept.key.clone(), kept.size))
+}
+
 /// Who this Mac is, as commits and claims name it.
 pub fn holder_name() -> String {
     holder()

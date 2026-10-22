@@ -391,8 +391,21 @@ export type ReviewLink = { reviewId: string; token: string; url: string; version
 /** Part of a block's text, in UTF-16 units; empty where words were taken out. */
 export type ReviewRange = { blockId: string; start: number; end: number };
 /** A script as the review page shows it: blocks whose IDs stay as it's edited (blocks.rs). */
-export type ReviewBlock = { id: string; kind: "footage" | "narration" | "montage" | "heading" | "paragraph"; label?: string; text: string };
-export type ReviewAnchor = { kind?: string; blockId?: string; start?: number; end?: number; quote?: string };
+export type ReviewBlock = {
+  id: string;
+  kind: "footage" | "narration" | "montage" | "heading" | "paragraph";
+  label?: string;
+  text: string;
+  /** A footage clip's transcript just outside it, for "start earlier" / "end later". */
+  before?: string;
+  after?: string;
+  previewMs?: [number, number];
+  words?: [number, number][];
+  readMs?: number;
+  durationMs?: number;
+  editNotes?: string[];
+};
+export type ReviewAnchor = { kind?: string; blockId?: string; start?: number; end?: number; quote?: string; side?: "before" | "after" };
 /** A reviewer's note, or a reply to one, with what the fix changed once it's done. */
 export type ReviewNote = {
   id: string;
@@ -408,6 +421,13 @@ export type ReviewNote = {
   changedRanges: ReviewRange[];
   fixSummary?: string | null;
   attempted: boolean;
+  /** What the reviewer means it to change: wording, fact, cut, pacing, question, fyi, editor. */
+  intent?: string | null;
+  scope?: "here" | "everywhere" | null;
+  /** The exact words to put in place of the anchored ones. */
+  suggestion?: string | null;
+  /** On a footage clip: cut, extend or restore. */
+  action?: string | null;
   createdAt: number;
   updatedAt: number;
 };

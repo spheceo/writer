@@ -1264,3 +1264,5 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 /* An archived script: read-only until its footage is restored. */
 .archived-notice { display: flex; align-items: center; gap: 12px; }
 .archived-notice > span { flex: 1; }
+.review-intent { align-self: flex-start; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+.review-suggestion { color: var(--ok); }

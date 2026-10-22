@@ -522,7 +522,7 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
 
 /// The footage a script plays: its original where it is still on this Mac,
 /// else its preview.
-fn footage_path(dir: &Path, script: &model::Script) -> PathBuf {
+pub(crate) fn footage_path(dir: &Path, script: &model::Script) -> PathBuf {
     let original = PathBuf::from(&script.original_path);
     if original.is_file() { original } else { store::proxy_path(dir) }
 }
@@ -1047,7 +1047,7 @@ fn build_status(app: AppHandle, id: String) -> Option<jobs::BuildStatus> {
 }
 
 /// Timeline items stay in the order given: a hook plays footage from anywhere.
-fn check_clips(clips: Vec<Clip>, duration_ms: u64) -> Result<Vec<Clip>, String> {
+pub(crate) fn check_clips(clips: Vec<Clip>, duration_ms: u64) -> Result<Vec<Clip>, String> {
     if clips.len() > 500 {
         return Err("Too many clips.".into());
     }
