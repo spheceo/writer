@@ -31,8 +31,9 @@ declare const FixedLengthStream: {
  *                           Repack's Trello lists, read only, as Repack reads
  *                           them (its key and token stay here)
  *   POST /v1/cloud/*      scripts and their files, synced between Macs:
- *                         presigned R2 URLs and Writer's Convex functions
- *                         (cloud.ts)
+ *                         presigned R2 URLs and Writer's Convex functions;
+ *                         also Repack's reviews (as Writer) and Edit's footage
+ *                         registry and shared keys, for the handoff (cloud.ts)
  *   GET  /health
  *
  * Spend is bounded three ways: a burst limit per IP, a daily byte quota per

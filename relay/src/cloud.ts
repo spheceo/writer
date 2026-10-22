@@ -18,6 +18,14 @@
  *   /v1/cloud/r2/list               {prefix, cursor?}  (a page of ≤1000)   → {objects: [{key, size}], cursor?}
  *   /v1/cloud/convex                {kind: query|mutation, path: "writer:…", args?}
  *                                   → Convex's answer ({status: "success", value} | {status: "error", errorMessage})
+ *
+ * Beyond `writer/` and `writer:`, two shared things, for sharing and the
+ * handoff to Edit:
+ *   - Repack's reviews (`reviews:*`), always as Writer: `app` is forced to
+ *     "writer" whatever the caller sends.
+ *   - Edit's footage registry: `edit:getMedia` and `edit:putMedia` only, and
+ *     the keys under `edit/originals/` and `edit/analysis/` (presigned URLs,
+ *     multipart and head; never delete or list, which stay Writer's own).
  */
 
 export interface CloudEnv {
@@ -43,6 +51,13 @@ const MAX_BODY = 8 * 1024 * 1024;
 const CONVEX_KINDS = new Set(["query", "mutation", "action"]);
 /** Only Writer's module: the relay must not reach Repack's other functions. */
 const CONVEX_PATH = /^writer:[A-Za-z_][A-Za-z0-9_]*$/;
+/** Repack's reviews, always as Writer. */
+const REVIEWS_PATH = /^reviews:[A-Za-z_][A-Za-z0-9_]*$/;
+/** Edit's footage registry: a recording Writer downloads is Edit's too. */
+const EDIT_MEDIA = new Set(["edit:getMedia", "edit:putMedia"]);
+export const callable = (path: string) => CONVEX_PATH.test(path) || REVIEWS_PATH.test(path) || EDIT_MEDIA.has(path);
+/** Edit's prefixes Writer may read and write, for footage and transcripts it shares. */
+const SHARED_PREFIXES = ["edit/originals/", "edit/analysis/"];
 
 export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<Response> {
   if (!(await cloudAuthorized(request, env))) return json(401, { error: "This relay needs Writer's client token." });
@@ -83,8 +98,18 @@ export async function cloudAuthorized(request: Request, env: CloudEnv): Promise<
 
 /** A key Writer may touch: under `writer/`, no empty, `.` or `..` segments, no control characters. */
 export function validKey(key: unknown): key is string {
-  if (typeof key !== "string" || key.length > 1024 || !key.startsWith("writer/")) return false;
-  if (/[\u0000-\u001f\u007f\\]/.test(key)) return false;
+  if (typeof key !== "string" || !key.startsWith("writer/")) return false;
+  return wellFormed(key);
+}
+
+/** A key Writer may read or write but never delete: its own, or Edit's shared footage and transcripts. */
+export function sharedKey(key: unknown): key is string {
+  if (typeof key !== "string" || !(key.startsWith("writer/") || SHARED_PREFIXES.some((prefix) => key.startsWith(prefix)))) return false;
+  return wellFormed(key);
+}
+
+function wellFormed(key: string): boolean {
+  if (key.length > 1024 || /[\u0000-\u001f\u007f\\]/.test(key)) return false;
   return key.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
@@ -109,7 +134,7 @@ export class Upstream extends Error {}
 
 const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promise<Response>> = {
   async url(body, r2) {
-    const key = needKey(body.key);
+    const key = needSharedKey(body.key);
     const method = body.method === undefined ? "GET" : body.method;
     if (method !== "GET" && method !== "PUT" && method !== "HEAD") throw new BadRequest("method must be GET, PUT or HEAD.");
     let expires = DEFAULT_EXPIRES[method];
@@ -121,7 +146,7 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promi
   },
 
   async "multipart/create"(body, r2) {
-    const key = needKey(body.key);
+    const key = needSharedKey(body.key);
     const headers: Record<string, string> = {};
     if (body.contentType !== undefined) {
       if (typeof body.contentType !== "string" || !/^[\w.+-]+\/[\w.+-]+(; ?[\w.+-]+=[\w.+-]+)*$/.test(body.contentType) || body.contentType.length > 200) throw new BadRequest("Invalid contentType.");
@@ -134,7 +159,7 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promi
   },
 
   async "multipart/urls"(body, r2) {
-    const key = needKey(body.key);
+    const key = needSharedKey(body.key);
     const uploadId = needUploadId(body.uploadId);
     if (!Array.isArray(body.parts) || body.parts.length === 0 || body.parts.length > MAX_PART_URLS) throw new BadRequest(`parts must list 1 to ${MAX_PART_URLS} part numbers.`);
     const urls: Record<string, string> = {};
@@ -145,7 +170,7 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promi
   },
 
   async "multipart/complete"(body, r2) {
-    const key = needKey(body.key);
+    const key = needSharedKey(body.key);
     const uploadId = needUploadId(body.uploadId);
     if (!Array.isArray(body.parts) || body.parts.length === 0 || body.parts.length > 10000) throw new BadRequest("parts must list the uploaded parts.");
     const parts = body.parts.map((part: unknown) => {
@@ -163,13 +188,13 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promi
   },
 
   async "multipart/abort"(body, r2) {
-    const key = needKey(body.key);
+    const key = needSharedKey(body.key);
     await r2Fetch(r2, "DELETE", key, { uploadId: needUploadId(body.uploadId) }, { allow404: true });
     return json(200, { ok: true });
   },
 
   async head(body, r2) {
-    const answer = await r2Fetch(r2, "HEAD", needKey(body.key), {}, { allow404: true });
+    const answer = await r2Fetch(r2, "HEAD", needSharedKey(body.key), {}, { allow404: true });
     if (answer.status === 404) return json(200, { exists: false });
     return json(200, { exists: true, size: Number(answer.headers.get("content-length")), etag: answer.headers.get("etag") ?? undefined, contentType: answer.headers.get("content-type") ?? undefined });
   },
@@ -201,6 +226,11 @@ const R2_ROUTES: Record<string, (body: Record<string, unknown>, r2: R2) => Promi
 
 export function needKey(key: unknown): string {
   if (!validKey(key)) throw new BadRequest("key must be a path under writer/ (no empty, . or .. segments).");
+  return key;
+}
+
+export function needSharedKey(key: unknown): string {
+  if (!sharedKey(key)) throw new BadRequest("key must be a path under writer/, edit/originals/ or edit/analysis/ (no empty, . or .. segments).");
   return key;
 }
 
@@ -296,12 +326,16 @@ export const unescapeXml = (text: string) => text
 
 // --- Convex ---------------------------------------------------------------------
 
-/** Calls a `writer:` function with the service token added to its args. */
+/** Calls a `writer:` function (or a `reviews:` one, as Writer, or Edit's footage registry) with the service token added to its args. */
 async function convex(body: Record<string, unknown>, env: CloudEnv): Promise<Response> {
   const kind = body.kind;
   if (typeof kind !== "string" || !CONVEX_KINDS.has(kind)) return json(400, { error: "kind must be query, mutation or action." });
-  if (typeof body.path !== "string" || !CONVEX_PATH.test(body.path)) return json(403, { error: "Only writer: functions can be called." });
+  if (typeof body.path !== "string" || !callable(body.path)) {
+    return json(403, { error: "Only writer: and reviews: functions, and Edit's edit:getMedia and edit:putMedia, can be called." });
+  }
   if (body.args !== undefined && !isObject(body.args)) return json(400, { error: "args must be an object." });
+  // A review is always Writer's from here, whatever the caller says.
+  if (REVIEWS_PATH.test(body.path)) body.args = { ...(body.args as object | undefined), app: "writer" };
   if (!env.CONVEX_URL || !env.CONVEX_SERVICE_TOKEN) return json(503, { error: "Convex is not configured on the relay yet." });
   let answer: Response;
   try {
