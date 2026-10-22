@@ -392,7 +392,12 @@ fn backfill(data: &Path, id: &str, next_youtube: &Mutex<Instant>) -> Result<Stri
         }
         let fresh = dir.join("original-edit.mp4");
         let settings = settings::load(data);
-        import::fetch_video(data, &script.source_url, &fresh, &settings, &|_, _| {})?;
+        // One YouTube won't give again (age-restricted, gone) keeps Writer's older download.
+        if let Err(error) = import::fetch_video(data, &script.source_url, &fresh, &settings, &|_, _| {}) {
+            let _ = fs::remove_file(&fresh);
+            let kept = handoff::share(data, id, false)?;
+            return Ok(format!("kept the older download ({error}); {kept}"));
+        }
         let before = media::streams(&original).map(|found| found.duration_ms).unwrap_or(0);
         let after = media::streams(&fresh).map(|found| found.duration_ms).unwrap_or(0);
         // The same video, or the old one stays.
