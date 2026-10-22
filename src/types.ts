@@ -112,6 +112,8 @@ export type Archive = { at: number; by: string; freedBytes: number; restoring: b
 
 export type Summary = {
   archive?: Archive;
+  /** Interrogation, FOIA or Courtroom. */
+  kind?: Kind;
   id: string;
   title: string;
   status: string;

@@ -88,7 +88,14 @@ struct Known {
     /// The script.json this rev was, by its hash.
     body: String,
     files: BTreeMap<String, Kept>,
+    /// Which shape of library row (`summary`) the cloud has for it: one
+    /// committed before a field was added is committed again, body unchanged.
+    #[serde(default)]
+    summary: u32,
 }
+
+/// The library row's shape: 1 added `kind`, which Edit's New project dialog shows and filters by.
+const SUMMARY_VERSION: u32 = 1;
 
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
 struct Kept {
@@ -487,7 +494,7 @@ impl Cloud {
             }
             let known = ledger.scripts.get(&id).cloned();
             let files = local_files(&dir, &script);
-            if known.as_ref().is_some_and(|known| known.body == hash(&body) && same_files(&known.files, &files)) {
+            if known.as_ref().is_some_and(|known| known.body == hash(&body) && same_files(&known.files, &files) && known.summary >= SUMMARY_VERSION) {
                 continue;
             }
             changed.push((id, dir, script, body, known, files));
@@ -590,7 +597,9 @@ impl Cloud {
         let tmp = dir.join("script.json.tmp");
         fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, dir.join("script.json"))).map_err(|error| Problem::said(error.to_string()))?;
         crate::log::info("cloud", format!("{}: rev {rev} came from {}", crate::log::named(&id, row["title"].as_str().unwrap_or("")), row["updatedBy"].as_str().unwrap_or("another Mac")));
-        ledger.scripts.insert(id, Known { rev, body: hash(&body), files });
+        // A row committed before the summary's newest field gets committed again, from here.
+        let summary = if row["summary"]["kind"].is_string() { SUMMARY_VERSION } else { 0 };
+        ledger.scripts.insert(id, Known { rev, body: hash(&body), files, summary });
         Ok(())
     }
 
@@ -649,7 +658,7 @@ impl Cloud {
                 let rev = value["rev"].as_u64().unwrap_or(base + 1);
                 let files = if sent > 0 { format!(" with {sent} {} ({})", if sent == 1 { "file" } else { "files" }, crate::log::size(sent_bytes)) } else { String::new() };
                 crate::log::info("cloud", format!("{}: saved to the cloud as rev {rev}{files} in {}", crate::log::named(id, &script.title), crate::log::since_start(began)));
-                Ok(Pushed::Done(Known { rev, body: digest, files: kept }))
+                Ok(Pushed::Done(Known { rev, body: digest, files: kept, summary: SUMMARY_VERSION }))
             }
             Err((code, _)) if code == "conflict" => {
                 crate::log::warn("cloud", format!("{}: another Mac saved it first (rev {base} is behind); taking theirs and keeping this Mac's as a copy", crate::log::named(id, &script.title)));

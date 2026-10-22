@@ -299,6 +299,8 @@ pub struct Summary {
     pub doc_exported_at: Option<i64>,
     pub doc_behind: bool,
     pub created_at: i64,
+    /// Interrogation, FOIA or Courtroom, as the body says: Edit shows and filters by it.
+    pub kind: crate::formats::Kind,
     /// Archived from Repack's page (filled in by store::list).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<crate::archive::State>,
@@ -336,6 +338,7 @@ impl Script {
             doc_exported_at: self.doc_export.as_ref().map(|doc| doc.exported_at),
             doc_behind: self.doc_export.as_ref().is_some_and(|doc| doc.revision < self.revision),
             created_at: self.created_at,
+            kind: self.kind,
             archive: None,
         }
     }
