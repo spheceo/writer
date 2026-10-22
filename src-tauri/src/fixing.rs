@@ -28,6 +28,13 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
     }
     let (mut fixed, mut cost, mut lines) = (0, 0.0, Vec::new());
     for (index, note) in notes.iter().enumerate() {
+        // Approved meanwhile (here or on Repack's page): the rest are let go, unfixed.
+        if let Some(approved) = reviews::approval(&data, id) {
+            let rest: Vec<String> = notes[index..].iter().map(|note| note.id.clone()).collect();
+            let _ = reviews::release(&data, &rest);
+            lines.push(format!("Stopped: v{} was approved, so the other {} notes were left as they are.", approved.version, rest.len()));
+            break;
+        }
         jobs::stage(id, &format!("Fixing note {} of {}", index + 1, notes.len()));
         let before = store::read(&dir)?;
         let next = before.review.as_ref().map_or(1, |link| link.version + 1);

@@ -269,6 +269,11 @@ export function Library({
                           {splitTitle(script.title).name}
                           {splitTitle(script.title).from && <span className="from"> · {splitTitle(script.title).from}</span>}
                         </button>
+                        {reviews?.approved[script.id] && (
+                          <span className="script-kind approved-mark" title={`Approved by ${reviews.approved[script.id].by}, ${new Date(reviews.approved[script.id].at).toLocaleString()}`}>
+                            Approved v{reviews.approved[script.id].version}
+                          </span>
+                        )}
                         {(reviews?.open[script.id] ?? 0) > 0 && (
                           <span className="count-badge" title={`${reviews?.open[script.id]} open review ${reviews?.open[script.id] === 1 ? "note" : "notes"} from its Repack link`}>
                             {reviews?.open[script.id]}

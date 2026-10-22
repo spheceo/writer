@@ -436,7 +436,7 @@ export function CommentaryEditor({
           >
             <Icon name="panel" />
           </button>
-          <ReviewButton script={script} open={openNotes} onClick={() => setReviewOpen(true)} />
+          <ReviewButton script={script} open={openNotes} approved={review.approved} onClick={() => setReviewOpen(true)} />
           <SendToEditButton script={script} disabled={busy} onProblem={setError} />
           <button type="button" className="secondary sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
             <Icon name="doc" size={14} />
@@ -680,6 +680,7 @@ export function CommentaryEditor({
         open={reviewOpen}
         script={script}
         notes={review.notes}
+        approved={review.approved}
         busy={busy}
         onClose={() => setReviewOpen(false)}
         onChange={onChange}

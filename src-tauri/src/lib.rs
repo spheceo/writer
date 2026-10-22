@@ -819,7 +819,7 @@ fn review_counts(app: AppHandle) -> Result<reviews::Counts, String> {
 /// A script's review notes, and its blocks as they now read, for the bands.
 pub fn review_notes_now(data: &Path, id: &str) -> Result<serde_json::Value, String> {
     let script = store::read(&store::script_dir(data, id)?)?;
-    Ok(serde_json::json!({ "notes": reviews::notes_of(data, id), "blocks": blocks::of(&script) }))
+    Ok(serde_json::json!({ "notes": reviews::notes_of(data, id), "blocks": blocks::of(&script), "approved": reviews::approval(data, id) }))
 }
 
 #[tauri::command]
@@ -829,6 +829,9 @@ fn review_notes(app: AppHandle, id: String) -> Result<serde_json::Value, String>
 
 /// Fixes a script's open notes now, rather than waiting for the quiet.
 pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::BuildStatus, String> {
+    if let Some(approved) = reviews::approval(data, &id) {
+        return Err(format!("v{} is approved, so its notes aren't fixed. Take the approval back to fix them.", approved.version));
+    }
     let notes = reviews::open_notes(data, &id);
     if notes.is_empty() {
         return Err("No notes are open.".into());
@@ -863,6 +866,23 @@ async fn send_to_edit(app: AppHandle, id: String, ready: bool) -> Result<Option<
 #[tauri::command]
 fn get_handoff(app: AppHandle, id: String) -> Result<Option<cloud::Handoff>, String> {
     Ok(cloud::handoff(&data_dir(&app)?, &id))
+}
+
+/// Approves the script's latest shared version, or (`approve` false) takes the approval back.
+pub fn approve_review_now(data: &Path, id: &str, approve: bool) -> Result<serde_json::Value, String> {
+    if approve {
+        reviews::approve(data, id)?;
+    } else {
+        reviews::unapprove(data, id)?;
+    }
+    review_notes_now(data, id)
+}
+
+#[tauri::command]
+async fn approve_review(app: AppHandle, id: String, approve: bool) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || approve_review_now(&data_dir(&app)?, &id, approve))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1110,6 +1130,7 @@ pub fn run() {
             review_notes,
             fix_notes,
             set_auto_fix,
+            approve_review,
             send_to_edit,
             get_handoff,
             set_pacing,

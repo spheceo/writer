@@ -174,6 +174,44 @@ pub fn release(data: &Path, note_ids: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Every review's approval, by script.
+fn approvals(data: &Path) -> Result<BTreeMap<String, Approval>, String> {
+    let rows = cloud::call(data, "query", "reviews:open", json!({}))?;
+    Ok(rows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| Some((row["sourceId"].as_str()?.to_string(), Approval::from(&row["approved"])?)))
+        .collect())
+}
+
+/// Approves the script's latest shared version: the link takes no more
+/// notes and Repack deletes the other versions' files; every note stays.
+pub fn approve(data: &Path, script_id: &str) -> Result<Approval, String> {
+    let script = store::read(&store::script_dir(data, script_id)?)?;
+    let link = script.review.ok_or("Share the script before approving it.")?;
+    let value = cloud::call(data, "mutation", "reviews:approve", json!({ "sourceId": script_id, "version": link.version, "by": by() }))?;
+    let approval = Approval::from(&value["approved"]).ok_or("Repack approved it but didn't say which version.")?;
+    change(data, |known| {
+        known.approved.insert(script_id.to_string(), approval.clone());
+    });
+    Ok(approval)
+}
+
+/// Takes an approval back: the link takes notes again (deleted files stay deleted).
+pub fn unapprove(data: &Path, script_id: &str) -> Result<(), String> {
+    cloud::call(data, "mutation", "reviews:unapprove", json!({ "sourceId": script_id }))?;
+    change(data, |known| {
+        known.approved.remove(script_id);
+    });
+    Ok(())
+}
+
+/// The script's approval, if its review has one.
+pub fn approval(data: &Path, script_id: &str) -> Option<Approval> {
+    load(data).approved.get(script_id).cloned()
+}
+
 pub fn resolve(data: &Path, note_id: &str, version: u32, ranges: &[Range], summary: &str) -> Result<(), String> {
     cloud::call(data, "mutation", "reviews:resolve", json!({ "noteId": note_id, "version": version, "changedRanges": ranges, "fixSummary": summary }))?;
     Ok(())
@@ -231,6 +269,10 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     });
     store::write(&dir, &script)?;
     remember_link(data, &published.review_id, id);
+    // A version shared after an approval is the next round, unapproved.
+    change(data, |known| {
+        known.approved.remove(id);
+    });
     poll_soon();
     Ok(store::detail(script, &dir))
 }
@@ -249,6 +291,26 @@ struct Known {
     /// Notes this Mac has started fixing, so a run is never repeated.
     #[serde(default)]
     tried: BTreeMap<String, i64>,
+    /// Script ID → its approved version, as Repack's reviews:open says.
+    #[serde(default)]
+    approved: BTreeMap<String, Approval>,
+}
+
+/// A review's approved version: when it's approved, the link takes no more
+/// notes, nothing is fixed by itself, and Repack deletes the other versions'
+/// files (their notes stay).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Approval {
+    pub version: u32,
+    pub by: String,
+    pub at: i64,
+}
+
+impl Approval {
+    fn from(value: &Value) -> Option<Approval> {
+        Some(Approval { version: value["version"].as_f64()? as u32, by: value["by"].as_str().unwrap_or("").to_string(), at: value["at"].as_f64().unwrap_or(0.0) as i64 })
+    }
 }
 
 static KNOWN: Mutex<()> = Mutex::new(());
@@ -312,6 +374,7 @@ fn scan_links(data: &Path) -> BTreeMap<String, String> {
 #[serde(rename_all = "camelCase")]
 pub struct Counts {
     pub open: BTreeMap<String, usize>,
+    pub approved: BTreeMap<String, Approval>,
     pub auto_fix: bool,
 }
 
@@ -323,7 +386,7 @@ pub fn counts(data: &Path) -> Counts {
             *open.entry(script.clone()).or_insert(0) += 1;
         }
     }
-    Counts { open, auto_fix: settings::load(data).auto_fix }
+    Counts { open, approved: known.approved, auto_fix: settings::load(data).auto_fix }
 }
 
 /// A script's notes, oldest first, with their replies.
@@ -394,17 +457,24 @@ fn poll(data: &Path) -> Result<bool, String> {
     if settings::load(data).relay_token.is_empty() {
         return Ok(false);
     }
+    // Approvals, made here or on Repack's page: only reviews:open carries them.
+    let approved = approvals(data)?;
+    let mut moved = false;
+    change(data, |known| {
+        moved = known.approved != approved;
+        known.approved = approved;
+    });
     let cursor = load(data).cursor;
     let (notes, next) = changes(data, cursor)?;
     if notes.is_empty() && next == cursor {
-        return Ok(false);
+        return Ok(moved);
     }
     let unknown = {
         let known = load(data);
         notes.iter().any(|note| note.script_id.is_none() && !known.links.contains_key(&note.review_id))
     };
     let scanned = if unknown { scan_links(data) } else { BTreeMap::new() };
-    let mut changed = false;
+    let mut changed = moved;
     change(data, |known| {
         known.links.extend(scanned);
         for mut note in notes {
@@ -446,7 +516,8 @@ fn start_fixes(app: &AppHandle, data: &Path) {
     let mut by_script: BTreeMap<String, Vec<&Note>> = BTreeMap::new();
     for note in known.notes.values() {
         if note.is_root() && note.is_open() && !note.attempted && !known.tried.contains_key(&note.id) {
-            if let Some(script) = note.script_id.as_ref().or_else(|| known.links.get(&note.review_id)) {
+            // An approved script is finished: nothing is fixed by itself.
+            if let Some(script) = note.script_id.as_ref().or_else(|| known.links.get(&note.review_id)).filter(|script| !known.approved.contains_key(*script)) {
                 by_script.entry(script.clone()).or_default().push(note);
             }
         }
@@ -481,4 +552,23 @@ pub fn replies(data: &Path, id: &str) -> Vec<Note> {
     let mut found: Vec<Note> = load(data).notes.values().filter(|note| note.parent_id.as_deref() == Some(id)).cloned().collect();
     found.sort_by_key(|note| note.created_at);
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_notes_and_approvals_as_repack_sends_them() {
+        let note = Note::from(&json!({
+            "noteId": "n1", "reviewId": "r1", "sourceId": "s1", "version": 2.0, "parentId": null,
+            "anchor": { "kind": "text", "blockId": "b1", "start": 0, "end": 4, "quote": "Four" },
+            "text": "Cut", "author": "Ana", "fromApp": false, "status": "open", "attempt": { "by": "x", "at": 1.0 },
+            "deleted": true, "createdAt": 5.0, "updatedAt": 6.0
+        }))
+        .unwrap();
+        assert_eq!((note.id.as_str(), note.version, note.attempted, note.deleted, note.is_open()), ("n1", 2, true, true, true));
+        assert_eq!(Approval::from(&json!({ "version": 3.0, "by": "Writer on Mac", "at": 7.0 })), Some(Approval { version: 3, by: "Writer on Mac".into(), at: 7 }));
+        assert_eq!(Approval::from(&Value::Null), None);
+    }
 }

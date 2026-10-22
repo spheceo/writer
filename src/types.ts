@@ -405,4 +405,6 @@ export type ReviewNote = {
   createdAt: number;
   updatedAt: number;
 };
-export type ReviewCounts = { open: Record<string, number>; autoFix: boolean };
+/** A review's approved version: the link takes no more notes, and Repack deletes the other versions' files (their notes stay). */
+export type ReviewApproval = { version: number; by: string; at: number };
+export type ReviewCounts = { open: Record<string, number>; approved: Record<string, ReviewApproval>; autoFix: boolean };

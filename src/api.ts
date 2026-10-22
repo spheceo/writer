@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -301,10 +301,14 @@ export const reviewCounts = () =>
   inTauri() ? invoke<ReviewCounts>("review_counts") : http<ReviewCounts>("/api/reviews");
 
 /** A script's review notes, and its blocks as they now read. */
+export type ReviewState = { notes: ReviewNote[]; blocks: ReviewBlock[]; approved: ReviewApproval | null };
+
 export const reviewNotes = (id: string) =>
-  inTauri()
-    ? invoke<{ notes: ReviewNote[]; blocks: ReviewBlock[] }>("review_notes", { id })
-    : http<{ notes: ReviewNote[]; blocks: ReviewBlock[] }>(`/api/scripts/${id}/review`);
+  inTauri() ? invoke<ReviewState>("review_notes", { id }) : http<ReviewState>(`/api/scripts/${id}/review`);
+
+/** Approves the latest shared version (Repack deletes the other versions' files; the notes stay), or takes the approval back. */
+export const approveReview = (id: string, approve: boolean) =>
+  inTauri() ? invoke<ReviewState>("approve_review", { id, approve }) : http<ReviewState>(`/api/scripts/${id}/review/approval`, { ...json({ approve }), method: "PUT" });
 
 /** Has Claude fix the script's open notes now; followed as a build. */
 export const fixNotes = (id: string) =>

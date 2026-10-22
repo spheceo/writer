@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { fixNotes, getHandoff, type Handoff, message, onReviews, reviewCounts, reviewNotes, sendToEdit, setAutoFix, shareScript } from "./api";
-import type { BuildStatus, Cite, Paragraph, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
+import { approveReview, fixNotes, getHandoff, type Handoff, message, onReviews, reviewCounts, reviewNotes, sendToEdit, setAutoFix, shareScript } from "./api";
+import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { Dialog, Icon } from "./ui";
 
 /**
@@ -34,12 +34,14 @@ export function useReviewCounts() {
 export function useReview(id: string, revision: number) {
   const [notes, setNotes] = useState<ReviewNote[]>([]);
   const [blocks, setBlocks] = useState<ReviewBlock[]>([]);
+  const [approved, setApproved] = useState<ReviewApproval | null>(null);
   const refresh = useCallback(
     () =>
       void reviewNotes(id).then(
         (found) => {
           setNotes(found.notes);
           setBlocks(found.blocks);
+          setApproved(found.approved ?? null);
         },
         () => {},
       ),
@@ -49,7 +51,7 @@ export function useReview(id: string, revision: number) {
     refresh();
     return onReviews(refresh);
   }, [refresh, revision]);
-  return { notes, blocks, refresh };
+  return { notes, blocks, approved, refresh };
 }
 
 /** Part of a block's text a band covers: a fix's change, or an open note's words. */
@@ -170,17 +172,23 @@ export function BandTip({ notes }: { notes: ReviewNote[] }) {
 const when = (ms: number) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
 /** The topbar's Share button: "Share" until shared, then the open notes' count. */
-export function ReviewButton({ script, open, onClick }: { script: Script; open: number; onClick: () => void }) {
+export function ReviewButton({ script, open, approved, onClick }: { script: Script; open: number; approved: ReviewApproval | null; onClick: () => void }) {
   const shared = !!script.review;
   return (
     <button
       type="button"
-      className={open ? "secondary sm review-button has-notes" : "secondary sm review-button"}
-      title={shared ? `Shared for review (v${script.review?.version}). ${open ? `${open} open ${open === 1 ? "note" : "notes"}.` : "No open notes."}` : "Share the script on a Repack link for review"}
+      className={approved ? "secondary sm review-button approved" : open ? "secondary sm review-button has-notes" : "secondary sm review-button"}
+      title={
+        approved
+          ? `Approved v${approved.version} by ${approved.by}, ${when(approved.at)}.`
+          : shared
+            ? `Shared for review (v${script.review?.version}). ${open ? `${open} open ${open === 1 ? "note" : "notes"}.` : "No open notes."}`
+            : "Share the script on a Repack link for review"
+      }
       onClick={onClick}
     >
-      <Icon name="share" size={14} />
-      {shared ? "Review" : "Share"}
+      <Icon name={approved ? "check" : "share"} size={14} />
+      {approved ? `Approved v${approved.version}` : shared ? "Review" : "Share"}
       {open > 0 && <span className="count-badge">{open}</span>}
     </button>
   );
@@ -195,6 +203,7 @@ export function ReviewDialog({
   open,
   script,
   notes,
+  approved,
   busy,
   onClose,
   onChange,
@@ -204,6 +213,8 @@ export function ReviewDialog({
   open: boolean;
   script: Script;
   notes: ReviewNote[];
+  /** The approved version, made here or on Repack's page. */
+  approved: ReviewApproval | null;
   busy: boolean;
   onClose: () => void;
   onChange: (script: Script) => void;
@@ -240,6 +251,24 @@ export function ReviewDialog({
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
+  const [approving, setApproving] = useState(false);
+  const approve = async (yes: boolean) => {
+    if (!link) return;
+    const ask = yes
+      ? `Approve v${link.version}? The review link stops taking notes and the other versions' files are deleted. Every note from every round is kept, and Writer's own version history is untouched.`
+      : `Take back the approval of v${approved?.version}? The link takes notes again; files already deleted stay deleted.`;
+    if (!window.confirm(ask)) return;
+    setApproving(true);
+    setProblem(null);
+    try {
+      await approveReview(script.id, yes);
+      onRefresh();
+    } catch (cause) {
+      setProblem(message(cause));
+    } finally {
+      setApproving(false);
+    }
+  };
   const fix = async () => {
     setProblem(null);
     try {
@@ -271,7 +300,12 @@ export function ReviewDialog({
         <>
           {problem && <span className="bad">{problem}</span>}
           <span className="spacer" />
-          {link && waiting > 0 && (
+          {link && !approved && (
+            <button type="button" className="ghost" disabled={busy || approving} title="The script is done: the link takes no more notes, and the other versions' files are deleted (their notes stay)" onClick={() => void approve(true)}>
+              {approving ? "Approving…" : `Approve v${link.version}`}
+            </button>
+          )}
+          {link && waiting > 0 && !approved && (
             <button type="button" className="ghost" disabled={busy} onClick={() => void fix()}>
               Fix {waiting} {waiting === 1 ? "note" : "notes"} now
             </button>
@@ -297,7 +331,19 @@ export function ReviewDialog({
           {behind ? " · the script has changed since" : ""}
         </p>
       )}
-      {link && autoFix !== null && (
+      {approved && (
+        <p className="review-approved">
+          <Icon name="check" size={14} />
+          <span>
+            <b>Approved v{approved.version}</b> · by {approved.by} · {when(approved.at)}
+            <span className="faint"> · The link takes no more notes, and nothing is fixed by itself. Sharing again starts v{(link?.version ?? approved.version) + 1}, unapproved.</span>
+          </span>
+          <button type="button" className="link-button" disabled={approving} onClick={() => void approve(false)}>
+            Take back
+          </button>
+        </p>
+      )}
+      {link && autoFix !== null && !approved && (
         <label className="toggle review-auto">
           <input type="checkbox" checked={autoFix} onChange={(event) => void setAutoFix(event.target.checked).then((counts) => setAuto(counts.autoFix), (cause) => setProblem(message(cause)))} />
           Claude fixes new notes by itself, two minutes after a reviewer's last one, while Writer is open

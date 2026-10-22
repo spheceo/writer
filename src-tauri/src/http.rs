@@ -272,6 +272,10 @@ fn route(
         }
         ("GET", ["api", "reviews"]) => write_json(stream, 200, &crate::reviews::counts(&data_dir(&app)?)),
         ("GET", ["api", "scripts", id, "review"]) => json_result(stream, crate::review_notes_now(&data_dir(&app)?, id)),
+        ("PUT", ["api", "scripts", id, "review", "approval"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::approve_review_now(&data_dir(&app)?, id, value["approve"].as_bool().unwrap_or(true)))
+        }
         ("POST", ["api", "scripts", id, "review", "fix"]) => {
             let data = data_dir(&app)?;
             json_result(stream, crate::fix_notes_now(app, &data, (*id).to_string()))
