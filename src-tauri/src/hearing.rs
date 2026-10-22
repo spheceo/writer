@@ -384,14 +384,28 @@ pub fn hear(recording: &Recording, work: &Path, settings: &Settings, keyterms: &
     let target = work.join("transcript.json");
     if let Some(kept) = fs::read(&target).ok().and_then(|bytes| serde_json::from_slice::<Transcript>(&bytes).ok()) {
         if covers(&kept.keyterms, keyterms) {
+            crate::log::info("hear", format!("{}: heard before ({} words); not heard again", recording.file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), kept.words.len()));
             return Ok(kept);
         }
     }
     let audio = work.join("audio.ogg");
+    let began = std::time::Instant::now();
+    let what = format!("{}{}", recording.file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), recording.span.map(|(from, to)| format!(" {}–{}", crate::commentary::clock(from), crate::commentary::clock(to))).unwrap_or_default());
     encode_audio(recording, &audio)?;
+    let seconds = crate::media::streams(&audio).map(|found| found.duration_ms / 1000).unwrap_or(0);
+    let pieces = if seconds as f64 <= WHOLE_UP_TO { 1 } else { plan(seconds as f64).len() };
+    crate::log::info("hear", format!("{what}: hearing {} of sound in {pieces} {} and whole, with {} names", crate::log::took(std::time::Duration::from_secs(seconds)), if pieces == 1 { "piece" } else { "pieces" }, keyterms.len()));
     let result = hear_audio(&audio, work, settings, keyterms, on_piece);
     let _ = fs::remove_file(&audio);
-    let mut transcript = result?;
+    let mut transcript = match result {
+        Ok(found) => found,
+        Err(error) => {
+            crate::log::error("hear", format!("{what}: stopped after {}: {error}", crate::log::since_start(began)));
+            return Err(error);
+        }
+    };
+    let voices = transcript.words.iter().filter_map(|word| word.speaker.as_deref()).collect::<std::collections::BTreeSet<_>>().len();
+    crate::log::info("hear", format!("{what}: heard in {}: {} words, {voices} voices", crate::log::since_start(began), transcript.words.len()));
     transcript.keyterms = keyterms.to_vec();
     let tmp = work.join("transcript.json.tmp");
     fs::write(&tmp, serialize(&transcript)).map_err(|error| error.to_string())?;
@@ -463,6 +477,7 @@ fn hear_audio(audio: &Path, work: &Path, settings: &Settings, keyterms: &[String
             if garbled_share(&heard[index]) < 0.2 {
                 continue;
             }
+            crate::log::warn("hear", format!("piece {} ({}–{} s) came back garbled; hearing it again without names", index + 1, fixed3(piece.from), fixed3(piece.to)));
             let again: Vec<Word> = ask_piece(settings, audio, work, index, piece, &[], "-again")?
                 .words
                 .into_iter()
@@ -586,17 +601,35 @@ fn ask(settings: &Settings, audio: &Path, keyterms: &[String]) -> Result<Transcr
     let relay = Relay::new(settings)?;
     let mut names = keyterms.to_vec();
     let mut waits = BUSY_WAITS.iter();
+    let mut attempt = 1;
+    let piece = audio.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
     loop {
-        match relay.transcribe(audio, &names) {
+        let began = std::time::Instant::now();
+        let answer = relay.transcribe(audio, &names);
+        if began.elapsed() > Duration::from_secs(20) {
+            crate::log::info("hear", format!("{piece}: Scribe answered in {}", crate::log::since_start(began)));
+        }
+        match answer {
             Ok(value) => return parse_scribe(&value),
-            Err(Failed::Status(400 | 422, _)) if !names.is_empty() => names.clear(),
+            Err(Failed::Status(code @ (400 | 422), body)) if !names.is_empty() => {
+                crate::log::warn("hear", format!("{piece}: Scribe refused the case's {} names ({code}: {}); asking without them", names.len(), net::said(&body)));
+                names.clear();
+            }
             Err(Failed::Status(429, body)) if !net::said(&body).to_lowercase().contains("allowance") => match waits.next() {
-                Some(wait) => std::thread::sleep(Duration::from_secs(*wait)),
-                None => return Err(format!("Transcription stayed busy. {} Retry: what was heard is kept.", net::said(&body))),
+                Some(wait) => {
+                    crate::log::warn("hear", format!("{piece}: transcription busy (429), attempt {attempt}; asking again in {wait} s"));
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_secs(*wait));
+                }
+                None => return Err(format!("Transcription stayed busy after {attempt} attempts. {} Retry: what was heard is kept.", net::said(&body))),
             },
             Err(Failed::Unsent(reason)) => match waits.next() {
-                Some(wait) => std::thread::sleep(Duration::from_secs(*wait)),
-                None => return Err(format!("Could not reach Writer's service ({reason}).")),
+                Some(wait) => {
+                    crate::log::warn("hear", format!("{piece}: couldn't reach Writer's service ({reason}), attempt {attempt}; trying again in {wait} s"));
+                    attempt += 1;
+                    std::thread::sleep(Duration::from_secs(*wait));
+                }
+                None => return Err(format!("Could not reach Writer's service after {attempt} attempts ({reason}).")),
             },
             Err(Failed::Status(code, body)) => return Err(crate::transcribe::explain(code, &net::said(&body))),
             Err(Failed::Network(reason)) => return Err(format!("The connection to Writer's service broke ({reason}). Retry: what was heard is kept.")),

@@ -341,3 +341,18 @@ export function onReviews(then: () => void): () => void {
 /** Brings an archived script's footage back from its links (or Edit's originals); followed as a build. */
 export const restoreScript = (id: string) =>
   inTauri() ? invoke<BuildStatus>("restore_script", { id }) : http<BuildStatus>(`/api/scripts/${id}/restore`, json({}));
+
+/** A line of Writer's log. */
+export type LogLine = { at: number; time: string; level: "INFO" | "WARN" | "ERROR"; area: string; message: string };
+
+/** The log's lines after `since` (ms), and where its file is. */
+export const getLogs = (since: number) =>
+  inTauri() ? invoke<{ lines: LogLine[]; file: string | null }>("get_logs", { since }) : http<{ lines: LogLine[]; file: string | null }>(`/api/logs?since=${since}`);
+
+/** Shows the log file in Finder. */
+export const revealLogs = () => (inTauri() ? invoke<void>("reveal_logs") : http<void>("/api/logs/reveal", json({})));
+
+/** Something long under way: what, on what, the step and how far. */
+export type Activity = { key: string; script: string | null; what: string; title: string; step: string; done: number; total: number; unit: "count" | "bytes" | "percent"; started: number };
+
+export const getActivity = () => (inTauri() ? invoke<Activity[]>("get_activity") : http<Activity[]>("/api/activity"));

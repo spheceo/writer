@@ -58,25 +58,28 @@ pub fn streams(path: &Path) -> Result<Streams, String> {
 /// upload keeps the header of the whole recording, so the length it claims
 /// can be hours longer than what it holds.
 pub fn held_ms(path: &Path, claimed_ms: u64) -> Option<u64> {
-    let mut last = 0f64;
-    proc::run_lines(
-        "ffprobe",
-        &[
-            "-v", "error", "-select_streams", "a:0,v:0", "-show_entries", "packet=pts_time,duration_time",
-            "-of", "csv=p=0", &path.to_string_lossy(),
-        ],
-        tool_time(claimed_ms),
-        None,
-        |line| {
-            let mut fields = line.split(',');
-            let pts = fields.next().and_then(|text| text.trim().parse::<f64>().ok()).unwrap_or(0.0);
-            let duration = fields.next().and_then(|text| text.trim().parse::<f64>().ok()).unwrap_or(0.0);
-            if pts.is_finite() && duration.is_finite() {
-                last = last.max(pts + duration);
-            }
-        },
-    )
-    .ok()?;
+    // One stream at a time: ffprobe takes a single specifier ("a:0,v:0" is
+    // refused), so the sound's and the picture's last packets are read apart.
+    let last_of = |stream: &str| -> Option<f64> {
+        let mut last = 0f64;
+        proc::run_lines(
+            "ffprobe",
+            &["-v", "error", "-select_streams", stream, "-show_entries", "packet=pts_time,duration_time", "-of", "csv=p=0", &path.to_string_lossy()],
+            tool_time(claimed_ms),
+            None,
+            |line| {
+                let mut fields = line.split(',');
+                let pts = fields.next().and_then(|text| text.trim().parse::<f64>().ok()).unwrap_or(0.0);
+                let duration = fields.next().and_then(|text| text.trim().parse::<f64>().ok()).unwrap_or(0.0);
+                if pts.is_finite() && duration.is_finite() {
+                    last = last.max(pts + duration);
+                }
+            },
+        )
+        .ok()?;
+        (last > 0.0).then_some(last)
+    };
+    let last = last_of("a:0").into_iter().chain(last_of("v:0")).fold(0f64, f64::max);
     (last > 0.0).then(|| (last * 1000.0).round() as u64)
 }
 

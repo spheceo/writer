@@ -5,6 +5,7 @@ import { Editor } from "./editor";
 import { Library } from "./library";
 import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
+import { ActivityPanel, LogsDialog } from "./logs";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
 type Route = { name: "library" } | { name: "script"; id: string };
@@ -28,6 +29,18 @@ export function App() {
   const [open, setOpen] = useState<Script | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
+  const [logs, setLogs] = useState(false);
+  // ⌘⇧L opens the Logs window from anywhere.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l") {
+        event.preventDefault();
+        setLogs(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const setRoute = (next: Route) => {
     setRouteState(next);
@@ -137,6 +150,7 @@ export function App() {
           scripts={scripts}
           claude={claude}
           onSettings={() => setSettings(true)}
+          onLogs={() => setLogs(true)}
           progress={progress}
           loadError={error}
           onOpen={(id) => setRoute({ name: "script", id })}
@@ -144,6 +158,8 @@ export function App() {
         />
       )}
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
+      <ActivityPanel onOpen={(id) => setRoute({ name: "script", id })} onLogs={() => setLogs(true)} />
+      <LogsDialog open={logs} onClose={() => setLogs(false)} />
     </>
   );
 }

@@ -87,12 +87,17 @@ pub fn case_names(dir: &Path, script: &Script, settings: &Settings) -> Vec<Strin
     if hash.as_deref() == Some(fresh.as_str()) {
         return names;
     }
+    let began = std::time::Instant::now();
     match ask(&script.title, &given, settings) {
         Ok(listed) => {
+            crate::log::info("hear", format!("{}: {} names for the transcriber, from {} sources, in {}: {}", crate::log::named(&script.id, &script.title), listed.len(), given.len(), crate::log::since_start(began), listed.iter().take(12).cloned().collect::<Vec<_>>().join(", ")));
             let _ = fs::write(dir.join("names.json"), serde_json::to_vec_pretty(&json!({ "hash": fresh, "names": listed })).unwrap_or_default());
             listed
         }
-        Err(_) => names,
+        Err(error) => {
+            crate::log::warn("hear", format!("{}: the case's names couldn't be listed ({error}); keeping the {} listed before", crate::log::named(&script.id, &script.title), names.len()));
+            names
+        }
     }
 }
 

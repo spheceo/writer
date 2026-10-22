@@ -46,6 +46,8 @@ Titles and thumbnails are not in this slice. Scripts live in Application Support
 
 Every script is in the cloud with its footage: each recording goes to Edit's footage registry on import (Drive, YouTube, and a file from disk as `sha256:<hex>`). Scripts from before are brought in by a backfill, one at a time in the background (`cloud/backfill.json` says what it did); a YouTube video Writer downloaded before it used Edit's format is downloaded again in it first (at most one a quarter hour) and replaces Writer's older copy in the registry. Scripts titled "TEST…", commentaries and unfinished imports are passed over.
 
+**Logs** (`src-tauri/src/log.rs`): Writer keeps a log in local time at `logs/writer.log` beside the scripts (`2026-10-22 21:40:20.462 INFO  [import] …`, rotated at about 8 MB with one older file kept). Areas: app, import, hear, agent, cloud, handoff, review, archive, backfill, export, tool. Long work tells its story naming the script: what it started on, each step with its size and time, and how it ended, with the cause when it failed; retries say which attempt, and any tool run slower than 2 s gets a line with its time. Tokens, keys and presigned URLs' signatures never go in. **Logs** (the button in the list's header, or ⇧⌘L anywhere) shows the last 2000 lines live, with search, a subsystem filter, All or Problems, Copy and Show in Finder (`GET /api/logs?since=<ms>`). Whatever is under way (imports, Claude's jobs, footage going to Edit, the cloud's transfers) shows on every screen in a panel at the bottom left, with its step, how far and a bar (`GET /api/activity`).
+
 ## What a user installs
 
 Only **Claude Code**, signed in (run `claude` once). Everything else comes with Writer or is fetched by it:

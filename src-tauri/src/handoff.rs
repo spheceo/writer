@@ -174,7 +174,11 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
     let recordings = shared(&dir, &script);
     let mut plan = Vec::new();
     let mut done = Vec::new();
-    for recording in &recordings {
+    let name = crate::log::named(id, &script.title);
+    let began = std::time::Instant::now();
+    let key_of_work = format!("handoff:{id}");
+    for (index, recording) in recordings.iter().enumerate() {
+        crate::activity::set(&key_of_work, Some(id), "Sharing footage with Edit", &script.title, &format!("{} ({} of {})", recording.name, index + 1, recordings.len()), index as u64, recordings.len() as u64, "count");
         let size = fs::metadata(&recording.file).map(|meta| meta.len()).unwrap_or(0);
         let duration = crate::media::streams(&recording.file).map(|found| found.duration_ms as f64 / 1000.0).ok();
         let key = original_key(&recording.source, &recording.name);
@@ -195,7 +199,14 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
             if record.is_null() {
                 cloud::call(data, "mutation", "edit:putMedia", json!({ "source": recording.source, "name": recording.name, "originalKey": key, "size": size }))?;
             }
-            cloud::put_file(data, id, &key, &recording.file)?;
+            let sending = std::time::Instant::now();
+            crate::log::info("handoff", format!("{name}: uploading {} ({}, {}) to Edit's originals", recording.name, recording.source, crate::log::size(size)));
+            if let Err(error) = cloud::put_file(data, id, &key, &recording.file) {
+                crate::activity::end(&key_of_work);
+                crate::log::error("handoff", format!("{name}: {} didn't upload: {error}", recording.name));
+                return Err(error);
+            }
+            crate::log::info("handoff", format!("{name}: {} in Edit's originals: {} in {}", recording.name, crate::log::size(size), crate::log::since_start(sending)));
             let mut ready = json!({ "source": recording.source, "originalReady": true, "size": size });
             if let Some(duration) = duration {
                 ready["duration"] = json!(duration);
@@ -221,12 +232,17 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
             }
             let text = hearing::serialize(&transcript_of(&dir, &script, recording));
             cloud::put_bytes(data, &at, text.as_bytes(), "application/json")?;
+            crate::log::info("handoff", format!("{name}: words of {} shared with Edit ({})", recording.name, crate::log::size(text.len() as u64)));
             done.push(format!("shared the words of {}", recording.name));
         }
     }
     if !SHARE {
         let _ = fs::write(dir.join("edit-share.json"), serde_json::to_vec_pretty(&plan).unwrap_or_default());
         return Ok(format!("Would share {} recordings with Edit (switched off until Edit confirms).", plan.len()));
+    }
+    crate::activity::end(&key_of_work);
+    if !done.is_empty() {
+        crate::log::info("handoff", format!("{name}: shared with Edit in {}: {}", crate::log::since_start(began), done.join("; ")));
     }
     Ok(if recordings.is_empty() {
         "no footage on this Mac to share (a file from disk that's no longer there, or none at all)".into()

@@ -66,7 +66,8 @@ fn handle(app: AppHandle, mut stream: TcpStream) -> Result<(), String> {
     };
     let mut parts = start.split_whitespace();
     let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("/").split('?').next().unwrap_or("/");
+    let target = parts.next().unwrap_or("/");
+    let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut content_length = 0usize;
     let mut range = None;
     for line in lines {
@@ -85,6 +86,11 @@ fn handle(app: AppHandle, mut stream: TcpStream) -> Result<(), String> {
         stream.read_exact(&mut body).map_err(|error| error.to_string())?;
     }
     let _ = stream.set_read_timeout(None);
+    // The Logs window's tail: the lines after `since` (ms).
+    if method == "GET" && path == "/api/logs" {
+        let since = query.split('&').find_map(|pair| pair.strip_prefix("since=")).and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
+        return write_json(&mut stream, 200, &json!({ "lines": crate::log::since(since), "file": crate::log::file() }));
+    }
     route(app, &mut stream, method, path, &body, range.as_deref())
 }
 
@@ -99,6 +105,8 @@ fn route(
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("GET", ["api", "activity"]) => write_json(stream, 200, &crate::activity::list()),
+        ("POST", ["api", "logs", "reveal"]) => json_result(stream, crate::reveal_logs_now()),
         ("GET", ["api", "progress"]) => write_json(stream, 200, &crate::import::latest_progress()),
         ("GET", ["api", "cloud"]) => write_json(stream, 200, &crate::cloud::status()),
         ("GET", ["api", "settings"]) => json_result(stream, get_settings(app)),

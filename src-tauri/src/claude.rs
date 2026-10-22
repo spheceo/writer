@@ -323,6 +323,9 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
         args.push(dir);
     }
     let mut out = String::new();
+    let began = std::time::Instant::now();
+    let asked = format!("Claude {model}{}{}", if resume.is_some() { " (repair turn)" } else { "" }, if read_dir.is_some() { " reading files" } else { "" });
+    crate::log::info("agent", format!("{asked}: asked ({} of prompt)", crate::log::size(prompt.len() as u64)));
     let ran = proc::run_lines(
         "claude",
         &args,
@@ -341,13 +344,19 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
             .and_then(|value| value["result"].as_str().map(str::to_string))
             .unwrap_or(error);
         let status = value.as_ref().and_then(|value| value["api_error_status"].as_u64());
+        crate::log::error("agent", format!("{asked}: failed after {}: {}", crate::log::since_start(began), clip_text(&said, 300)));
         return Err(explain(&said, status));
     }
-    let value = value.ok_or_else(|| Trouble::Stop("Claude Code answered with something Writer can't read. Build again; nothing was changed.".into()))?;
+    let value = value.ok_or_else(|| {
+        crate::log::error("agent", format!("{asked}: answered with something Writer can't read, after {}", crate::log::since_start(began)));
+        Trouble::Stop("Claude Code answered with something Writer can't read. Build again; nothing was changed.".into())
+    })?;
     if value["is_error"].as_bool() == Some(true) {
         let said = value["result"].as_str().unwrap_or("Claude stopped with an error.");
+        crate::log::error("agent", format!("{asked}: stopped with an error after {}: {}", crate::log::since_start(began), clip_text(said, 300)));
         return Err(explain(said, value["api_error_status"].as_u64()));
     }
+    crate::log::info("agent", format!("{asked}: answered in {} (${:.2} at API prices)", crate::log::since_start(began), value["total_cost_usd"].as_f64().unwrap_or(0.0)));
     let plan = match &value["structured_output"] {
         Value::Object(_) => Some(value["structured_output"].clone()),
         _ => value["result"].as_str().and_then(extract_json).filter(|plan| plan.is_object()),

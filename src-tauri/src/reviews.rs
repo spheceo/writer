@@ -226,6 +226,7 @@ pub fn approve(data: &Path, script_id: &str) -> Result<Approval, String> {
     let link = script.review.ok_or("Share the script before approving it.")?;
     let value = cloud::call(data, "mutation", "reviews:approve", json!({ "sourceId": script_id, "version": link.version, "by": by() }))?;
     let approval = Approval::from(&value["approved"]).ok_or("Repack approved it but didn't say which version.")?;
+    crate::log::info("review", format!("{}: v{} approved", crate::log::named(script_id, &script.title), approval.version));
     change(data, |known| {
         known.approved.insert(script_id.to_string(), approval.clone());
     });
@@ -287,8 +288,11 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     // are kept by the script's ID instead.
     let key = format!("writer/reviews/{id}/v{next}/script.json");
     cloud::put_bytes(data, &key, &body, "application/json")?;
+    let found_count = found.len();
     let meta = meta_of(data, id, &script, found)?;
-    let published = publish(data, id, &script.title, &key, meta, script.revision)?;
+    let size = serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0);
+    let published = publish(data, id, &script.title, &key, meta, script.revision).inspect_err(|error| crate::log::error("review", format!("{}: couldn't share: {error}", crate::log::named(id, &script.title))))?;
+    crate::log::info("review", format!("{}: shared as v{} ({} blocks, {} of page data) at {}", crate::log::named(id, &script.title), published.version, found_count, crate::log::size(size as u64), published.url));
     script.review = Some(Link {
         review_id: published.review_id.clone(),
         token: published.token,
@@ -537,6 +541,8 @@ fn poll(data: &Path) -> Result<bool, String> {
     if notes.is_empty() && next == cursor {
         return Ok(moved);
     }
+    let (fresh, replies) = (notes.iter().filter(|note| note.is_root() && !note.deleted).count(), notes.iter().filter(|note| !note.is_root()).count());
+    crate::log::info("review", format!("{} notes changed on review links ({fresh} notes, {replies} replies, {} deleted)", notes.len(), notes.iter().filter(|note| note.deleted).count()));
     let unknown = {
         let known = load(data);
         notes.iter().any(|note| note.script_id.is_none() && !known.links.contains_key(&note.review_id))
@@ -601,6 +607,7 @@ fn start_fixes(app: &AppHandle, data: &Path) {
             continue;
         }
         let ids: Vec<String> = notes.iter().map(|note| note.id.clone()).collect();
+        crate::log::info("review", format!("script {}: {} new {} quiet for two minutes; fixing them", &script[..8.min(script.len())], ids.len(), if ids.len() == 1 { "note" } else { "notes" }));
         mark_tried(data, &ids);
         let _ = jobs::start(app.clone(), script, jobs::Work::Review { notes: ids });
     }

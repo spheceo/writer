@@ -1,4 +1,5 @@
 mod casefiles;
+mod activity;
 mod archive;
 mod blocks;
 mod chat;
@@ -17,6 +18,7 @@ mod hearing;
 mod http;
 mod import;
 mod jobs;
+mod log;
 mod media;
 mod names;
 mod net;
@@ -251,9 +253,15 @@ pub fn export_doc_now(data: &Path, id: &str, draft: bool, docx: &str) -> Result<
     if !exporting().lock().map_err(|_| "Busy.".to_string())?.insert(id.to_string()) {
         return Err("This script is already being exported. Try again in a moment.".into());
     }
+    let began = std::time::Instant::now();
+    let name = log::named(id, &script.title);
     let made = net::Relay::new(&settings::load(data)).and_then(|relay| relay.export_doc(&script.title, id, draft, docx));
     if let Ok(mut busy) = exporting().lock() {
         busy.remove(id);
+    }
+    match &made {
+        Ok(found) => log::info("export", format!("{name}: {} Google Doc made in {}: {}", if draft { "draft" } else { "full" }, log::since_start(began), found["url"].as_str().unwrap_or(""))),
+        Err(error) => log::error("export", format!("{name}: Google Doc export failed after {}: {error}", log::since_start(began))),
     }
     let made = made?;
     if !draft {
@@ -875,6 +883,29 @@ fn restore_script(app: AppHandle, id: String) -> Result<jobs::BuildStatus, Strin
     restore_now(app, &data, &id)
 }
 
+/// The log's lines after `since` (ms), for the Logs window, and where the file is.
+#[tauri::command]
+fn get_logs(since: i64) -> serde_json::Value {
+    serde_json::json!({ "lines": log::since(since), "file": log::file() })
+}
+
+/// Everything long under way, for the progress panel.
+#[tauri::command]
+fn get_activity() -> Vec<activity::Work> {
+    activity::list()
+}
+
+/// Shows the log file in Finder.
+pub fn reveal_logs_now() -> Result<(), String> {
+    let file = log::file().ok_or("There's no log file yet.")?;
+    proc::run("open", &["-R", &file.to_string_lossy()], std::time::Duration::from_secs(10)).map(|_| ())
+}
+
+#[tauri::command]
+fn reveal_logs() -> Result<(), String> {
+    reveal_logs_now()
+}
+
 #[tauri::command]
 fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
     let data = data_dir(&app)?;
@@ -1069,6 +1100,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
+                log::init(&dir);
+                log::info("app", format!("Writer {} started", env!("CARGO_PKG_VERSION")));
                 let _ = std::fs::create_dir_all(dir.join("scripts"));
                 store::mark_interrupted(&dir);
                 tools::init(&dir);
@@ -1123,6 +1156,9 @@ pub fn run() {
             fix_notes,
             set_auto_fix,
             approve_review,
+            get_logs,
+            get_activity,
+            reveal_logs,
             restore_script,
             set_pacing,
             get_finds,

@@ -68,11 +68,18 @@ pub fn run_lines(
                 }
                 let err = errors.join().unwrap_or_default();
                 if status.success() {
+                    // Anything slow that went fine still says how long it took.
+                    if started.elapsed() > Duration::from_secs(2) && program != "claude" {
+                        crate::log::info("tool", format!("{} finished in {}", summary(program, args), crate::log::since_start(started)));
+                    }
                     return Ok(());
                 }
+                // Some runs are expected to fail (a probe for a stream that isn't there): whoever ran it logs a failure that matters.
+                crate::log::info("tool", format!("{} exited with an error after {}: {}", summary(program, args), crate::log::since_start(started), clip(&err)));
                 return Err(format!("{program} failed: {}", clip(&err)));
             }
             Ok(None) if started.elapsed() > timeout => {
+                crate::log::error("tool", format!("{} was stopped after {}: it took too long", summary(program, args), crate::log::since_start(started)));
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("{program} took too long and was stopped."));
@@ -87,6 +94,20 @@ pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, St
     let mut lines = Vec::new();
     run_lines(program, args, timeout, None, |line| lines.push(line.to_string()))?;
     Ok(lines.join("\n"))
+}
+
+/// A command as a log line names it: the program and its arguments, files by
+/// name only, long arguments cut.
+fn summary(program: &str, args: &[&str]) -> String {
+    let shown: Vec<String> = args
+        .iter()
+        .take(14)
+        .map(|arg| {
+            let arg = if arg.starts_with('/') { std::path::Path::new(arg).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| arg.to_string()) } else { arg.to_string() };
+            if arg.chars().count() > 48 { format!("{}…", arg.chars().take(48).collect::<String>()) } else { arg }
+        })
+        .collect();
+    format!("{program} {}{}", shown.join(" "), if args.len() > 14 { " …" } else { "" })
 }
 
 fn clip(text: &str) -> String {

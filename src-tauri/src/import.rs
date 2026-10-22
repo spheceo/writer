@@ -348,7 +348,22 @@ enum Step {
 /// Runs the pipeline. A failure, or even a bug, ends as a failed import that
 /// says so and can be retried; it never leaves the script stuck importing.
 fn run(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Result<ScriptDetail, String> {
+    let began = Instant::now();
+    let name = crate::log::named(&script.id, &script.title);
+    let from = match script.source_kind.as_str() {
+        "file" => format!("the file {}", Path::new(&script.original_path).file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default()),
+        "compilation" => format!("{} videos", script.source_url.lines().count()),
+        kind => format!("{kind} {}", script.source_url.lines().next().unwrap_or("")),
+    };
+    crate::log::info("import", format!("{name}: importing from {from}"));
     let outcome = catch_unwind(AssertUnwindSafe(|| pipeline(app, data, dir, script)));
+    let name = crate::log::named(&script.id, &script.title);
+    match &outcome {
+        Ok(Ok(Step::Done)) => crate::log::info("import", format!("{name}: imported in {}: {} of footage, {} words, {} voices", crate::log::since_start(began), clock(script.duration_ms), script.words.len(), script.words.iter().filter_map(|word| word.speaker.as_deref()).collect::<std::collections::BTreeSet<_>>().len())),
+        Ok(Ok(Step::Paused)) => crate::log::warn("import", format!("{name}: paused after {} for a choice: {}", crate::log::since_start(began), script.decision.as_ref().map(decision_summary).unwrap_or_default())),
+        Ok(Err(error)) => crate::log::error("import", format!("{name}: stopped after {}: {error}", crate::log::since_start(began))),
+        Err(_) => crate::log::error("import", format!("{name}: stopped after {} by a bug in Writer", crate::log::since_start(began))),
+    }
     match outcome {
         Ok(Ok(Step::Done)) => {
             // Its recordings and words, shared with Edit in the background.
@@ -443,9 +458,11 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         if let Ok(drive::Link::Folder(folder)) = drive::parse(&script.source_url) {
             let fresh = !crate::casefiles::load(dir).is_some_and(|documents| documents.complete);
             let (id, title) = (script.id.clone(), script.title.clone());
+            let began = Instant::now();
             let documents = crate::casefiles::run(dir, &folder, &settings, &|done, count| {
                 emit_parts(app, &id, &title, "researching", 58, &format!("Reading the case's PDFs: {done} of {count}."));
             });
+            crate::log::info("import", format!("{}: case PDFs read in {}: {} read, {} passed over", crate::log::named(&script.id, &script.title), crate::log::since_start(began), documents.read.len(), documents.skipped.len()));
             if fresh && !documents.skipped.is_empty() {
                 let shown: Vec<&str> = documents.skipped.iter().take(3).map(String::as_str).collect();
                 let more = documents.skipped.len().saturating_sub(3);
@@ -472,11 +489,17 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         emit(app, script, "Transcribing.");
         store::write(dir, script)?;
         let (id, title) = (script.id.clone(), script.title.clone());
+        let began = Instant::now();
+        crate::log::info("hear", format!("{}: transcribing {} of footage", crate::log::named(&id, &title), clock(script.duration_ms)));
         let heard = transcribe::transcribe(script, dir, &settings, &|done, count| {
             let percent = 60 + ((done as u32 * 30) / count.max(1) as u32) as u8;
             let detail = format!("Transcribing: {}%.", done * 100 / count.max(1));
             emit_parts(app, &id, &title, "transcribing", percent, &detail);
         });
+        match &heard {
+            Ok(()) => crate::log::info("hear", format!("{}: transcribed in {}: {} words", crate::log::named(&id, &title), crate::log::since_start(began), script.words.len())),
+            Err(error) => crate::log::warn("hear", format!("{}: transcription stopped after {}: {error}", crate::log::named(&id, &title), crate::log::since_start(began))),
+        }
         match heard {
             Ok(()) => {}
             Err(error) if error == transcribe::NO_WORDS => {
@@ -491,10 +514,17 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         // voices, so the transcript reads with them. Neither can stop the
         // import: a failure leaves the voices as heard, or "Speaker 1", and
         // the build names them again.
+        let began = Instant::now();
         let watched = watch_speakers(app, dir, script, &settings);
+        crate::log::info("import", format!("{}: {} in {}", crate::log::named(&script.id, &script.title), if watched { "the watcher saw who speaks" } else { "the watcher didn't run; voices stay as heard" }, crate::log::since_start(began)));
         if watched || script.speakers.is_empty() {
             emit(app, script, "Naming the speakers.");
-            let _ = if watched { crate::speakers::complete(script) } else { crate::speakers::identify(script) };
+            let began = Instant::now();
+            let named = if watched { crate::speakers::complete(script) } else { crate::speakers::identify(script) };
+            match named {
+                Ok(_) => crate::log::info("agent", format!("{}: speakers named in {}: {}", crate::log::named(&script.id, &script.title), crate::log::since_start(began), script.speakers.values().cloned().collect::<Vec<_>>().join(", "))),
+                Err(error) => crate::log::warn("agent", format!("{}: speakers not named: {error}", crate::log::named(&script.id, &script.title))),
+            }
         }
     }
 
@@ -557,10 +587,13 @@ fn ensure_preview(app: &AppHandle, dir: &Path, script: &mut Script, source: &Pat
     script.progress = 20;
     emit(app, script, "Cutting a 480p preview.");
     let (id, title) = (script.id.clone(), script.title.clone());
+    let began = Instant::now();
     media::encode_proxy(source, &proxy, script.duration_ms, &|percent| {
         emit_parts(app, &id, &title, "processing", 20 + (u32::from(percent) * 38 / 100) as u8, "Cutting a 480p preview.");
     })
-    .inspect_err(|_| {
+    .inspect(|_| crate::log::info("import", format!("{}: 480p preview made: {} of footage in {}", crate::log::named(&id, &title), clock(script.duration_ms), crate::log::since_start(began))))
+    .inspect_err(|error| {
+        crate::log::error("import", format!("{}: the preview couldn't be made: {error}", crate::log::named(&id, &title)));
         let _ = fs::remove_file(&proxy);
     })
 }
@@ -629,9 +662,11 @@ fn fetch_youtube(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script, 
         store::write(dir, script)?;
     }
     let (id, title) = (script.id.clone(), script.title.clone());
+    let began = Instant::now();
     youtube_to(data, &url, &dest, settings, &|percent, said| {
         emit_parts(app, &id, &title, "downloading", 5 + (u32::from(percent) * 14 / 100) as u8, said.unwrap_or("Downloading from YouTube."));
     })?;
+    crate::log::info("import", format!("{}: YouTube video downloaded: {} in {}", crate::log::named(&id, &title), crate::log::size(fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0)), crate::log::since_start(began)));
     script.original_path = dest.to_string_lossy().into_owned();
     store::write(dir, script)?;
     Ok(())
@@ -912,6 +947,7 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
     let failed: Mutex<Vec<(usize, Failed)>> = Mutex::new(Vec::new());
     let token = Mutex::new(token);
     let (id, title) = (script.id.clone(), script.title.clone());
+    let (script_id, script_title) = (id.clone(), title.clone());
     let report = || {
         let bytes: u64 = pulled.iter().map(|value| value.load(Ordering::Relaxed)).sum();
         let percent = 5 + (bytes * 33 / total_bytes).min(33) as u8;
@@ -933,6 +969,7 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
                 let Some((index, recording)) = wanted.get(step) else { break };
                 let dest = drive_file(&folder, *index, recording);
                 let mut problem = None;
+                let began = Instant::now();
                 if !downloaded(&dest, recording) {
                     let progress = |bytes: u64| {
                         pulled[step].store(bytes.min(recording.size), Ordering::Relaxed);
@@ -957,7 +994,11 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
                     }
                 }
                 pulled[step].store(recording.size, Ordering::Relaxed);
-                finished.fetch_add(1, Ordering::Relaxed);
+                let done = finished.fetch_add(1, Ordering::Relaxed) + 1;
+                match &problem {
+                    None => crate::log::info("import", format!("{}: Drive recording {done} of {} ready: {} ({}) in {}", crate::log::named(&script_id, &script_title), wanted.len(), recording.name, crate::log::size(recording.size), crate::log::since_start(began))),
+                    Some(error) => crate::log::error("import", format!("{}: Drive recording {} didn't come through: {error}", crate::log::named(&script_id, &script_title), recording.name)),
+                }
                 report();
                 if let Some(error) = problem {
                     if let Ok(mut list) = failed.lock() {
@@ -1031,9 +1072,11 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
     emit(app, script, &detail);
     let (id, title) = (script.id.clone(), script.title.clone());
     let proxy = store::proxy_path(dir);
+    let began = Instant::now();
     media::join(&join, &proxy, &|percent| {
         emit_parts(app, &id, &title, "processing", 40 + (u32::from(percent) * 18 / 100) as u8, &detail);
     })
+    .inspect(|_| crate::log::info("import", format!("{}: {count} {what} joined into the preview ({}) in {}", crate::log::named(&id, &title), clock(start_ms), crate::log::since_start(began))))
     .inspect_err(|_| {
         let _ = fs::remove_file(&proxy);
     })?;
@@ -1385,6 +1428,12 @@ fn emit_parts(app: &AppHandle, id: &str, title: &str, stage: &str, percent: u8, 
 
 /// A fresh sticky proxy exit for each try. The file holds the proxy's login
 /// only while yt-dlp runs.
+fn decision_summary(decision: &Decision) -> String {
+    match decision {
+        Decision::FailedRecordings { summary, .. } | Decision::TooMuch { summary, .. } | Decision::NoSpeech { summary, .. } => summary.clone(),
+    }
+}
+
 fn proxy_file(dir: &Path, proxy: Option<&str>) -> Result<Option<PathBuf>, String> {
     let Some(proxy) = proxy else {
         return Ok(None);

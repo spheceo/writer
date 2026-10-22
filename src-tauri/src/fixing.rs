@@ -90,7 +90,17 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
         jobs::stage(id, &format!("Fixing note {} of {}", index + 1, notes.len()));
         let before = store::read(&dir)?;
         let next = before.review.as_ref().map_or(1, |link| link.version + 1);
+        let began = std::time::Instant::now();
         let outcome = fix(app, id, &before, note, &reviews::replies(&data, &note.id));
+        let name = crate::log::named(id, &before.title);
+        let ask: String = note.text.chars().take(80).collect();
+        let intent = note.intent.as_deref().unwrap_or("note");
+        match &outcome {
+            Ok((Outcome::Changed(said), _)) => crate::log::info("review", format!("{name}: {}'s {intent} \"{ask}\" fixed in {}: {said}", note.author, crate::log::since_start(began))),
+            Ok((Outcome::Answered(said), _)) => crate::log::info("review", format!("{name}: {}'s {intent} \"{ask}\" answered in {}: {}", note.author, crate::log::since_start(began), said.chars().take(160).collect::<String>())),
+            Ok((Outcome::Unchanged(said), _)) => crate::log::warn("review", format!("{name}: {}'s {intent} \"{ask}\" left open after {}: {said}", note.author, crate::log::since_start(began))),
+            Err(error) => crate::log::error("review", format!("{name}: {}'s {intent} \"{ask}\" couldn't be fixed: {error}", note.author)),
+        }
         let after = store::read(&dir)?;
         let mut ranges = blocks::changed(&blocks::of(&before), &blocks::of(&after));
         let notes: Vec<blocks::Range> = noted(&before, &after).into_iter().filter(|range| !ranges.iter().any(|kept| kept.block_id == range.block_id)).collect();

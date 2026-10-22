@@ -171,6 +171,7 @@ pub fn start_restore(app: &AppHandle, data: &Path, id: &str) -> Result<jobs::Bui
 /// Brings an archived script's footage back. Runs as a job.
 pub fn restore(app: &AppHandle, id: &str) -> Result<(String, f64), String> {
     let data = crate::data_dir(app)?;
+    crate::log::info("archive", format!("{}: restoring its footage", crate::log::named(id, &crate::jobs::title_of(&data, id))));
     let result = restore_footage(&data, id);
     change_local(&data, id, |local| local.restoring = false);
     let missing = result?;
@@ -226,8 +227,12 @@ fn restore_footage(data: &Path, id: &str) -> Result<Vec<String>, String> {
             _ => Err("no link".into()),
         };
         match got {
-            Ok(()) => files.push(Some(target)),
-            Err(_) => {
+            Ok(()) => {
+                crate::log::info("archive", format!("{}: {title} back ({})", crate::log::named(id, &script.title), crate::log::size(fs::metadata(&target).map(|meta| meta.len()).unwrap_or(0))));
+                files.push(Some(target));
+            }
+            Err(error) => {
+                crate::log::warn("archive", format!("{}: {title} can't come back: {error}", crate::log::named(id, &script.title)));
                 missing.push(title);
                 files.push(None);
             }
@@ -334,7 +339,8 @@ fn react(app: &AppHandle, data: &Path) {
         }
         if at.is_some() && local.purged_for != at {
             if let Ok(dir) = store::script_dir(data, &id) {
-                purge(&dir);
+                let freed = purge(&dir);
+                crate::log::info("archive", format!("{}: archived by {}; its footage deleted here ({})", crate::log::named(&id, &crate::jobs::title_of(data, &id)), state["archived"]["by"].as_str().unwrap_or("Repack"), crate::log::size(freed)));
             }
             change_local(data, &id, |local| local.purged_for = at);
         }
@@ -356,12 +362,17 @@ fn backfill_next(data: &Path, next_youtube: &Mutex<Instant>) -> Result<(), Strin
     let rows = store::list(data)?;
     let Some(row) = rows.iter().find(|row| done.get(&row.id).is_none_or(|said| due(said))) else { return Ok(()) };
     let id = row.id.clone();
+    let began = Instant::now();
     match backfill(data, &id, next_youtube) {
         Ok(said) => {
+            if said != "passed over" {
+                crate::log::info("backfill", format!("{} in {}: {said}", crate::log::named(&id, &row.title), crate::log::since_start(began)));
+            }
             done.insert(id, said);
         }
         Err(error) if error == WAITING => return Ok(()),
         Err(error) => {
+            crate::log::warn("backfill", format!("{}: failed, trying again in six hours: {error}", crate::log::named(&id, &row.title)));
             done.insert(id, format!("failed@{now}: {error}"));
         }
     }

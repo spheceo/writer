@@ -245,7 +245,20 @@ pub fn start(data: PathBuf) {
                 }),
                 Some(cloud) => {
                     set(|status| status.enabled = true);
-                    match cloud.tick(&data, pull) {
+                    let outcome = cloud.tick(&data, pull);
+                    let was = status();
+                    match &outcome {
+                        Ok(_) if was.state == "offline" || was.state == "error" => crate::log::info("cloud", "back in sync"),
+                        Err(problem) if was.error.as_deref() != Some(problem.message.as_str()) => {
+                            if problem.offline {
+                                crate::log::warn("cloud", format!("offline: {}", problem.message));
+                            } else {
+                                crate::log::error("cloud", format!("sync stopped: {}", problem.message));
+                            }
+                        }
+                        _ => {}
+                    }
+                    match outcome {
                         Ok(pending) => set(|status| {
                             status.pending = pending;
                             status.state = if pending > 0 { "syncing".into() } else { "synced".into() };
@@ -537,6 +550,7 @@ impl Cloud {
         if !row["deletedAt"].is_null() {
             // Deleted on another Mac: gone here too, unless this Mac changed it since.
             if dir.is_dir() && !changed_here(&dir, known.as_ref()) {
+                crate::log::info("cloud", format!("{}: deleted on another Mac, so here too", crate::log::named(&id, row["title"].as_str().unwrap_or(""))));
                 let _ = fs::remove_dir_all(&dir);
             }
             ledger.scripts.remove(&id);
@@ -575,6 +589,7 @@ impl Cloud {
         }
         let tmp = dir.join("script.json.tmp");
         fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, dir.join("script.json"))).map_err(|error| Problem::said(error.to_string()))?;
+        crate::log::info("cloud", format!("{}: rev {rev} came from {}", crate::log::named(&id, row["title"].as_str().unwrap_or("")), row["updatedBy"].as_str().unwrap_or("another Mac")));
         ledger.scripts.insert(id, Known { rev, body: hash(&body), files });
         Ok(())
     }
@@ -583,6 +598,8 @@ impl Cloud {
     fn push(&self, id: &str, dir: &Path, script: &Script, body: &[u8], known: Option<Known>, files: BTreeMap<String, Kept>) -> Done<Pushed> {
         let base = known.as_ref().map_or(0, |known| known.rev);
         let mut kept = BTreeMap::new();
+        let began = std::time::Instant::now();
+        let (mut sent, mut sent_bytes) = (0usize, 0u64);
         for (name, local) in files {
             let previous = known.as_ref().and_then(|known| known.files.get(&name));
             let key = format!("{PREFIX}/{id}/files/{name}");
@@ -594,6 +611,11 @@ impl Cloud {
             // A file that vanished while it went up (a temp piece) is left out.
             match self.upload(id, &name, &path, &key) {
                 Ok(size) => {
+                    sent += 1;
+                    sent_bytes += size;
+                    if size > 50_000_000 {
+                        crate::log::info("cloud", format!("{}: {name} uploaded: {}", crate::log::named(id, &script.title), crate::log::size(size)));
+                    }
                     kept.insert(name, Kept { key, size, mtime: local.mtime });
                 }
                 Err(problem) if problem.offline => return Err(problem),
@@ -624,9 +646,13 @@ impl Cloud {
             Ok(value) => {
                 let stale: Vec<String> = value["stale"].as_array().into_iter().flatten().filter_map(|key| key.as_str().map(str::to_string)).collect();
                 self.remove(&stale);
-                Ok(Pushed::Done(Known { rev: value["rev"].as_u64().unwrap_or(base + 1), body: digest, files: kept }))
+                let rev = value["rev"].as_u64().unwrap_or(base + 1);
+                let files = if sent > 0 { format!(" with {sent} {} ({})", if sent == 1 { "file" } else { "files" }, crate::log::size(sent_bytes)) } else { String::new() };
+                crate::log::info("cloud", format!("{}: saved to the cloud as rev {rev}{files} in {}", crate::log::named(id, &script.title), crate::log::since_start(began)));
+                Ok(Pushed::Done(Known { rev, body: digest, files: kept }))
             }
             Err((code, _)) if code == "conflict" => {
+                crate::log::warn("cloud", format!("{}: another Mac saved it first (rev {base} is behind); taking theirs and keeping this Mac's as a copy", crate::log::named(id, &script.title)));
                 self.remove(&[body_key]);
                 Ok(Pushed::Overtaken)
             }

@@ -76,16 +76,51 @@ pub fn mark_interrupted(data: &Path, id: &str) {
     }
 }
 
+/// The jobs running now, each with its script's title.
+pub fn running_list() -> Vec<(String, String, BuildStatus)> {
+    let titles = titles().lock().map(|titles| titles.clone()).unwrap_or_default();
+    jobs()
+        .lock()
+        .map(|jobs| jobs.iter().filter(|(_, job)| job.running).map(|(id, job)| (id.clone(), titles.get(id).cloned().unwrap_or_default(), job.clone())).collect())
+        .unwrap_or_default()
+}
+
+fn titles() -> &'static Mutex<HashMap<String, String>> {
+    static TITLES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    TITLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A script's title, read alone from its script.json.
+pub fn title_of(data: &Path, id: &str) -> String {
+    #[derive(Deserialize)]
+    struct Slim {
+        title: String,
+    }
+    crate::store::script_dir(data, id)
+        .ok()
+        .and_then(|dir| fs::read(dir.join("script.json")).ok())
+        .and_then(|bytes| serde_json::from_slice::<Slim>(&bytes).ok())
+        .map(|slim| slim.title)
+        .unwrap_or_default()
+}
+
 pub fn running(id: &str) -> bool {
     jobs().lock().ok().and_then(|jobs| jobs.get(id).map(|job| job.running)).unwrap_or(false)
 }
 
-/// Says what a running build is doing.
+/// Says what a running build is doing (a new step goes in the log too;
+/// a percentage ticking over doesn't).
 pub fn stage(id: &str, text: &str) {
+    let mut fresh = false;
     if let Ok(mut jobs) = jobs().lock() {
         if let Some(job) = jobs.get_mut(id) {
+            fresh = job.stage != text && !text.contains('%');
             job.stage = text.to_string();
         }
+    }
+    if fresh {
+        let title = titles().lock().ok().and_then(|titles| titles.get(id).cloned()).unwrap_or_default();
+        crate::log::info("agent", format!("{}: {text}", crate::log::named(id, &title)));
     }
 }
 
@@ -137,6 +172,22 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
     };
     let data = crate::data_dir(&app)?;
     keep(&data, &id, &job);
+    let title = title_of(&data, &id);
+    if let Ok(mut titles) = titles().lock() {
+        titles.insert(id.clone(), title.clone());
+    }
+    let what = match &work {
+        Work::Build { .. } => "writing the script".to_string(),
+        Work::Revise { request, .. } => format!("revising: \"{}\"", request.chars().take(80).collect::<String>()),
+        Work::Reuse { urls } => format!("bringing in {} reused {}", urls.len(), if urls.len() == 1 { "case" } else { "cases" }),
+        Work::Find => "finding clips on YouTube".to_string(),
+        Work::Learn(_) => "learning from the feedback".to_string(),
+        Work::Review { notes } => format!("fixing {} review {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }),
+        Work::Restore => "bringing the footage back".to_string(),
+    };
+    let name = crate::log::named(&id, &title);
+    crate::log::info("agent", format!("{name}: started: {what}"));
+    let began = std::time::Instant::now();
     thread::spawn(move || {
         // A bug in a build ends it as a failed build, never one that reads
         // as running forever.
@@ -156,10 +207,15 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                 job.finished_at = Some(now_ms());
                 match result {
                     Ok((report, cost)) => {
+                        let first = report.lines().next().unwrap_or("").chars().take(200).collect::<String>();
+                        crate::log::info("agent", format!("{name}: done in {} ({what}; ${cost:.2} at API prices): {first}", crate::log::since_start(began)));
                         job.report = Some(report);
                         job.cost_usd = Some(cost);
                     }
-                    Err(error) => job.error = Some(error),
+                    Err(error) => {
+                        crate::log::error("agent", format!("{name}: stopped after {} ({what}): {error}", crate::log::since_start(began)));
+                        job.error = Some(error);
+                    }
                 }
                 keep(&data, &id, job);
             }

@@ -116,6 +116,7 @@ export function Library({
   scripts,
   claude,
   onSettings,
+  onLogs,
   progress,
   loadError,
   onOpen,
@@ -124,6 +125,8 @@ export function Library({
   scripts: Summary[];
   claude: ClaudeStatus | null;
   onSettings: () => void;
+  /** Writer's log (⌘⇧L). */
+  onLogs: () => void;
   progress: ImportProgress[];
   loadError: string | null;
   onOpen: (id: string) => void;
@@ -199,6 +202,9 @@ export function Library({
           <button type="button" className="claude-status" title={claude?.message ?? "Checking Claude…"} onClick={onSettings}>
             <span className={claude?.loggedIn ? "dot on" : "dot"} />
             Claude{claude?.subscription ? ` · ${claude.subscription[0].toUpperCase()}${claude.subscription.slice(1)}` : ""}
+          </button>
+          <button type="button" className="icon-button" aria-label="Logs" title="Logs (⇧⌘L)" onClick={onLogs}>
+            <Icon name="doc" size={17} />
           </button>
           <button type="button" className="icon-button" aria-label="Setup" title="Setup" onClick={onSettings}>
             <Icon name="settings" size={17} />
