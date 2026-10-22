@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { approveReview, fixNotes, getHandoff, type Handoff, message, onReviews, reviewCounts, reviewNotes, sendToEdit, setAutoFix, shareScript } from "./api";
+import { approveReview, fixNotes, restoreScript, getHandoff, type Handoff, message, onReviews, reviewCounts, reviewNotes, sendToEdit, setAutoFix, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { Dialog, Icon } from "./ui";
 
@@ -433,5 +433,38 @@ export function SendToEditButton({ script, disabled, onProblem }: { script: Scri
       <Icon name={sent ? "check" : "send"} size={14} />
       {busy ? "Sending…" : !mark ? "Send to Edit" : mark.changed ? "Send again to Edit" : "Sent to Edit"}
     </button>
+  );
+}
+
+// ---- Archived ---------------------------------------------------------------------
+
+const gigabytes = (bytes: number) => (bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`);
+
+/**
+ * An archived script, read-only: its footage was deleted to free space (from
+ * Repack's page), its words and everything small kept. Restore brings the
+ * footage back from its links; what came from this Mac's disk can't come back.
+ */
+export function ArchivedBanner({ script, working, onJob, onProblem }: { script: Script; working: boolean; onJob: (job: BuildStatus) => void; onProblem: (text: string) => void }) {
+  const archive = script.archive;
+  if (!archive) return null;
+  const restore = async () => {
+    try {
+      onJob(await restoreScript(script.id));
+    } catch (cause) {
+      onProblem(message(cause));
+    }
+  };
+  return (
+    <div className="notice archived-notice">
+      <span>
+        <b>Footage archived</b> by {archive.by || "Repack"}, {when(archive.at)}
+        {archive.freedBytes > 0 ? `, freeing ${gigabytes(archive.freedBytes)}` : ""}. The script and its words are kept; it reads but can't be edited until the footage is back.
+        {archive.missing.length > 0 && <span className="bad"> Missing after the last restore (from this Mac's disk): {archive.missing.join(", ")}.</span>}
+      </span>
+      <button type="button" className="primary sm" disabled={working || archive.restoring} onClick={() => void restore()}>
+        {working || archive.restoring ? "Restoring…" : "Restore footage"}
+      </button>
+    </div>
   );
 }

@@ -1,4 +1,5 @@
 mod casefiles;
+mod archive;
 mod blocks;
 mod chat;
 mod claude;
@@ -885,6 +886,17 @@ async fn approve_review(app: AppHandle, id: String, approve: bool) -> Result<ser
         .map_err(|error| error.to_string())?
 }
 
+/// Brings an archived script's footage back; followed as a build.
+pub fn restore_now(app: AppHandle, data: &Path, id: &str) -> Result<jobs::BuildStatus, String> {
+    archive::start_restore(&app, data, id)
+}
+
+#[tauri::command]
+fn restore_script(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    let data = data_dir(&app)?;
+    restore_now(app, &data, &id)
+}
+
 #[tauri::command]
 fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
     let data = data_dir(&app)?;
@@ -1094,7 +1106,9 @@ pub fn run() {
             if let Ok(dir) = app.path().app_data_dir() {
                 cloud::start(dir.clone());
                 // Review notes from Repack's links, and fixing them.
-                reviews::start(app.handle().clone(), dir);
+                reviews::start(app.handle().clone(), dir.clone());
+                // Archives heard from Repack, restores, and the footage backfill.
+                archive::start(app.handle().clone(), dir);
             }
             Ok(())
         })
@@ -1131,6 +1145,7 @@ pub fn run() {
             fix_notes,
             set_auto_fix,
             approve_review,
+            restore_script,
             send_to_edit,
             get_handoff,
             set_pacing,

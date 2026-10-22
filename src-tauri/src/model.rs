@@ -267,6 +267,9 @@ pub struct ScriptDetail {
     #[serde(flatten)]
     pub script: Script,
     pub proxy_path: Option<String>,
+    /// Archived from Repack's page: its footage is gone until restored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<crate::archive::State>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +299,9 @@ pub struct Summary {
     pub doc_exported_at: Option<i64>,
     pub doc_behind: bool,
     pub created_at: i64,
+    /// Archived from Repack's page (filled in by store::list).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive: Option<crate::archive::State>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,6 +336,7 @@ impl Script {
             doc_exported_at: self.doc_export.as_ref().map(|doc| doc.exported_at),
             doc_behind: self.doc_export.as_ref().is_some_and(|doc| doc.revision < self.revision),
             created_at: self.created_at,
+            archive: None,
         }
     }
 }

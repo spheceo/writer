@@ -12,6 +12,7 @@ import {
   inTauri,
   message,
   renameScript,
+  restoreScript,
   resumeImport,
   trelloCards,
 } from "./api";
@@ -60,6 +61,11 @@ const day = (at: number) => new Date(at).toLocaleDateString(undefined, { day: "n
  * hover says what the step is made of.
  */
 function scriptStatus(script: Summary, progress: ImportProgress[]): { tone: Tone; label: string; title?: string } {
+  if (script.archive) {
+    return script.archive.restoring || script.building
+      ? { tone: "busy", label: "Restoring footage" }
+      : { tone: "idle", label: "Archived", title: `Footage archived by ${script.archive.by || "Repack"} on ${new Date(script.archive.at).toLocaleDateString()}. Restore brings it back from its links.` };
+  }
   if (script.status === "processing") {
     const live = progress.find((item) => item.id === script.id);
     return { tone: "busy", label: `Importing · ${live?.percent ?? script.progress}%`, title: live?.detail };
@@ -300,6 +306,9 @@ export function Library({
                             ? [{ label: script.status === "needs_choice" ? "Answer…" : "Retry import…", onSelect: () => setRecovering(script) }]
                             : []),
                           { label: "Open script", onSelect: () => onOpen(script.id) },
+                          ...(script.archive && !script.archive.restoring
+                            ? [{ label: "Restore footage", onSelect: () => void restoreScript(script.id).then(() => onChanged(), (cause) => toast(<>{message(cause)}</>)) }]
+                            : []),
                           { label: "Rename…", onSelect: () => setRenaming(script) },
                           {
                             label: "Delete…",

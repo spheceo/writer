@@ -102,6 +102,8 @@ pub enum Work {
     Learn(crate::feedback::Step),
     /// Fix a shared script from its reviewers' notes (fixing.rs).
     Review { notes: Vec<String> },
+    /// Bring an archived script's footage back (archive.rs).
+    Restore,
 }
 
 pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, String> {
@@ -121,6 +123,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                 Work::Find => "Finding clips".into(),
                 Work::Learn(_) => "Learning from the feedback".into(),
                 Work::Review { .. } => "Fixing review notes".into(),
+                Work::Restore => "Bringing the footage back".into(),
                 Work::Build { .. } => "Starting".into(),
             },
             started_at: now_ms(),
@@ -144,6 +147,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
             Work::Find => crate::scout::find(&app, &id),
             Work::Learn(step) => crate::feedback::run(&app, &id, step),
             Work::Review { notes } => crate::fixing::run(&app, &id, notes),
+            Work::Restore => crate::archive::restore(&app, &id),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
         if let Ok(mut jobs) = jobs().lock() {

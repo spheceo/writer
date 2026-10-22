@@ -15,7 +15,7 @@ import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript
 import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
-import { BandTip, bandsOf, ReviewButton, ReviewDialog, SendToEditButton, useReview } from "./review";
+import { BandTip, bandsOf, ReviewButton, ReviewDialog, SendToEditButton, useReview, ArchivedBanner } from "./review";
 import { Icon } from "./ui";
 
 export type View = "video" | "script" | "split";
@@ -190,7 +190,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const cueCount = clips.filter(isCutIn).length;
   // The footage's length in the address: a reused case joined onto it is a new file at the same path.
   const src = !script.proxyPath ? "" : `${inTauri() ? convertFileSrc(script.proxyPath) : `/api/scripts/${script.id}/proxy`}?v=${script.durationMs}`;
-  const busy = started !== null;
+  // Claude (or a restore) is at work; an archived script is read-only as well.
+  const working = started !== null;
+  const archived = !!script.archive;
+  const busy = working || archived;
 
   // Undo and redo: up to 30 earlier timelines, cut edits and narration alike.
   // A fresh build goes on the list too, so it can be undone.
@@ -560,7 +563,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         </div>
         <div className="top-actions">
           <CloudBadge compact />
-          {busy && (
+          {working && (
             <span className="agent-working">
               <span className="dot live" />
               {/reused|^Adding the footage/i.test(stage) ? "Importing footage" : "Claude writing"}
@@ -598,6 +601,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           </button>
         </div>
       </header>
+      <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
       {error && (
         <div className="notice">
           {error}
@@ -796,7 +800,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 <Said key={`${turn.at}-${index}`} text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />
               ),
             )}
-            {sent && busy && <Asked text={sent} />}
+            {sent && working && <Asked text={sent} />}
             {cueCount > 0 && !busy && !chat.length && (
               <div className="turn">
                 <p className="muted">
@@ -816,7 +820,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 )}
               </div>
             )}
-            {busy && (
+            {working && (
               <Working
                 stage={stage}
                 since={started}
@@ -868,7 +872,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             label={cueCount ? "Ask for a change" : "Build the script"}
             model={cueCount ? "Sonnet 5.5" : "Opus 5.5"}
             placeholder={
-              busy
+              archived
+                ? "The footage is archived: restore it to change the script"
+                : busy
                 ? "Claude is working…"
                 : cueCount
                   ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"

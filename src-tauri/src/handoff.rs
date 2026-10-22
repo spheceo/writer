@@ -89,7 +89,7 @@ fn sha256_of(path: &Path) -> Result<String, String> {
 
 /// One recording to share: its own file, its source and name, and where it
 /// sits on the script's clock.
-struct Shared {
+pub(crate) struct Shared {
     file: PathBuf,
     source: String,
     name: String,
@@ -102,7 +102,7 @@ struct Shared {
 }
 
 /// The script's recordings that have their own file and a source.
-fn shared(dir: &Path, script: &Script) -> Vec<Shared> {
+pub(crate) fn shared(dir: &Path, script: &Script) -> Vec<Shared> {
     let recordings = transcribe::recordings(dir, script);
     let sources = crate::import::part_sources(dir, script);
     let joined = recordings.len() > 1;
@@ -165,7 +165,10 @@ fn transcript_of(dir: &Path, script: &Script, recording: &Shared) -> Transcript 
 /// Puts the script's recordings and their transcripts where Edit finds them:
 /// each original uploaded and registered unless the registry has it ready,
 /// each transcript unless one is there. Answers what it did.
-pub fn share(data: &Path, id: &str) -> Result<String, String> {
+/// `hear`: a recording not yet heard Edit's way is heard first, so its words
+/// can go too (an import, Send to Edit). Without it (the backfill, a
+/// restore), footage goes and words only where a hearing is already there.
+pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
     let recordings = shared(&dir, &script);
@@ -209,7 +212,11 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
             // Heard as Edit hears it, with the case's names, if it wasn't yet
             // (a script transcribed before Writer heard footage Edit's way).
             let keyterms = crate::names::case_names(&dir, &script, &settings::load(data));
-            if heard_of(&dir, recording).is_none_or(|heard| !hearing::covers(&heard.keyterms, &keyterms)) {
+            let unheard = heard_of(&dir, recording).is_none_or(|heard| !hearing::covers(&heard.keyterms, &keyterms));
+            if unheard && !hear {
+                continue;
+            }
+            if unheard {
                 hearing::hear(&hearing::Recording { file: &recording.file, span: None }, &dir.join("transcript").join(&recording.key), &settings::load(data), &keyterms, &|_, _| {})?;
             }
             let text = hearing::serialize(&transcript_of(&dir, &script, recording));
@@ -222,6 +229,30 @@ pub fn share(data: &Path, id: &str) -> Result<String, String> {
         return Ok(format!("Would share {} recordings with Edit (switched off until Edit confirms).", plan.len()));
     }
     Ok(if done.is_empty() { "Edit has every recording and transcript already.".into() } else { done.join("; ") })
+}
+
+/// Puts the script's recordings in Edit's originals over what's there: for
+/// a YouTube video downloaded again in Edit's format, replacing Writer's
+/// older download of it.
+pub fn replace_originals(data: &Path, id: &str) -> Result<(), String> {
+    let dir = store::script_dir(data, id)?;
+    let script = store::read(&dir)?;
+    for recording in shared(&dir, &script) {
+        let record = cloud::call(data, "query", "edit:getMedia", json!({ "source": recording.source }))?;
+        let size = fs::metadata(&recording.file).map(|meta| meta.len()).unwrap_or(0);
+        if record.is_null() || record["size"].as_f64().map(|known| known as u64) == Some(size) {
+            continue;
+        }
+        let key = record["originalKey"].as_str().map(str::to_string).unwrap_or_else(|| original_key(&recording.source, &recording.name));
+        cloud::call(data, "mutation", "edit:putMedia", json!({ "source": recording.source, "originalReady": false }))?;
+        cloud::put_file(data, id, &key, &recording.file)?;
+        let mut ready = json!({ "source": recording.source, "originalReady": true, "size": size });
+        if let Some(duration) = crate::media::streams(&recording.file).ok().map(|found| found.duration_ms as f64 / 1000.0) {
+            ready["duration"] = json!(duration);
+        }
+        cloud::call(data, "mutation", "edit:putMedia", ready)?;
+    }
+    Ok(())
 }
 
 /// What of the script is in Edit's originals: its file (by its path in the
@@ -245,7 +276,7 @@ pub fn shared_files(dir: &Path) -> Vec<String> {
 /// Shares the script with Edit in the background; a failure is kept for the next try.
 pub fn share_soon(data: PathBuf, id: String) {
     std::thread::spawn(move || {
-        if let Err(error) = share(&data, &id) {
+        if let Err(error) = share(&data, &id, true) {
             if let Ok(dir) = store::script_dir(&data, &id) {
                 let _ = fs::write(dir.join("edit-share-error.txt"), error);
             }

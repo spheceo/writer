@@ -40,6 +40,10 @@ Editing has undo and redo (⌘Z, ⇧⌘Z), 30 steps, including undoing a fresh b
 
 Titles and thumbnails are not in this slice. Scripts live in Application Support and sync through the cloud.
 
+**Archived** scripts (`src-tauri/src/archive.rs`): Repack's page can archive a script to free space; its server deletes the footage on R2 and marks the script's Convex row. When Writer hears it, it deletes the script's footage here too (originals, the preview, Drive recordings, reused cases' videos, heard audio) and keeps the script, its transcripts, the watcher's answers, versions, chat and every other small file, so it lists and reads, read-only, as Archived. A file from the Mac's disk outside Writer's folder is never touched. **Restore footage** (or Restore on Repack's page) downloads the footage again, from Edit's originals where they're back, else from the recordings' YouTube and Drive links, rebuilds the preview, puts it back in the footage registry and tells Repack (`writer:clearRestore`); the transcripts were kept, so nothing is heard again. What came from the Mac's disk can't come back and is listed as missing.
+
+Every script is in the cloud with its footage: each recording goes to Edit's footage registry on import (Drive, YouTube, and a file from disk as `sha256:<hex>`). Scripts from before are brought in by a backfill, one at a time in the background (`cloud/backfill.json` says what it did); a YouTube video Writer downloaded before it used Edit's format is downloaded again in it first (at most one a quarter hour) and replaces Writer's older copy in the registry. Scripts titled "TEST…", commentaries and unfinished imports are passed over.
+
 ## What a user installs
 
 Only **Claude Code**, signed in (run `claude` once). Everything else comes with Writer or is fetched by it:

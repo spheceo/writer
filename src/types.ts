@@ -88,6 +88,8 @@ export type Script = {
   commentary?: Commentary;
   /** Its review link on Repack, once shared. */
   review?: ReviewLink | null;
+  /** Archived from Repack's page: its footage is gone until restored. */
+  archive?: Archive;
   /** The heading as the producer rewrote it, in place of the generated one. */
   heading?: string;
   /** Words the producer respelled, by word ID. */
@@ -105,7 +107,11 @@ export type Script = {
   proxyPath: string | null;
 };
 
+/** A script archived from Repack's page to free space: footage deleted, the script and its words kept. */
+export type Archive = { at: number; by: string; freedBytes: number; restoring: boolean; missing: string[] };
+
 export type Summary = {
+  archive?: Archive;
   id: string;
   title: string;
   status: string;

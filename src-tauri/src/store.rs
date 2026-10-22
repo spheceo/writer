@@ -28,8 +28,10 @@ pub fn proxy_path(dir: &Path) -> PathBuf {
 
 pub fn detail(script: Script, dir: &Path) -> ScriptDetail {
     let proxy = proxy_path(dir);
+    let archive = dir.parent().and_then(Path::parent).and_then(|data| crate::archive::state(data, &script.id));
     ScriptDetail {
         proxy_path: proxy.is_file().then(|| proxy.to_string_lossy().into_owned()),
+        archive,
         script,
     }
 }
@@ -68,7 +70,11 @@ pub fn list(data: &Path) -> Result<Vec<Summary>, String> {
             continue;
         }
         match read(&entry.path()) {
-            Ok(script) => rows.push(script.summary()),
+            Ok(script) => {
+                let mut row = script.summary();
+                row.archive = crate::archive::state(data, &script.id);
+                rows.push(row);
+            }
             Err(_) => continue,
         }
     }

@@ -211,6 +211,13 @@ pub fn get_bytes(data: &Path, key: &str) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+/// Downloads what is at a key into a file, its progress shown under `script`.
+pub fn get_file(data: &Path, script: &str, key: &str, size: u64, path: &Path) -> Result<(), String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("file").to_string();
+    cloud.download(script, &name, key, size, path).map_err(|problem| problem.message)
+}
+
 /// Who this Mac is, as commits and claims name it.
 pub fn holder_name() -> String {
     holder()
@@ -489,6 +496,13 @@ impl Cloud {
                 .filter(|(_, mark)| mark.is_object())
                 .collect();
             keep_handoffs(data, |known| *known = marks);
+            // Archived from Repack's page, or asked back: archive.rs acts on it.
+            let states: BTreeMap<String, Value> = rows
+                .iter()
+                .filter_map(|row| Some((row["scriptId"].as_str()?.to_string(), json!({ "archived": row["archived"], "restore": row["restore"] }))))
+                .filter(|(_, state)| state["archived"].is_object() || state["restore"].is_object())
+                .collect();
+            crate::archive::keep_states(data, states);
             for row in rows {
                 if gone.iter().any(|id| row["scriptId"].as_str() == Some(id)) {
                     continue;
@@ -510,7 +524,8 @@ impl Cloud {
         // What changed here, found first so the count of what is left can be shown.
         let mut changed = Vec::new();
         for id in ids {
-            if !store::id_ok(&id) || busy(&id) {
+            // An archived script stays as the cloud has it until it's restored.
+            if !store::id_ok(&id) || busy(&id) || crate::archive::archived(data, &id) {
                 continue;
             }
             let dir = root.join(&id);
@@ -612,6 +627,10 @@ impl Cloud {
             // keep its size, so on a newer script it is always fetched again.
             let small_json = name.ends_with(".json") && size < 2_000_000;
             let present = !small_json && fs::metadata(&path).map(|meta| meta.len() == size).unwrap_or(false);
+            // An archived script's footage was deleted from the cloud: only its small files come down.
+            if row["archived"].is_object() && crate::archive::is_footage(name) {
+                continue;
+            }
             if !present {
                 self.download(&id, name, key, size, &path)?;
             }

@@ -15,7 +15,7 @@ import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
-import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, SendToEditButton, useReview } from "./review";
+import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, SendToEditButton, useReview, ArchivedBanner } from "./review";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const PACINGS: { value: Pacing; label: string; hint: string }[] = [
@@ -360,11 +360,14 @@ export function CommentaryEditor({
     window.setTimeout(() => setCopied(false), 1500);
   };
 
-  const busy = started !== null;
+  // Claude (or a restore) is at work; an archived script is read-only as well.
+  const working = started !== null;
+  const archived = !!script.archive;
+  const busy = working || archived;
   const ready = sources.some((source) => source.role !== "style");
   const total = sources.reduce((sum, source) => sum + source.chars, 0);
   const times = draft ? timing(draft) : null;
-  const said = (report && !busy ? report.text : draft?.report) ?? "";
+  const said = (report && !working ? report.text : draft?.report) ?? "";
 
   const editParagraph = (section: number, index: number, next: Paragraph | null) => {
     if (!draft) return;
@@ -415,7 +418,7 @@ export function CommentaryEditor({
         </div>
         <div className="top-actions">
           <CloudBadge compact />
-          {busy && (
+          {working && (
             <span className="agent-working">
               <span className="dot live" />
               {finding ? "Finding clips" : learning ? "Learning from feedback" : "Claude writing"} · <Elapsed since={started} />
@@ -444,6 +447,7 @@ export function CommentaryEditor({
           </button>
         </div>
       </header>
+      <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
       {error && (
         <div className="notice">
           {error}
@@ -510,9 +514,9 @@ export function CommentaryEditor({
             <>
               <FeedbackPanel
                 status={
-                  busy && learning ? (
+                  working && learning ? (
                     <Working stage={stage} since={started} hint="A round writes the whole script and grades it: about 15 minutes, more for the first round, which also makes the answer key and the lesson. You can close this window; it keeps going." />
-                  ) : report && !busy ? (
+                  ) : report && !working ? (
                     <Said text={report.text} costUsd={report.costUsd} />
                   ) : null
                 }
@@ -527,7 +531,7 @@ export function CommentaryEditor({
             </>
           ) : tab === "clips" ? (
             <>
-              {busy && finding && <Working stage={stage} since={started} hint="Searching, reading captions and checking frames takes 10 to 20 minutes. You can close this window; it keeps going." />}
+              {working && finding && <Working stage={stage} since={started} hint="Searching, reading captions and checking frames takes 10 to 20 minutes. You can close this window; it keeps going." />}
               <FoundClips id={script.id} finds={finds} busy={busy} canFind={sources.some((source) => source.role === "brief")} onFind={() => void find()} />
             </>
           ) : tab === "claude" ? (
@@ -548,7 +552,7 @@ export function CommentaryEditor({
                   </div>
                 ) : (
                   <>
-                    {said && !(busy && !draft) && <Said text={said} costUsd={report && !busy ? report.costUsd : 0} />}
+                    {said && !(working && !draft) && <Said text={said} costUsd={report && !working ? report.costUsd : 0} />}
                     {draft && !busy && cut.items.length > 0 && (
                       <div className="turn">
                         <p className="muted">
@@ -567,12 +571,12 @@ export function CommentaryEditor({
                         </ul>
                       </div>
                     )}
-                    {sent && busy && (
+                    {sent && working && (
                       <div className="user">
                         <div className="bubble">{sent}</div>
                       </div>
                     )}
-                    {busy && <Working stage={stage} since={started} hint="A full script from long sources takes 10 to 20 minutes. You can close this window; it keeps going." />}
+                    {working && <Working stage={stage} since={started} hint="A full script from long sources takes 10 to 20 minutes. You can close this window; it keeps going." />}
                   </>
                 )}
               </ChatLog>
@@ -595,7 +599,9 @@ export function CommentaryEditor({
                 canSend={!busy && ready && (!draft || !!note.trim())}
                 label={draft ? (rewriting ? "Rewrite the script" : "Change the script") : "Write the script"}
                 placeholder={
-                  busy
+                  archived
+                    ? "The footage is archived: restore it to change the script"
+                    : busy
                     ? "Claude is writing…"
                     : !draft
                       ? "Notes for the first draft (optional), e.g. aim for 15 minutes…"

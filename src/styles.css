@@ -1261,3 +1261,6 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .review-approved { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 8px; color: var(--text); line-height: 1.45; }
 .review-approved svg { flex: none; margin-top: 2px; color: var(--ok); }
 .review-approved span { flex: 1; }
+/* An archived script: read-only until its footage is restored. */
+.archived-notice { display: flex; align-items: center; gap: 12px; }
+.archived-notice > span { flex: 1; }

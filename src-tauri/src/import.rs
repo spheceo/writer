@@ -1050,9 +1050,9 @@ fn drive_link(id: &str) -> String {
 /// The links of a joined script's recordings, in play order, for one joined
 /// before its parts kept them: a Drive folder's chosen recordings, or a
 /// compilation's videos less those left out. None when they no longer line up.
-/// Each recording's own file, where it is kept on this Mac, in the order of
+/// Where each recording's own file belongs on this Mac, in the order of
 /// the script's parts (a reused case's footage, joined later, has none).
-pub fn part_files(dir: &Path, script: &Script) -> Vec<Option<PathBuf>> {
+pub fn part_targets(dir: &Path, script: &Script) -> Vec<Option<PathBuf>> {
     let files: Vec<PathBuf> = if script.source_kind == "compilation" {
         let Some(videos) = Videos::read(dir) else { return Vec::new() };
         (0..videos.videos.len()).filter(|index| !videos.skipped.contains(&index.to_string())).map(|index| dir.join("compilation").join(format!("{index:02}.mp4"))).collect()
@@ -1062,7 +1062,12 @@ pub fn part_files(dir: &Path, script: &Script) -> Vec<Option<PathBuf>> {
     } else {
         return Vec::new();
     };
-    script.parts.iter().enumerate().map(|(index, part)| if part.reuse.is_some() { None } else { files.get(index).filter(|file| readable(file)).cloned() }).collect()
+    script.parts.iter().enumerate().map(|(index, part)| if part.reuse.is_some() { None } else { files.get(index).cloned() }).collect()
+}
+
+/// Each recording's own file, where it is kept on this Mac.
+pub fn part_files(dir: &Path, script: &Script) -> Vec<Option<PathBuf>> {
+    part_targets(dir, script).into_iter().map(|file| file.filter(|file| readable(file))).collect()
 }
 
 /// Where each of the script's recordings comes from, as Edit's footage
