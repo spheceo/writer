@@ -72,6 +72,9 @@ pub struct Note {
     /// Written by an app (Writer's own reply), not a reviewer.
     #[serde(default)]
     pub from_app: bool,
+    /// Its guest deleted it (and so its replies): dropped when it comes in.
+    #[serde(default, skip_serializing)]
+    pub deleted: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -104,6 +107,7 @@ impl Note {
             fix_summary: text("fixSummary"),
             attempted: value["attempt"].is_object(),
             from_app: value["fromApp"] == true,
+            deleted: value["deleted"] == true,
             created_at: number("createdAt").unwrap_or(0),
             updated_at: number("updatedAt").or_else(|| number("createdAt")).unwrap_or(0),
         })
@@ -404,6 +408,15 @@ fn poll(data: &Path) -> Result<bool, String> {
     change(data, |known| {
         known.links.extend(scanned);
         for mut note in notes {
+            // Deleted by its guest: gone, with its replies, never a phantom open note.
+            if note.deleted {
+                let id = note.id.clone();
+                let before = known.notes.len();
+                known.notes.retain(|kept_id, kept| kept_id != &id && kept.parent_id.as_deref() != Some(id.as_str()));
+                known.tried.remove(&id);
+                changed |= known.notes.len() != before;
+                continue;
+            }
             if note.script_id.is_none() {
                 note.script_id = known.links.get(&note.review_id).cloned();
             }

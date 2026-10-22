@@ -840,6 +840,23 @@ fn fix_notes(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
     fix_notes_now(app, &data, id)
 }
 
+/// Marks the script ready for Edit, or clears the mark.
+pub fn send_to_edit_now(data: &Path, id: &str, ready: bool) -> Result<Option<cloud::Handoff>, String> {
+    cloud::set_handoff(data, id, ready)
+}
+
+#[tauri::command]
+async fn send_to_edit(app: AppHandle, id: String, ready: bool) -> Result<Option<cloud::Handoff>, String> {
+    tauri::async_runtime::spawn_blocking(move || send_to_edit_now(&data_dir(&app)?, &id, ready))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn get_handoff(app: AppHandle, id: String) -> Result<Option<cloud::Handoff>, String> {
+    Ok(cloud::handoff(&data_dir(&app)?, &id))
+}
+
 #[tauri::command]
 fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
     let data = data_dir(&app)?;
@@ -1085,6 +1102,8 @@ pub fn run() {
             review_notes,
             fix_notes,
             set_auto_fix,
+            send_to_edit,
+            get_handoff,
             set_pacing,
             get_finds,
             pull_feedback,

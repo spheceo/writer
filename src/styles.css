@@ -1255,3 +1255,4 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 /* A note for the video editor ("edit: …"): Edit's agent follows it in that section. */
 .comment[data-edit] { border-left: 3px solid var(--cut-in); }
 .comment[data-edit] .avatar { background: var(--cut-in); color: #000; }
+.sent-button { color: var(--ok); }

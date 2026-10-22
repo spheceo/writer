@@ -15,7 +15,7 @@ import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
-import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview } from "./review";
+import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, SendToEditButton, useReview } from "./review";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const PACINGS: { value: Pacing; label: string; hint: string }[] = [
@@ -437,6 +437,7 @@ export function CommentaryEditor({
             <Icon name="panel" />
           </button>
           <ReviewButton script={script} open={openNotes} onClick={() => setReviewOpen(true)} />
+          <SendToEditButton script={script} disabled={busy} onProblem={setError} />
           <button type="button" className="secondary sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
             <Icon name="doc" size={14} />
             Google Doc

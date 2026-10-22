@@ -189,6 +189,70 @@ pub fn holder_name() -> String {
 
 const OFF: &str = "This copy of Writer has no cloud: it needs its relay token.";
 
+// ---- Send to Edit: a mark on the script's row in Convex (writer:setHandoff) ----
+
+/// A script marked ready for Edit: when, by whom, at which rev. Kept beside
+/// the ledger, never in script.json, so marking never makes a new rev.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Handoff {
+    pub at: i64,
+    pub by: String,
+    pub rev: u64,
+    /// The script has been saved since it was marked.
+    pub changed: bool,
+}
+
+fn handoffs_path(data: &Path) -> PathBuf {
+    data.join("cloud").join("handoffs.json")
+}
+
+static HANDOFFS: Mutex<()> = Mutex::new(());
+
+fn keep_handoffs(data: &Path, change: impl FnOnce(&mut BTreeMap<String, Value>)) {
+    let _guard = HANDOFFS.lock();
+    let path = handoffs_path(data);
+    let mut known: BTreeMap<String, Value> = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    change(&mut known);
+    let _ = fs::create_dir_all(path.parent().unwrap_or(data));
+    let _ = fs::write(&path, serde_json::to_vec(&known).unwrap_or_default());
+}
+
+/// The script's mark for Edit, if it has one.
+pub fn handoff(data: &Path, id: &str) -> Option<Handoff> {
+    let known: BTreeMap<String, Value> = fs::read(handoffs_path(data)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let mark = known.get(id)?;
+    let rev = mark["rev"].as_f64()? as u64;
+    let ledger = load(data);
+    let synced = ledger.scripts.get(id);
+    let dir = store::script_dir(data, id).ok()?;
+    let changed = synced.is_none_or(|known| known.rev > rev || changed_here(&dir, Some(known)));
+    Some(Handoff { at: mark["at"].as_f64().unwrap_or(0.0) as i64, by: mark["by"].as_str().unwrap_or("").to_string(), rev, changed })
+}
+
+/// Marks the script ready for Edit (or clears the mark). It must be in the
+/// cloud as it is now: Edit reads it from there.
+pub fn set_handoff(data: &Path, id: &str, ready: bool) -> Result<Option<Handoff>, String> {
+    if ready {
+        let dir = store::script_dir(data, id)?;
+        let synced = load(data).scripts.get(id).cloned();
+        if synced.is_none() || changed_here(&dir, synced.as_ref()) {
+            sync_soon();
+            return Err("The script isn't in the cloud as it is now yet. Send it again once the cloud says Synced.".into());
+        }
+    }
+    let value = call(data, "mutation", "writer:setHandoff", json!({ "scriptId": id, "ready": ready, "by": format!("Writer on {}", holder()) }))?;
+    let mark = value["handoff"].clone();
+    keep_handoffs(data, |known| {
+        if mark.is_object() {
+            known.insert(id.to_string(), mark);
+        } else {
+            known.remove(id);
+        }
+    });
+    Ok(handoff(data, id))
+}
+
 /// Starts syncing in the background, for as long as Writer runs.
 pub fn start(data: PathBuf) {
     std::thread::spawn(move || {
@@ -389,6 +453,13 @@ impl Cloud {
                 Err((code, _)) => return Err(Problem::said(format!("The cloud refused to list scripts ({code})."))),
             };
             set(|status| status.scripts = rows.iter().filter(|row| row["deletedAt"].is_null()).count());
+            // Which scripts are marked for Edit, and at what rev, as the cloud says.
+            let marks: BTreeMap<String, Value> = rows
+                .iter()
+                .filter_map(|row| Some((row["scriptId"].as_str()?.to_string(), row["handoff"].clone())))
+                .filter(|(_, mark)| mark.is_object())
+                .collect();
+            keep_handoffs(data, |known| *known = marks);
             for row in rows {
                 if gone.iter().any(|id| row["scriptId"].as_str() == Some(id)) {
                     continue;

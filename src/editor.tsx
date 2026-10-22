@@ -15,7 +15,7 @@ import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript
 import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
-import { BandTip, bandsOf, ReviewButton, ReviewDialog, useReview } from "./review";
+import { BandTip, bandsOf, ReviewButton, ReviewDialog, SendToEditButton, useReview } from "./review";
 import { Icon } from "./ui";
 
 export type View = "video" | "script" | "split";
@@ -591,6 +591,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             <Icon name="panel" />
           </button>
           <ReviewButton script={script} open={openNotes} onClick={() => setReviewOpen(true)} />
+          <SendToEditButton script={script} disabled={busy} onProblem={setError} />
           <button type="button" className="secondary sm" disabled={!cueCount} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
             <Icon name="doc" size={14} />
             Google Doc
