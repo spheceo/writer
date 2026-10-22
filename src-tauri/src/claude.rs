@@ -244,8 +244,13 @@ fn patiently(run: impl Fn() -> Result<Turn, Trouble>) -> Result<Turn, String> {
 /// Claude Code's Read tool, and nothing else: for a case's PDFs, which it
 /// reads page by page, scanned ones included.
 pub fn structured_reading(model: &str, system: &str, schema: &Value, prompt: &str, dir: &std::path::Path) -> Result<Value, String> {
-    let turn = patiently(|| ask(model, system, &schema.to_string(), prompt, None, Some(dir)))?;
+    let turn = reading_turn(model, system, schema, prompt, dir)?;
     turn.plan.ok_or_else(|| "Claude did not answer in the expected shape.".into())
+}
+
+/// The same, with what the answer cost: for looking at a clip's frames.
+pub(crate) fn reading_turn(model: &str, system: &str, schema: &Value, prompt: &str, dir: &std::path::Path) -> Result<Turn, String> {
+    patiently(|| ask(model, system, &schema.to_string(), prompt, None, Some(dir)))
 }
 
 /// What a Claude Code failure means, said plainly. Nothing is saved to the

@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Focus, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -121,6 +121,45 @@ export const importReuses = (id: string, urls: string[] = []) =>
     ? invoke<BuildStatus>("start_reuse_import", { id, urls })
     : http<BuildStatus>(`/api/scripts/${id}/reuses`, json({ urls }));
 
+/** Searches YouTube for the clips a commentary brief needs; followed as a build is. */
+export const findClips = (id: string) =>
+  inTauri() ? invoke<BuildStatus>("start_find_clips", { id }) : http<BuildStatus>(`/api/scripts/${id}/finds`, json({}));
+
+export const getFinds = (id: string) =>
+  inTauri() ? invoke<Finds | null>("get_finds", { id }) : http<Finds | null>(`/api/scripts/${id}/finds`);
+
+export const pullFeedback = (id: string, link: string | null) =>
+  inTauri() ? invoke<Feedback>("pull_feedback", { id, link }) : http<Feedback>(`/api/scripts/${id}/feedback`, json({ link }));
+
+export const getFeedback = (id: string) =>
+  inTauri() ? invoke<Feedback | null>("get_feedback", { id }) : http<Feedback | null>(`/api/scripts/${id}/feedback`);
+
+export const setFeedbackItem = (id: string, item: string, change: { skip?: boolean; note?: string }) =>
+  inTauri()
+    ? invoke<Feedback>("set_feedback_item", { id, item, skip: change.skip ?? null, note: change.note ?? null })
+    : http<Feedback>(`/api/scripts/${id}/feedback/items/${item}`, { ...json(change), method: "PUT" });
+
+/** Saves the lesson, and says what in it still points at the script. */
+export const setLesson = (id: string, lesson: string) =>
+  inTauri()
+    ? invoke<{ feedback: Feedback; leaks: string[] }>("set_lesson", { id, lesson })
+    : http<{ feedback: Feedback; leaks: string[] }>(`/api/scripts/${id}/feedback/lesson`, { ...json({ lesson }), method: "PUT" });
+
+export const startLearning = (id: string, step: LearnStep) =>
+  inTauri() ? invoke<BuildStatus>("start_feedback", { id, step }) : http<BuildStatus>(`/api/scripts/${id}/feedback/steps`, json(step));
+
+export const keepLesson = (id: string) =>
+  inTauri() ? invoke<Lesson[]>("keep_lesson", { id }) : http<Lesson[]>(`/api/scripts/${id}/feedback/keep`, json({}));
+
+export const getLessons = () => (inTauri() ? invoke<Lesson[]>("get_lessons") : http<Lesson[]>("/api/lessons"));
+
+export const forgetLesson = (lesson: string) =>
+  inTauri() ? invoke<Lesson[]>("forget_lesson", { lesson }) : http<Lesson[]>(`/api/lessons/${lesson}`, { method: "DELETE" });
+
+/** The frames the clip search looked at for one clip. */
+export const framesUrl = (id: string, finds: Finds, frames: string) =>
+  inTauri() ? convertFileSrc(`${finds.dir}/${frames}`) : `/api/scripts/${id}/finds/frames/${frames.split("/").pop()}`;
+
 /** The script's conversation with the editor. */
 export const getChat = (id: string) =>
   inTauri() ? invoke<ChatTurn[]>("get_chat", { id }) : http<ChatTurn[]>(`/api/scripts/${id}/chat`);
@@ -194,6 +233,9 @@ export const addSource = (id: string, adding: Adding, role: Role) =>
   inTauri()
     ? invoke<Script>("add_source", { id, adding, role })
     : http<Script>(`/api/scripts/${id}/sources`, json({ adding, role }));
+
+export const setPacing = (id: string, pacing: Pacing) =>
+  inTauri() ? invoke<Script>("set_pacing", { id, pacing }) : http<Script>(`/api/scripts/${id}/pacing`, { ...json({ pacing }), method: "PUT" });
 
 export const updateSource = (id: string, source: string, change: { role?: Role; title?: string }) =>
   inTauri()

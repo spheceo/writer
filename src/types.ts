@@ -172,6 +172,102 @@ export type BuildStatus = {
   error: string | null;
 };
 
+/** A moment a commentary brief needs, as the clip search planned it. */
+export type Need = { id: string; chapter: string; what: string; visual: boolean; queries: string[] };
+
+export type FoundVideo = {
+  id: string;
+  title: string;
+  channel: string;
+  durationMs: number;
+  views?: number;
+  needs: string[];
+  given: boolean;
+  about: string;
+  problem?: string;
+  source?: string;
+  /** YouTube gave no captions, so Writer transcribed its audio. */
+  heard: boolean;
+};
+
+/** A clip found in a YouTube video's captions, its words checked against them. */
+export type Found = {
+  need: string;
+  video: string;
+  startMs: number;
+  endMs: number;
+  quote: string;
+  why: string;
+  strength: "strong" | "partial";
+  look?: { shows: "yes" | "no" | "unsure"; seen: string; frames: string };
+};
+
+/** The last clip search for a commentary project. */
+export type Finds = {
+  needs: Need[];
+  videos: FoundVideo[];
+  clips: Found[];
+  searches: number;
+  problems: string[];
+  costUsd: number;
+  startedAt: number;
+  finishedAt: number;
+  dir: string;
+};
+
+/** One thing a reviewer marked on the Doc: a comment, or a highlight on its own. */
+export type FeedbackItem = {
+  id: string;
+  kind: "comment" | "highlight";
+  quote: string;
+  comment: string;
+  author: string;
+  replies: string[];
+  color?: string;
+  place?: string;
+  note: string;
+  skip: boolean;
+};
+
+/** A paragraph (or montage clip, heading or check) that changed between two versions of the script. */
+export type ScriptChange = { place: string; before?: string; after?: string };
+
+export type Grade = "fixed" | "partly" | "missed" | "wrong";
+
+/** One test of the lesson: the script fixed from the lesson alone, graded against the feedback. */
+export type LessonRound = {
+  number: number;
+  lesson: string;
+  changes: ScriptChange[];
+  verdicts: { item: string; grade: Grade; changes: string[]; why: string }[];
+  extras: { change: string; harmful: boolean; why: string }[];
+  score: number;
+  summary: string;
+  costUsd: number;
+  at: number;
+};
+
+/** Feedback pulled from a Doc, and the lesson being learned from it. */
+export type Feedback = {
+  doc: string;
+  docUrl: string;
+  pulledAt: number;
+  revision: number;
+  items: FeedbackItem[];
+  key?: ScriptChange[];
+  title: string;
+  lesson: string;
+  rounds: LessonRound[];
+  problems: string[];
+  costUsd: number;
+};
+
+/** A lesson kept from a review. Every commentary build reads it. */
+export type Lesson = { id: string; title: string; text: string; script: string; scriptTitle: string; pulledAt: number; score?: number; keptAt: number };
+
+/** A step in learning from feedback, run as a job. */
+export type LearnStep = { step: "round" } | { step: "improve" } | { step: "finish"; round: number };
+
 /** What a commentary source is for: the producer's brief, evidence, or a past script for the house style. */
 export type Role = "brief" | "evidence" | "style";
 
@@ -212,7 +308,10 @@ export type Draft = {
   writtenAt: number;
 };
 
-export type Commentary = { sources: Source[]; draft?: Draft };
+/** How a commentary script balances narration against clips: the channel's clip-led way, or narration-led like Turkey Tom's documentaries. */
+export type Pacing = "channel" | "documentary";
+
+export type Commentary = { pacing?: Pacing; sources: Source[]; draft?: Draft };
 
 export type Adding =
   | { kind: "link"; url: string }

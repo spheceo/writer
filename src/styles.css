@@ -894,7 +894,9 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 /* Claude and the sources, where Repack keeps its agent */
 .agent { background: var(--panel); }
 .agent-head { display: flex; align-items: center; gap: 10px; flex-shrink: 0; height: 38px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line); }
-.panel-tabs { display: flex; align-self: stretch; gap: 16px; flex: 1; }
+/* Four tabs can outgrow a narrow panel: they scroll within it rather than pushing it wider. */
+.panel-tabs { display: flex; align-self: stretch; gap: 12px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.panel-tabs button { flex: none; white-space: nowrap; }
 .panel-tabs button {
   height: auto;
   gap: 6px;
@@ -1121,7 +1123,89 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .page .ranges[data-tight], .page > .page-body > .ranges[data-tight] { margin-bottom: 0; }
 .page .cue[data-tight] { margin-bottom: 0; }
 
-/* Repack's Trello lists in New script. */
+/* Clips found on YouTube for a commentary brief. */
+.found-clips { display: flex; flex-direction: column; gap: 10px; padding: 8px 10px 16px; font-size: 12.5px; }
+.found-clips p { margin: 0; }
+.found-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.found-head .faint { font-size: 12px; }
+.found-head button { flex: none; }
+.found-clips .empty { padding: 16px 2px; }
+.found-chapter { display: flex; flex-direction: column; gap: 8px; }
+.found-chapter h3 { margin: 6px 0 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.found-need { display: flex; flex-direction: column; gap: 4px; }
+.found-what { display: flex; align-items: baseline; gap: 6px; font-weight: 500; }
+.found-what .badge { flex: none; }
+.found-none { padding-left: 4px; font-style: italic; }
+.found-need ul { list-style: none; margin: 0; padding: 0 0 0 4px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.found-clip { display: flex; flex-direction: column; gap: 3px; padding-left: 8px; }
+.found-clip[data-strength="partial"] { opacity: 0.85; }
+.found-line { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.found-line a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.found-channel { font-size: 11.5px; }
+.found-clip blockquote { margin: 0; padding: 0; color: var(--text-2); font-style: italic; }
+.found-why { color: var(--text-2); }
+.found-clips .chip { flex: none; font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--faint); }
+.found-clips .chip.strong { color: var(--text); border-color: var(--accent); }
+.found-look { display: flex; gap: 8px; align-items: flex-start; margin-top: 2px; }
+.found-look img { display: block; width: 132px; border-radius: 6px; border: 1px solid var(--line); }
+.found-look p { flex: 1; color: var(--text-2); }
+.found-look[data-shows="no"] strong { color: var(--danger, #c0392b); }
+.found-problems ul { margin: 4px 0 0; padding-left: 16px; }
+
+/* How the next commentary build paces narration against clips. */
+.pacing-pick { position: relative; align-self: flex-start; margin: 0 12px 6px; display: inline-flex; align-items: center; }
+.pacing-pick select { appearance: none; height: 26px; padding: 0 24px 0 8px; border-radius: 6px; background: transparent; border: 1px solid var(--line); color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer; }
+.pacing-pick svg { position: absolute; right: 7px; pointer-events: none; color: var(--faint); }
+
+/* Feedback: what a reviewer marked, the lesson drawn from it, and the rounds that test it. */
+.fb-status { flex: none; }
+.feedback-panel .fb-pull { display: flex; gap: 6px; }
+.feedback-panel .fb-pull input { flex: 1; min-width: 0; }
+.fb-problems { margin: 0; padding-left: 16px; font-size: 12px; }
+.fb-section { display: flex; flex-direction: column; gap: 6px; }
+.fb-section-head { display: flex; align-items: center; gap: 6px; padding: 0; background: none; border: 0; color: inherit; text-align: left; cursor: default; }
+.feedback-panel button.fb-section-head, .feedback-panel button.fb-round-head { height: auto; justify-content: flex-start; background: none; border: 0; border-radius: 0; font-weight: inherit; cursor: pointer; }
+.feedback-panel button.fb-section-head { padding: 0; }
+.feedback-panel button.fb-section-head:hover:not(:disabled), .feedback-panel button.fb-round-head:hover:not(:disabled) { background: none; border: 0; }
+.fb-section-head h3 { margin: 6px 0 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--faint); }
+.fb-section-head .faint { margin-top: 6px; font-size: 11.5px; }
+button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.fb-section-head svg { margin-top: 6px; color: var(--faint); }
+.fb-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.fb-item { display: flex; flex-direction: column; gap: 4px; padding-left: 8px; border-left: 2px solid var(--line); }
+.fb-item[data-skip] { opacity: 0.5; }
+.fb-item-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.fb-use { display: flex; align-items: center; gap: 4px; }
+.fb-place { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.fb-swatch { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: -0.5px; }
+.fb-item blockquote { margin: 0; color: var(--text-2); font-style: italic; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+.fb-reply { color: var(--text-2); padding-left: 10px; }
+.fb-note { font-size: 12px; padding: 3px 6px; }
+.fb-lesson { width: 100%; font: 12px/1.5 var(--mono, ui-monospace, monospace); resize: vertical; }
+.fb-leaks { color: var(--danger, #c0392b); }
+.fb-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.fb-round { border: 1px solid var(--line); border-radius: 8px; }
+.fb-round-head { display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 9px; background: none; border: 0; color: inherit; text-align: left; cursor: pointer; }
+.fb-round-head .faint { flex: 1; min-width: 0; font-size: 11.5px; }
+.fb-round:not([data-open]) .fb-round-head svg { transform: rotate(-90deg); }
+.fb-score { font-variant-numeric: tabular-nums; font-weight: 600; padding: 0 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) calc(var(--score) * 30%), transparent); }
+.fb-round-body { display: flex; flex-direction: column; gap: 8px; padding: 0 9px 9px; }
+.fb-verdicts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.fb-verdict-head { display: flex; align-items: baseline; gap: 6px; }
+.fb-verdict-head .chip, .fb-verdict-head .badge { flex: none; }
+.fb-why { color: var(--text-2); }
+.feedback-panel .chip.grade-fixed { color: var(--text); border-color: var(--accent); }
+.feedback-panel .chip.grade-partly { color: var(--text); }
+.feedback-panel .chip.grade-wrong, .feedback-panel .chip.grade-missed { color: var(--danger, #c0392b); border-color: currentColor; }
+.fb-change { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; padding: 6px 8px; border-radius: 6px; background: var(--panel-2, rgba(127, 127, 127, 0.08)); font-size: 12px; }
+.fb-change .faint { font-size: 11px; }
+.fb-before { text-decoration: line-through; text-decoration-color: rgba(192, 57, 43, 0.6); color: var(--text-2); }
+.fb-after { color: var(--text); }
+.fb-key summary, .fb-lesson-then summary, .fb-kept summary { cursor: pointer; color: var(--text-2); }
+.fb-key, .fb-lesson-then { display: flex; flex-direction: column; gap: 4px; }
+.feedback-panel pre { margin: 4px 0; white-space: pre-wrap; font: 12px/1.5 var(--mono, ui-monospace, monospace); color: var(--text-2); }
+.fb-kept details { padding: 4px 0; border-top: 1px solid var(--line); }
+.fb-kept summary { display: flex; justify-content: space-between; gap: 8px; }
 .trello-bar { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 12.5px; }
 .trello-bar .link-button { display: inline-flex; align-items: center; gap: 5px; }
 .trello-card { grid-template-columns: 1fr auto; }

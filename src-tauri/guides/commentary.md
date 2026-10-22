@@ -1,12 +1,16 @@
 # Commentary scripts
 
-A commentary script is an investigative video essay told by one narrator, the Internet Janitor. The narrator carries the story; clips from many sources back each point. A typical video is 12 to 18 minutes of narration and about as much again in clips, 30 to 40 minutes in all. The style examples among the sources show the voice; match it, never copy their sentences.
+A commentary script is an investigative video essay told by one narrator, the Internet Janitor. The narrator carries the story; clips from many sources back each point where they make sense. How much of the video is narration and how much is clips depends on the script's pacing, which comes with these instructions. There's no set number of clips. The style examples among the sources show the voice; match it, never copy their sentences.
+
+## Your own script
+
+The shape below is how the channel's videos usually go, not a template. Every video is different, and this one is yours to write: choose how it opens, how the chapters break, which threads run through it, where a clip lands and where narration alone does more, and what each chapter ends on. Bring your own ideas for telling the story well, as long as it stays in the channel's voice, follows the brief, and holds to the facts in the sources.
 
 ## Shape
 
-**Intro.** It opens on a montage: a run of 5 to 9 short clips (2 to 8 s each) cut together before a word is said, the most striking moments of the video in a row. Then two to four short paragraphs: the public image, the turn ("But look at…"), and the question the video answers. It ends on the channel line, in this form: "I'm the Internet Janitor, and today we're [what this video does]. So let's get right to it!"
+**Intro.** It usually opens on a montage: a run of short clips cut together before a word is said, the most striking moments of the video in a row. Then a few short paragraphs: the public image, the turn ("But look at…"), and the question the video answers. It ends on the channel line, in this form: "I'm the Internet Janitor, and today we're [what this video does]. So let's get right to it!"
 
-**Chapters.** Five to seven numbered chapters ("1. MrBeast's Evil Formula"), each one idea that moves the case forward, strongest or most surprising evidence early. A chapter can open with a named sub-heading when it walks through one person or one video at a time. Each chapter ends on a line that lands the point, sometimes a short repeat for weight ("A man is on fire, and the next sentence is a call to subscribe.").
+**Chapters.** Usually five to seven numbered chapters ("1. MrBeast's Evil Formula"), each one idea that moves the case forward, strongest or most surprising evidence early. A chapter can open with a named sub-heading when it walks through one person or one video at a time. Each chapter ends on a line that lands the point, sometimes a short repeat for weight ("A man is on fire, and the next sentence is a call to subscribe.").
 
 **Ending.** A last section headed "Ending". It brings back the opening question and answers it from what the video showed, in a few short, pointed paragraphs. No new evidence here.
 
@@ -23,7 +27,8 @@ A commentary script is an investigative video essay told by one narrator, the In
 ## Clips
 
 - A clip follows its lead-in, which ends on an ellipsis: "And this is how long the video stays on that…" then the clip. The lead-in says what to watch for; it never repeats what the clip says.
-- Keep clips short: 3 to 20 s is usual, a minute only for a story told best in the person's own words.
+- Cut each clip to the part that makes the point, not the whole exchange around it. How long clips run is set by the pacing.
+- When a point is already made, don't add a second clip that makes it again.
 - Show, don't tell: when a source has the moment on video, cite the clip instead of describing it.
 - Before and after. When something changed (a cut, a deleted post, a reversed statement), show both: the original first, then where it is now.
 - Every clip names its source and exact times. Take times from the source as written; never estimate.

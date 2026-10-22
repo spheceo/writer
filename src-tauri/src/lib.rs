@@ -3,8 +3,11 @@ mod chat;
 mod claude;
 mod cloud;
 mod commentary;
+#[cfg(test)]
+mod distill;
 mod doctor;
 mod drive;
+mod feedback;
 mod formats;
 mod http;
 mod import;
@@ -16,6 +19,7 @@ mod pages;
 mod proc;
 mod research;
 mod reuse;
+mod scout;
 mod revise;
 mod settings;
 mod speakers;
@@ -181,6 +185,18 @@ pub fn add_source_now(data: &Path, id: &str, adding: commentary::Adding, role: c
         return Err("Claude is writing this script. Add sources once it's done.".into());
     }
     commentary::add(data, id, adding, role, &settings::load(data))
+}
+
+pub fn set_pacing_now(data: &Path, id: &str, pacing: commentary::Pacing) -> Result<ScriptDetail, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    commentary::set_pacing(data, id, pacing)
+}
+
+#[tauri::command]
+fn set_pacing(app: AppHandle, id: String, pacing: commentary::Pacing) -> Result<ScriptDetail, String> {
+    set_pacing_now(&data_dir(&app)?, &id, pacing)
 }
 
 #[tauri::command]
@@ -420,7 +436,7 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     let dir = store::script_dir(&data, id)?;
     let mut script = store::read(&dir)?;
     if script.commentary.is_some() {
-        return build_commentary(&dir, id, &script, note);
+        return build_commentary(&data, &dir, id, &script, note);
     }
     if let Some(kind) = kind {
         script.kind = kind;
@@ -506,9 +522,9 @@ fn footage_path(dir: &Path, script: &model::Script) -> PathBuf {
 
 /// A commentary script is written from its sources alone: no speakers to
 /// name or case to research.
-fn build_commentary(dir: &Path, id: &str, script: &model::Script, note: &str) -> Result<(String, f64), String> {
+fn build_commentary(data: &Path, dir: &Path, id: &str, script: &model::Script, note: &str) -> Result<(String, f64), String> {
     jobs::stage(id, "Writing the script");
-    let built = commentary::build(dir, script, note)?;
+    let built = commentary::build(dir, script, note, &feedback::lessons_text(data))?;
     // Sources added or renamed during the build stay; the script is replaced.
     let mut script = store::read(dir)?;
     if let Some(found) = script.commentary.as_mut() {
@@ -625,6 +641,117 @@ pub fn start_reuse_import_now(app: AppHandle, data: &Path, id: String, urls: Vec
 fn start_reuse_import(app: AppHandle, id: String, urls: Option<Vec<String>>) -> Result<jobs::BuildStatus, String> {
     let data = data_dir(&app)?;
     start_reuse_import_now(app, &data, id, urls.unwrap_or_default())
+}
+
+/// Searches YouTube for the clips a commentary project's brief needs.
+pub fn start_find_clips_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::BuildStatus, String> {
+    let dir = store::script_dir(data, &id)?;
+    let script = store::read(&dir)?;
+    let commentary = script.commentary.as_ref().ok_or("Clips are found for a commentary script.")?;
+    if !commentary.sources.iter().any(|source| source.role == commentary::Role::Brief) {
+        return Err("Add the producer's brief first: the search starts from it.".into());
+    }
+    jobs::start(app, id, jobs::Work::Find)
+}
+
+#[tauri::command]
+fn start_find_clips(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    let data = data_dir(&app)?;
+    start_find_clips_now(app, &data, id)
+}
+
+/// The last clip search's findings, if any.
+pub fn finds_now(data: &Path, id: &str) -> Result<Option<scout::Finds>, String> {
+    Ok(scout::load(&store::script_dir(data, id)?))
+}
+
+#[tauri::command]
+fn get_finds(app: AppHandle, id: String) -> Result<Option<scout::Finds>, String> {
+    finds_now(&data_dir(&app)?, &id)
+}
+
+/// Pulls the comments and highlights on the script's Doc, starting the feedback over.
+pub fn pull_feedback_now(data: &Path, id: &str, link: Option<&str>) -> Result<feedback::Feedback, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    feedback::pull(data, id, link)
+}
+
+#[tauri::command]
+async fn pull_feedback(app: AppHandle, id: String, link: Option<String>) -> Result<feedback::Feedback, String> {
+    tauri::async_runtime::spawn_blocking(move || pull_feedback_now(&data_dir(&app)?, &id, link.as_deref()))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+pub fn feedback_now(data: &Path, id: &str) -> Result<Option<feedback::Feedback>, String> {
+    Ok(feedback::load(&store::script_dir(data, id)?))
+}
+
+#[tauri::command]
+fn get_feedback(app: AppHandle, id: String) -> Result<Option<feedback::Feedback>, String> {
+    feedback_now(&data_dir(&app)?, &id)
+}
+
+pub fn set_feedback_item_now(data: &Path, id: &str, item: &str, skip: Option<bool>, note: Option<String>) -> Result<feedback::Feedback, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    feedback::set_item(&store::script_dir(data, id)?, item, skip, note)
+}
+
+#[tauri::command]
+fn set_feedback_item(app: AppHandle, id: String, item: String, skip: Option<bool>, note: Option<String>) -> Result<feedback::Feedback, String> {
+    set_feedback_item_now(&data_dir(&app)?, &id, &item, skip, note)
+}
+
+/// Saves the producer's lesson and says what in it still points at the script.
+pub fn set_lesson_now(data: &Path, id: &str, lesson: &str) -> Result<serde_json::Value, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    let dir = store::script_dir(data, id)?;
+    let feedback = feedback::set_lesson(&dir, lesson)?;
+    Ok(serde_json::json!({ "feedback": feedback, "leaks": feedback::lesson_leaks(&dir)? }))
+}
+
+#[tauri::command]
+fn set_lesson(app: AppHandle, id: String, lesson: String) -> Result<serde_json::Value, String> {
+    set_lesson_now(&data_dir(&app)?, &id, &lesson)
+}
+
+pub fn start_feedback_now(app: AppHandle, data: &Path, id: String, step: feedback::Step) -> Result<jobs::BuildStatus, String> {
+    feedback::ready(&store::script_dir(data, &id)?, &step)?;
+    jobs::start(app, id, jobs::Work::Learn(step))
+}
+
+#[tauri::command]
+fn start_feedback(app: AppHandle, id: String, step: feedback::Step) -> Result<jobs::BuildStatus, String> {
+    let data = data_dir(&app)?;
+    start_feedback_now(app, &data, id, step)
+}
+
+pub fn keep_lesson_now(data: &Path, id: &str) -> Result<Vec<feedback::Lesson>, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    feedback::keep(data, id)
+}
+
+#[tauri::command]
+fn keep_lesson(app: AppHandle, id: String) -> Result<Vec<feedback::Lesson>, String> {
+    keep_lesson_now(&data_dir(&app)?, &id)
+}
+
+#[tauri::command]
+fn get_lessons(app: AppHandle) -> Result<Vec<feedback::Lesson>, String> {
+    Ok(feedback::lessons(&data_dir(&app)?))
+}
+
+#[tauri::command]
+fn forget_lesson(app: AppHandle, lesson: String) -> Result<Vec<feedback::Lesson>, String> {
+    feedback::forget(&data_dir(&app)?, &lesson)
 }
 
 #[tauri::command]
@@ -857,6 +984,17 @@ pub fn run() {
             start_build,
             start_revision,
             start_reuse_import,
+            start_find_clips,
+            set_pacing,
+            get_finds,
+            pull_feedback,
+            get_feedback,
+            set_feedback_item,
+            set_lesson,
+            start_feedback,
+            keep_lesson,
+            get_lessons,
+            forget_lesson,
             build_status,
             get_chat,
             clear_chat,

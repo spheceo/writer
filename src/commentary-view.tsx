@@ -2,18 +2,25 @@ import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
-import { addSource, buildStatus, getScript, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, updateSource } from "./api";
+import { addSource, buildStatus, findClips, getFeedback, getFinds, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
 import { Monitor } from "./monitor";
 import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
-import type { Adding, BuildStatus, Cite, Draft, Paragraph, Role, Script, Source, Summary } from "./types";
+import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary } from "./types";
+import { FoundClips } from "./found-clips";
+import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
+
+const PACINGS: { value: Pacing; label: string; hint: string }[] = [
+  { value: "channel", label: "Channel pacing", hint: "The channel's own videos: a line or two of setup, then the person talks. Clips run longer than the narration." },
+  { value: "documentary", label: "Documentary pacing", hint: "Narration-led, like Turkey Tom: about three quarters narration, a short clip about every 30 to 40 seconds, and footage shown under the voice." },
+];
 
 const ROLES: { value: Role; label: string; hint: string }[] = [
   { value: "brief", label: "Brief", hint: "The producer's brief: the angle and the evidence to use" },
@@ -30,6 +37,11 @@ const tokens = (chars: number) => Math.round(chars / 4);
 const readMs = (text: string) => Math.max(1500, Math.round((text.split(/\s+/).filter(Boolean).length * 60_000) / WORDS_PER_MINUTE));
 
 type Shown = { title: string; text: string };
+
+/** How a clip search's stages begin, to tell one from a build after a reload. */
+/** The stages of learning from feedback (feedback.rs), so a reopened page knows the job. */
+const LEARNING_STAGES = ["Learning from the feedback", "Making the answer key", "Writing the lesson", "Round ", "Improving the lesson", "Fixing the "];
+const FINDER_STAGES = ["Finding clips", "Planning the searches", "Searching YouTube", "Choosing which videos", "Reading captions", "Finding the moments", "Looking at the frames", "Adding the videos"];
 
 /**
  * The script as a cut to preview: the montage, then each paragraph in order,
@@ -122,7 +134,12 @@ export function CommentaryEditor({
   const [stage, setStage] = useState("");
   const [report, setReport] = useState<{ text: string; costUsd: number } | null>(null);
   const [docsOpen, setDocsOpen] = useState(false);
-  const [tab, setTab] = useState<"claude" | "sources">(() => (script.commentary?.draft ? "claude" : "sources"));
+  const [tab, setTab] = useState<"claude" | "sources" | "clips" | "feedback">(() => (script.commentary?.draft ? "claude" : "sources"));
+  const [finds, setFinds] = useState<Finds | null>(null);
+  // What the running job is: a build, or a search for clips.
+  const [finding, setFinding] = useState(false);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
+  const [learning, setLearning] = useState(false);
   const [note, setNote] = useState("");
   // What was asked of the build that is running, shown as the producer's message.
   const [sent, setSent] = useState<string | null>(null);
@@ -191,6 +208,10 @@ export function CommentaryEditor({
       watching.current = false;
       setStarted(null);
       setSent(null);
+      setFinding(false);
+      setLearning(false);
+      void getFinds(script.id).then(setFinds, () => {});
+      void getFeedback(script.id).then(setFeedback, () => {});
       if (!job) return;
       seen(script.id, job.finishedAt);
       if (job.error) {
@@ -208,10 +229,19 @@ export function CommentaryEditor({
   };
 
   useEffect(() => {
+    void getFinds(script.id).then(setFinds, () => {});
+    void getFeedback(script.id).then(setFeedback, () => {});
+  }, [script.id]);
+
+  useEffect(() => {
     alive.current = true;
     void buildStatus(script.id)
       .then((job) => {
-        if (job?.running) follow(job.startedAt);
+        if (job?.running) {
+          setFinding(FINDER_STAGES.some((start) => job.stage.startsWith(start)));
+          setLearning(LEARNING_STAGES.some((start) => job.stage.startsWith(start)));
+          follow(job.startedAt);
+        }
         // A build that ended while no page watched it (or that Writer closed
         // on) says how it went, once.
         else if (job?.finishedAt && job.finishedAt > seen(script.id)) {
@@ -239,6 +269,32 @@ export function CommentaryEditor({
     } catch (cause) {
       setError(message(cause));
       return false;
+    }
+  };
+
+  const find = async () => {
+    setReport(null);
+    setError(null);
+    setStage("Finding clips");
+    try {
+      const job = await findClips(script.id);
+      setFinding(true);
+      follow(job.startedAt);
+    } catch (cause) {
+      setError(message(cause));
+    }
+  };
+
+  const learn = async (step: LearnStep) => {
+    setReport(null);
+    setError(null);
+    setStage("Learning from the feedback");
+    try {
+      const job = await startLearning(script.id, step);
+      setLearning(true);
+      follow(job.startedAt);
+    } catch (cause) {
+      setError(message(cause));
     }
   };
 
@@ -327,7 +383,7 @@ export function CommentaryEditor({
           {busy && (
             <span className="agent-working">
               <span className="dot live" />
-              Claude writing · <Elapsed since={started} />
+              {finding ? "Finding clips" : learning ? "Learning from feedback" : "Claude writing"} · <Elapsed since={started} />
             </span>
           )}
           <ViewTabs view={view} views={VIEWS} onChange={setView} />
@@ -389,7 +445,7 @@ export function CommentaryEditor({
           describe={(clip) => cut.cards.get(clip.id) ?? null}
         />
 
-        <section className="agent" aria-label={tab === "claude" ? "Claude" : "Sources"}>
+        <section className="agent" aria-label={tab === "claude" ? "Claude" : tab === "clips" ? "Clips" : tab === "feedback" ? "Feedback" : "Sources"}>
           <div className="agent-head">
             <div className="panel-tabs" role="tablist">
               <button type="button" role="tab" aria-selected={tab === "claude"} onClick={() => setTab("claude")}>
@@ -397,6 +453,12 @@ export function CommentaryEditor({
               </button>
               <button type="button" role="tab" aria-selected={tab === "sources"} onClick={() => setTab("sources")}>
                 Sources <small>{sources.length}</small>
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "clips"} onClick={() => setTab("clips")}>
+                Clips {finds && <small>{finds.clips.length}</small>}
+              </button>
+              <button type="button" role="tab" aria-selected={tab === "feedback"} onClick={() => setTab("feedback")}>
+                Feedback {feedback && <small>{feedback.items.length}</small>}
               </button>
             </div>
             {tab === "sources" && (
@@ -406,7 +468,31 @@ export function CommentaryEditor({
               </button>
             )}
           </div>
-          {tab === "claude" ? (
+          {tab === "feedback" ? (
+            <>
+              <FeedbackPanel
+                status={
+                  busy && learning ? (
+                    <Working stage={stage} since={started} hint="A round writes the whole script and grades it: about 15 minutes, more for the first round, which also makes the answer key and the lesson. You can close this window; it keeps going." />
+                  ) : report && !busy ? (
+                    <Said text={report.text} costUsd={report.costUsd} />
+                  ) : null
+                }
+                id={script.id}
+                feedback={feedback}
+                busy={busy}
+                canPull={!!draft}
+                onFeedback={setFeedback}
+                onStep={(step) => void learn(step)}
+                onError={setError}
+              />
+            </>
+          ) : tab === "clips" ? (
+            <>
+              {busy && finding && <Working stage={stage} since={started} hint="Searching, reading captions and checking frames takes 10 to 20 minutes. You can close this window; it keeps going." />}
+              <FoundClips id={script.id} finds={finds} busy={busy} canFind={sources.some((source) => source.role === "brief")} onFind={() => void find()} />
+            </>
+          ) : tab === "claude" ? (
             <>
               <ChatLog trigger={`${said}${sent}${busy}${stage}`}>
                 {!draft && !busy ? (
@@ -452,6 +538,19 @@ export function CommentaryEditor({
                   </>
                 )}
               </ChatLog>
+              <label className="pacing-pick" title={PACINGS.find((item) => item.value === (script.commentary?.pacing ?? "channel"))?.hint}>
+                <select
+                  value={script.commentary?.pacing ?? "channel"}
+                  disabled={busy}
+                  aria-label="Pacing for the next build"
+                  onChange={(event) => void change(setPacing(script.id, event.target.value as Pacing))}
+                >
+                  {PACINGS.map((item) => (
+                    <option key={item.value} value={item.value}>{item.label}</option>
+                  ))}
+                </select>
+                <Icon name="chevron" size={12} />
+              </label>
               <Composer
                 value={note}
                 disabled={busy}

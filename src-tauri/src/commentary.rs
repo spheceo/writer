@@ -106,9 +106,59 @@ pub struct Draft {
     pub written_at: i64,
 }
 
+/// How a script balances narration against clips. Measured from the
+/// channel's own videos and from Turkey Tom's (work/n3on-distill).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Pacing {
+    /// The channel's own: a line or two of setup, then the person talks.
+    #[default]
+    Channel,
+    /// Narration-led, as Turkey Tom's documentaries are.
+    Documentary,
+}
+
+/// The least share of narration a documentary-paced script carries
+/// (Turkey Tom's: 75%), and the most clips per ten minutes of narration
+/// (his: 16).
+const DOCUMENTARY_NARRATION: f64 = 0.65;
+const DOCUMENTARY_CLIPS_PER_10_MIN: f64 = 22.0;
+
+impl Pacing {
+    fn instructions(self) -> &'static str {
+        match self {
+            Pacing::Channel => "CHANNEL PACING, as in the channel's own videos. The narration sets up and the people tell it: a line or two of narration (about 10 seconds) leads into a clip, and clips often run 20 seconds to a minute, longer when someone tells their own story best. Clips together usually run about twice as long as the narration.",
+            Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. The intro can open straight into narration over footage, with a short cold open at most, and still ends on the channel line. Few or no on-screen chapter cards are needed.",
+        }
+    }
+
+    /// Why a draft is too far from this pacing to keep, if it is.
+    fn off(self, draft: &Draft) -> Option<String> {
+        if self != Pacing::Documentary {
+            return None;
+        }
+        let (narration, clips) = timing(draft);
+        let count = draft.cites().count();
+        let share = narration as f64 / (narration + clips).max(1) as f64;
+        let per_10 = count as f64 / (narration as f64 / 600_000.0).max(0.1);
+        if share >= DOCUMENTARY_NARRATION && per_10 <= DOCUMENTARY_CLIPS_PER_10_MIN {
+            return None;
+        }
+        let most = ((narration as f64 / 600_000.0) * 16.0).round() as usize;
+        Some(format!(
+            "Its pacing is off for a documentary-paced script: {} of narration against {} of clips ({}% narration, {count} clips). Narration should be about three quarters of the video, with about one clip per 30 to 40 seconds of narration: at most about {most} clips here, mostly 8 to 20 seconds. Keep the clips where hearing it beats describing it, cut the ones that repeat a point, and move footage that only illustrates a line into that paragraph's note as \"Show: …\". Keep everything else as it is.",
+            minutes(narration),
+            minutes(clips),
+            (share * 100.0).round()
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Commentary {
+    #[serde(default)]
+    pub pacing: Pacing,
     #[serde(default)]
     pub sources: Vec<Source>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -297,6 +347,34 @@ fn put(dir: &Path, script: &mut Script, title: String, role: Role, origin: Strin
         added_at: now_ms(),
     });
     Ok(())
+}
+
+/// Puts a clip search's videos in as timed evidence, in place of the ones an
+/// earlier search put in, as many as the project has room for. Each is
+/// (title, link, captions). Returns the new sources' IDs, in order.
+pub(crate) fn put_found(dir: &Path, script: &mut Script, earlier: &[String], found: Vec<(String, String, String)>) -> Result<Vec<String>, String> {
+    let commentary = commentary_of(script)?;
+    commentary.sources.retain(|source| !earlier.contains(&source.id));
+    for id in earlier {
+        let _ = fs::remove_file(text_path(dir, id));
+    }
+    let room = MAX_SOURCES.saturating_sub(commentary.sources.len());
+    let mut ids = Vec::new();
+    for (title, link, text) in found.into_iter().take(room) {
+        put(dir, script, title, Role::Evidence, link, text, true)?;
+        ids.extend(commentary_of(script)?.sources.last().map(|source| source.id.clone()));
+    }
+    Ok(ids)
+}
+
+/// How the next build paces narration against clips.
+pub fn set_pacing(data: &Path, id: &str, pacing: Pacing) -> Result<ScriptDetail, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    commentary_of(&mut script)?.pacing = pacing;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    Ok(store::detail(script, &dir))
 }
 
 pub fn update(data: &Path, id: &str, source: &str, role: Option<Role>, title: Option<String>) -> Result<ScriptDetail, String> {
@@ -675,7 +753,7 @@ The sources follow, each headed with its ID (S1, S2…) and role. The PRODUCER'S
 This is about real people. Never invent a quote, a time, a date, a link or a fact. Never state as fact what a source only alleges or can't prove; attribute it. Where a source warns that something is uncertain (who is speaking, a misheard word, who made a change or when), carry that warning into the script: hedge the narration and add it to the checks."#;
 
 const WRITER_PLAN: &str = r#"The answer:
-- open: the montage of short clips before the first word, 5 to 9 of them.
+- open: the montage of short clips before the first word, as many as it needs (none if the video opens another way).
 - sections: in order. The first is headed "Intro" (its last paragraph ends on the channel line), then the numbered chapters ("1. MrBeast's Evil Formula"), then "Ending".
 - Each section's paragraphs are pieces in reading order: {"kind":"say","text":"…"} is narration; {"kind":"clip",…} plays a clip at that point. A clip usually follows narration ending in "…", inside the same paragraph.
 - A clip: source is the ID of the source whose text holds the quote. video names the recording as the editor will find it, including which version when there are several ("Exams Be Like (uncut, archive.org)", "Exams Be Like (current YouTube upload)"). link is that recording's URL exactly as a source writes it, or leave it out. start and end are times in that recording, as the source gives them, written m:ss or h:mm:ss (round to the second; end after start). quote is the exact words spoken in the clip, copied from the source text: leave words out with "…" but never change, add or reorder one; empty only for a clip without speech. verify says what someone must confirm by ear or eye before the clip is used (the speaker, a misheard word), when the source gives reason to doubt it.
@@ -684,8 +762,8 @@ const WRITER_PLAN: &str = r#"The answer:
 - report: for the producer, two to four short sentences, under 100 words: where the evidence didn't support the brief, what you left out and why, anything you needed and couldn't find.
 Narration never uses an em dash. The app checks every quote against its source and every link against the sources; a plan that fails comes back to you to correct."#;
 
-fn system_prompt(title: &str) -> String {
-    format!("{WRITER_HEAD}\n{WRITER_PLAN}\nWorking title: {title}\n\nCOMMENTARY GUIDE\n{GUIDE}")
+fn system_prompt(title: &str, pacing: Pacing) -> String {
+    format!("{WRITER_HEAD}\n{WRITER_PLAN}\nWorking title: {title}\n\nCOMMENTARY GUIDE\n{GUIDE}\n\n{}", pacing.instructions())
 }
 
 fn cite_schema() -> Value {
@@ -789,14 +867,38 @@ pub struct Built {
 }
 
 /// Opus writes the whole script in one turn, with up to two repair turns on
-/// the same session for a plan the checks refuse.
-pub fn build(dir: &Path, script: &Script, note: &str) -> Result<Built, String> {
-    let commentary = script.commentary.as_ref().ok_or("That isn't a commentary script.")?;
+/// the same session for a plan the checks refuse. `lessons` are what past
+/// reviews taught (feedback.rs), read with the guide.
+pub fn build(dir: &Path, script: &Script, note: &str, lessons: &str) -> Result<Built, String> {
     let note = note.trim();
     // Comments read back from the Doc can run long.
     if note.chars().count() > 8_000 {
         return Err("Keep the note under 8,000 characters.".into());
     }
+    let request = if note.is_empty() {
+        "Write the full script.".to_string()
+    } else {
+        format!("Write the full script. The producer adds: {note}")
+    };
+    write(dir, script, &Writing { base: None, lessons, extra: "", request: &request, pace: true })
+}
+
+/// What one writing turn is asked to do.
+pub(crate) struct Writing<'a> {
+    /// The script to change, given to Opus as a plan; none writes a new one.
+    pub base: Option<&'a Draft>,
+    pub lessons: &'a str,
+    /// More for the system prompt, after the guide (a lesson under test).
+    pub extra: &'a str,
+    pub request: &'a str,
+    /// Send back a plan whose pacing is off. Off for changes to a script,
+    /// which keep whatever pacing it has.
+    pub pace: bool,
+}
+
+/// One script from Opus, checked and repaired as a build is.
+pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Built, String> {
+    let commentary = script.commentary.as_ref().ok_or("That isn't a commentary script.")?;
     let mut sources = Vec::new();
     for source in &commentary.sources {
         sources.push((source.clone(), read_text(dir, &source.id)?));
@@ -804,15 +906,21 @@ pub fn build(dir: &Path, script: &Script, note: &str) -> Result<Built, String> {
     if !sources.iter().any(|(source, _)| source.role != Role::Style) {
         return Err("Add the brief or some evidence first.".into());
     }
-    let system = system_prompt(&script.title);
-    let request = if note.is_empty() {
-        "Write the full script.".to_string()
-    } else {
-        format!("Write the full script. The producer adds: {note}")
+    let mut system = system_prompt(&script.title, commentary.pacing);
+    if !writing.lessons.trim().is_empty() {
+        system.push_str(&format!("\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n{}", writing.lessons.trim()));
+    }
+    if !writing.extra.trim().is_empty() {
+        system.push_str(&format!("\n\n{}", writing.extra.trim()));
+    }
+    let script_part = match writing.base {
+        Some(base) => format!("\n\nTHE SCRIPT, as a plan in the answer's shape\n{}", serde_json::to_string_pretty(&plan_of(base)).unwrap_or_default()),
+        None => String::new(),
     };
-    let prompt = format!("SOURCES\n\n{}\n\n{request}", evidence(&sources));
+    let prompt = format!("SOURCES\n\n{}{script_part}\n\n{}", evidence(&sources), writing.request);
     let schema = plan_schema();
     let corpus = Corpus::new(&sources);
+    let pacing = if writing.pace { commentary.pacing } else { Pacing::Channel };
     let mut cost = 0.0;
     let (mut plan, mut session, spent) = crate::claude::ask_opus(&system, &schema, &prompt, None).map_err(too_long)?;
     cost += spent;
@@ -820,10 +928,18 @@ pub fn build(dir: &Path, script: &Script, note: &str) -> Result<Built, String> {
     loop {
         let refusal = match &plan {
             Some(plan) => match compile(plan, &corpus) {
-                Ok(draft) => {
-                    let report = summary(&draft);
-                    return Ok(Built { draft, report, cost_usd: cost });
-                }
+                Ok(draft) => match pacing.off(&draft) {
+                    None => {
+                        let report = summary(&draft);
+                        return Ok(Built { draft, report, cost_usd: cost });
+                    }
+                    // Out of tries: the script is kept, and the report says how far off it is.
+                    Some(off) if repairs == 2 || session.is_none() => {
+                        let report = format!("{}\n\n{off}", summary(&draft));
+                        return Ok(Built { draft, report, cost_usd: cost });
+                    }
+                    Some(off) => format!("The app sent that script back. {off} Send the corrected complete script."),
+                },
                 Err(refusal) => format!("The app refused that script: {refusal} Nothing was saved. Send the corrected complete script."),
             },
             None => "Your answer carried no script. Send the complete script as the structured answer.".into(),
@@ -840,6 +956,52 @@ pub fn build(dir: &Path, script: &Script, note: &str) -> Result<Built, String> {
         session = next_session.or(session);
         cost += spent;
     }
+}
+
+fn cite_plan(cite: &Cite) -> Value {
+    let mut item = json!({ "source": cite.source, "video": cite.video, "start": clock(cite.start_ms), "end": clock(cite.end_ms), "quote": cite.quote });
+    if let Some(link) = &cite.link {
+        item["link"] = json!(link);
+    }
+    if let Some(verify) = &cite.verify {
+        item["verify"] = json!(verify);
+    }
+    item
+}
+
+/// A draft in the shape Opus answers in, so it can be handed back to change.
+pub(crate) fn plan_of(draft: &Draft) -> Value {
+    let sections: Vec<Value> = draft
+        .sections
+        .iter()
+        .map(|section| {
+            let paragraphs: Vec<Value> = section
+                .paragraphs
+                .iter()
+                .map(|paragraph| {
+                    let pieces: Vec<Value> = paragraph
+                        .pieces
+                        .iter()
+                        .map(|piece| match piece {
+                            Piece::Say { text } => json!({ "kind": "say", "text": text }),
+                            Piece::Clip(cite) => {
+                                let mut item = cite_plan(cite);
+                                item["kind"] = json!("clip");
+                                item
+                            }
+                        })
+                        .collect();
+                    let mut out = json!({ "pieces": pieces });
+                    if let Some(note) = &paragraph.note {
+                        out["note"] = json!(note);
+                    }
+                    out
+                })
+                .collect();
+            json!({ "heading": section.heading, "paragraphs": paragraphs })
+        })
+        .collect();
+    json!({ "open": draft.open.iter().map(cite_plan).collect::<Vec<_>>(), "sections": sections, "checks": draft.checks, "report": draft.report })
 }
 
 fn too_long(reason: String) -> String {
@@ -919,7 +1081,7 @@ impl Corpus {
 
 /// Lowercase words separated by single spaces, with " " at both ends. A
 /// [m:ss] line mark is dropped from the text and kept as a time.
-fn flatten(text: &str) -> (String, Vec<(usize, u64)>) {
+pub(crate) fn flatten(text: &str) -> (String, Vec<(usize, u64)>) {
     let mut flat = String::from(" ");
     let mut marks = Vec::new();
     for line in text.lines() {
@@ -962,7 +1124,7 @@ fn normalise(text: &str) -> String {
 }
 
 /// The parts of a quote between its "…" elisions, each as normalised words.
-fn fragments(quote: &str) -> Vec<String> {
+pub(crate) fn fragments(quote: &str) -> Vec<String> {
     quote
         .replace("[...]", "…")
         .replace("[…]", "…")
@@ -1160,7 +1322,11 @@ fn compile(plan: &Value, corpus: &Corpus) -> Result<Draft, String> {
     // A clip with no words can't be checked against its source.
     for cite in draft.cites() {
         if cite.quote.trim().is_empty() {
-            checks.push(format!("{} {}-{}: no words to check it by. Watch it to confirm it shows what the script says.", cite.video, clock(cite.start_ms), clock(cite.end_ms)));
+            let line = format!("{} {}-{}: no words to check it by. Watch it to confirm it shows what the script says.", cite.video, clock(cite.start_ms), clock(cite.end_ms));
+            // A script handed back to change carries the line already.
+            if !checks.contains(&line) {
+                checks.push(line);
+            }
         }
     }
     draft.checks = checks;
@@ -1211,6 +1377,30 @@ mod tests {
             "checks": ["Check the voice."],
             "report": "Fine."
         })
+    }
+
+    #[test]
+    fn documentary_pacing_sends_back_a_clip_heavy_script() {
+        let cite = |seconds: u64| Cite { source: "S1".into(), video: "Stream".into(), link: None, start_ms: 0, end_ms: seconds * 1000, quote: String::new(), verify: None };
+        // 1,500 words is 10 minutes of narration.
+        let draft = |clips: Vec<Cite>| Draft {
+            open: Vec::new(),
+            sections: vec![Section {
+                heading: "1. Cuts".into(),
+                paragraphs: vec![Paragraph { pieces: std::iter::once(Piece::Say { text: "word ".repeat(1_500) }).chain(clips.into_iter().map(Piece::Clip)).collect(), note: None }],
+            }],
+            checks: Vec::new(),
+            report: String::new(),
+            written_at: 0,
+        };
+        // Turkey Tom's: 16 clips of 12 s against 10 minutes of narration.
+        let measured = draft((0..16).map(|_| cite(12)).collect());
+        assert!(Pacing::Documentary.off(&measured).is_none());
+        // Too much clip time, and too many clips.
+        assert!(Pacing::Documentary.off(&draft((0..10).map(|_| cite(40)).collect())).is_some());
+        assert!(Pacing::Documentary.off(&draft((0..30).map(|_| cite(5)).collect())).unwrap().contains("at most about 16 clips"));
+        // The channel's own pacing is clip-led, and never sent back for it.
+        assert!(Pacing::Channel.off(&draft((0..40).map(|_| cite(40)).collect())).is_none());
     }
 
     #[test]
@@ -1317,7 +1507,7 @@ mod live {
         }
         let dir = store::script_dir(&data, &id).unwrap();
         let script = store::read(&dir).unwrap();
-        let built = build(&dir, &script, "").unwrap();
+        let built = build(&dir, &script, "", "").unwrap();
         let mut script = store::read(&dir).unwrap();
         script.commentary.as_mut().unwrap().draft = Some(built.draft);
         script.revision += 1;

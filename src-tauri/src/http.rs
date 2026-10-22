@@ -224,6 +224,39 @@ fn route(
             let data = data_dir(&app)?;
             json_result(stream, crate::start_reuse_import_now(app, &data, (*id).to_string(), urls))
         }
+        ("PUT", ["api", "scripts", id, "pacing"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let pacing = serde_json::from_value(value["pacing"].clone()).map_err(|_| "Choose channel or documentary pacing.".to_string())?;
+            json_result(stream, crate::set_pacing_now(&data_dir(&app)?, id, pacing))
+        }
+        ("POST", ["api", "scripts", id, "finds"]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::start_find_clips_now(app, &data, (*id).to_string()))
+        }
+        ("GET", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::feedback_now(&data_dir(&app)?, id)),
+        ("POST", ["api", "scripts", id, "feedback"]) => {
+            let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+            json_result(stream, crate::pull_feedback_now(&data_dir(&app)?, id, value["link"].as_str()))
+        }
+        ("PUT", ["api", "scripts", id, "feedback", "items", item]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let note = value["note"].as_str().map(str::to_string);
+            json_result(stream, crate::set_feedback_item_now(&data_dir(&app)?, id, item, value["skip"].as_bool(), note))
+        }
+        ("PUT", ["api", "scripts", id, "feedback", "lesson"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::set_lesson_now(&data_dir(&app)?, id, value["lesson"].as_str().unwrap_or("")))
+        }
+        ("POST", ["api", "scripts", id, "feedback", "steps"]) => {
+            let step = serde_json::from_slice(body).map_err(|_| "Which step: round, improve or finish?".to_string())?;
+            let data = data_dir(&app)?;
+            json_result(stream, crate::start_feedback_now(app, &data, (*id).to_string(), step))
+        }
+        ("POST", ["api", "scripts", id, "feedback", "keep"]) => json_result(stream, crate::keep_lesson_now(&data_dir(&app)?, id)),
+        ("GET", ["api", "lessons"]) => json_result(stream, Ok::<_, String>(crate::feedback::lessons(&data_dir(&app)?))),
+        ("DELETE", ["api", "lessons", lesson]) => json_result(stream, crate::feedback::forget(&data_dir(&app)?, lesson)),
+        ("GET", ["api", "scripts", id, "finds"]) => json_result(stream, crate::finds_now(&data_dir(&app)?, id)),
+        ("GET", ["api", "scripts", id, "finds", "frames", name]) => send_frames(app, stream, id, name),
         ("GET", ["api", "scripts", id, "chat"]) => {
             json_result(stream, store::script_dir(&data_dir(&app)?, id).map(|dir| crate::chat::read(&dir)))
         }
@@ -275,6 +308,18 @@ fn send_proxy(app: AppHandle, stream: &mut TcpStream, id: &str, range: Option<&s
         return write_json(stream, 404, &json!({ "error": "No preview yet." }));
     }
     send_file(stream, &path, range)
+}
+
+/// A clip's frames, as the last clip search looked at them.
+fn send_frames(app: AppHandle, stream: &mut TcpStream, id: &str, name: &str) -> Result<(), String> {
+    let dir = store::script_dir(&data_dir(&app)?, id).map_err(|_| "Unknown script.".to_string())?;
+    let safe = name.strip_prefix("frames-").and_then(|rest| rest.strip_suffix(".jpg")).is_some_and(|tag| !tag.is_empty() && tag.chars().all(|c| c.is_ascii_digit()));
+    let path = dir.join("finds").join("frames").join(name);
+    if !safe || !path.is_file() {
+        return write_json(stream, 404, &json!({ "error": "No such frames." }));
+    }
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    write_bytes(stream, 200, &[("content-type", "image/jpeg")], &bytes)
 }
 
 fn json_str(body: &[u8], key: &str) -> Result<String, String> {

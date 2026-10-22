@@ -33,6 +33,8 @@ const PULL_EVERY: Duration = Duration::from_secs(30);
 /// A save is pushed once the script has been still this long.
 const SETTLE_MS: i64 = 2_000;
 const PREFIX: &str = "writer/scripts";
+/// The lessons kept from reviews (feedback.rs), one file every Mac merges into.
+const LESSONS_KEY: &str = "writer/lessons.json";
 
 /// What the app shows: off, syncing, synced, offline or a problem.
 #[derive(Clone, Default, Serialize)]
@@ -146,6 +148,13 @@ pub fn deleted(data: &Path, id: &str) {
             list.push(id.to_string());
         }
     });
+}
+
+/// Syncs on the next tick rather than waiting for the next pull.
+pub fn sync_soon() {
+    if let Ok(mut now) = PULL_NOW.lock() {
+        *now = true;
+    }
 }
 
 /// Starts syncing in the background, for as long as Writer runs.
@@ -406,7 +415,30 @@ impl Cloud {
             }
             left -= 1;
         }
+        if pull {
+            self.sync_lessons(data)?;
+        }
         Ok(waiting)
+    }
+
+    /// Merges the kept lessons both ways: this Mac's and the cloud's, each
+    /// lesson by its ID and each one forgotten anywhere gone everywhere.
+    fn sync_lessons(&self, data: &Path) -> Done<()> {
+        let url = self.url(LESSONS_KEY, "GET")?;
+        let remote = match self.quick.get(&url).call() {
+            Ok(response) => {
+                let mut bytes = Vec::new();
+                response.into_reader().read_to_end(&mut bytes).map_err(|error| Problem { message: error.to_string(), offline: true })?;
+                Some(bytes)
+            }
+            Err(ureq::Error::Status(404, _)) => None,
+            Err(error) => return Err(transfer_problem(error, "lessons.json")),
+        };
+        let (merged, upload) = crate::feedback::merge_lessons(data, remote.as_deref()).map_err(Problem::said)?;
+        if upload {
+            self.upload_bytes(LESSONS_KEY, &merged)?;
+        }
+        Ok(())
     }
 
     /// Brings one script from the cloud when it is newer than this Mac's.
