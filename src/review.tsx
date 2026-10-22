@@ -360,7 +360,7 @@ export function ReviewDialog({
                   {when(note.createdAt)} · v{note.version}
                 </span>
                 <span className={note.status === "done" ? "chip done" : note.attempted ? "chip" : "chip open"}>
-                  {note.status === "done" ? `Fixed in v${note.doneInVersion ?? "?"}` : note.attempted ? "Tried" : "Open"}
+                  {note.status === "done" ? (note.confirmed ? `Confirmed · v${note.doneInVersion ?? "?"}` : `Fixed in v${note.doneInVersion ?? "?"}`) : note.notFixedAt ? "Not fixed: again" : note.attempted ? "Tried" : "Open"}
                 </span>
               </span>
               {note.anchor?.quote && <blockquote>{note.anchor.side ? `${note.anchor.side === "before" ? "Before" : "After"} the clip: ` : ""}{note.anchor.quote}</blockquote>}

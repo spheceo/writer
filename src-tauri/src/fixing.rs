@@ -473,7 +473,7 @@ fn request(script: &crate::model::Script, note: &Note, replies: &[Note]) -> Stri
         .map(|reply| format!("\n- {}: \"{}\"", if reply.from_app { "Writer (an earlier fix)".to_string() } else { reply.author.clone() }, reply.text.trim()))
         .collect();
     let thread = if thread.is_empty() { String::new() } else { format!("\nReplies under it, oldest first:{thread}") };
-    let again = if note.done_in_version.is_some() || note.fix_summary.is_some() {
+    let again = if note.not_fixed_at.is_some() || note.done_in_version.is_some() || note.fix_summary.is_some() {
         format!("\nThe reviewer opened this note again after an earlier fix{}: that fix didn't do what they asked.", note.fix_summary.as_deref().map(|said| format!(" (\"{said}\")")).unwrap_or_default())
     } else {
         String::new()

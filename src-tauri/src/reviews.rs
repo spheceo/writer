@@ -88,6 +88,15 @@ pub struct Note {
     /// On a footage clip: `cut`, `extend` or `restore` (with the anchor's `side`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
+    /// A reviewer confirmed the fix.
+    #[serde(default)]
+    pub confirmed: bool,
+    /// When a reviewer last sent the fix back as not fixed (the note reopened): a retry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_fixed_at: Option<i64>,
+    /// When a run last took it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -100,6 +109,11 @@ impl Note {
 
     pub fn is_open(&self) -> bool {
         self.status != "done"
+    }
+
+    /// Open and nobody's to fix: never taken, or sent back as not fixed since it was.
+    pub fn untaken(&self) -> bool {
+        self.is_open() && (!self.attempted || self.not_fixed_at.is_some_and(|at| self.attempt_at.is_none_or(|taken| at > taken)))
     }
 
     fn from(value: &Value) -> Option<Note> {
@@ -125,6 +139,9 @@ impl Note {
             scope: text("scope"),
             suggestion: text("suggestion"),
             action: text("action").filter(|action| !action.trim().is_empty()),
+            confirmed: value["confirmed"].is_object(),
+            not_fixed_at: value["notFixed"]["at"].as_f64().map(|at| at as i64),
+            attempt_at: value["attempt"]["at"].as_f64().map(|at| at as i64),
             created_at: number("createdAt").unwrap_or(0),
             updated_at: number("updatedAt").or_else(|| number("createdAt")).unwrap_or(0),
         })
@@ -542,8 +559,9 @@ fn poll(data: &Path) -> Result<bool, String> {
                 note.script_id = known.links.get(&note.review_id).cloned();
             }
             let same = known.notes.get(&note.id).is_some_and(|kept| kept.updated_at == note.updated_at && kept.status == note.status);
-            // Opened again by the reviewer ("Not fixed"): a new note to fix.
-            if known.notes.get(&note.id).is_some_and(|kept| !kept.is_open()) && note.is_open() && !note.attempted {
+            // Sent back as not fixed (or opened again): a new note to fix.
+            let reopened = known.notes.get(&note.id).is_some_and(|kept| (!kept.is_open() && note.is_open()) || kept.not_fixed_at != note.not_fixed_at);
+            if reopened && note.untaken() {
                 known.tried.remove(&note.id);
             }
             if !same {
@@ -566,7 +584,7 @@ fn start_fixes(app: &AppHandle, data: &Path) {
     let known = load(data);
     let mut by_script: BTreeMap<String, Vec<&Note>> = BTreeMap::new();
     for note in known.notes.values() {
-        if note.is_root() && note.is_open() && !note.attempted && !known.tried.contains_key(&note.id) {
+        if note.is_root() && note.untaken() && !known.tried.contains_key(&note.id) {
             // An approved script is finished: nothing is fixed by itself.
             if let Some(script) = note.script_id.as_ref().or_else(|| known.links.get(&note.review_id)).filter(|script| !known.approved.contains_key(*script)) {
                 by_script.entry(script.clone()).or_default().push(note);
@@ -619,6 +637,17 @@ mod tests {
         }))
         .unwrap();
         assert_eq!((note.id.as_str(), note.version, note.attempted, note.deleted, note.is_open()), ("n1", 2, true, true, true));
+        // Sent back as not fixed after the run took it: fixable again.
+        let retry = Note::from(&json!({
+            "noteId": "n2", "reviewId": "r1", "version": 1.0, "text": "Still wrong", "author": "Ana", "status": "open",
+            "intent": "wording", "scope": "here", "suggestion": null, "action": false, "general": null,
+            "attempt": { "by": "Writer", "at": 10.0 }, "notFixed": { "by": "Ana", "at": 20.0, "version": 2.0 }, "confirmed": null,
+            "createdAt": 1.0, "updatedAt": 20.0
+        }))
+        .unwrap();
+        assert!(retry.untaken());
+        assert_eq!((retry.intent.as_deref(), retry.action.as_deref(), retry.suggestion.as_deref(), retry.confirmed), (Some("wording"), None, None, false));
+        assert!(!Note { not_fixed_at: Some(5), ..retry.clone() }.untaken());
         assert_eq!(Approval::from(&json!({ "version": 3.0, "by": "Writer on Mac", "at": 7.0 })), Some(Approval { version: 3, by: "Writer on Mac".into(), at: 7 }));
         assert_eq!(Approval::from(&Value::Null), None);
     }
