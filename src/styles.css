@@ -1213,3 +1213,45 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .trello-card a:hover { text-decoration: underline; }
 .trello-empty { padding: 10px 12px; margin: 0; }
 .trello-bar button.on { background: var(--hover); color: var(--text); }
+
+/* Review on a Repack link: the Share button, its dialog, and the bands a fix leaves on the page (review.tsx). */
+.count-badge { flex: none; display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #000; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.review-button { gap: 6px; }
+.review-link { display: flex; gap: 6px; }
+.review-link input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
+.review-meta { margin: 6px 0 0; font-size: 12px; }
+.review-auto { margin: 12px 0 4px; align-items: flex-start; line-height: 1.4; }
+.review-auto input { margin-top: 2px; }
+.review-notes { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; max-height: 50vh; overflow: auto; }
+.review-note { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid var(--accent); }
+.review-note[data-status="done"] { border-left-color: var(--ok); }
+.review-note p, .review-note blockquote { margin: 0; }
+.review-note blockquote { color: var(--text-2); font-style: italic; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.review-note-head { display: flex; align-items: center; gap: 8px; }
+.review-note-head .faint { flex: 1; font-size: 11.5px; }
+.review-note .chip { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
+.review-note .chip.open { border-color: var(--accent); color: var(--accent); }
+.review-note .chip.done { border-color: var(--ok); color: var(--ok); }
+.review-fix, .review-reply { color: var(--text-2); font-size: 12.5px; }
+.review-reply { padding-left: 10px; }
+
+/* Bands on the page: green where a fix changed the script, gold on an open note's words. */
+.grow-banded { position: relative; }
+.grow-banded > textarea { position: relative; background: transparent !important; }
+.grow-mirror { position: absolute; inset: 0; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; pointer-events: none; border-style: solid; border-color: transparent; overflow: hidden; }
+.grow-mirror mark { color: transparent; border-radius: 2px; background: color-mix(in srgb, #2fbf71 26%, transparent); }
+.grow-mirror mark[data-kind="open"] { background: color-mix(in srgb, #ffc21a 30%, transparent); }
+.grow-mirror mark.cut { display: inline-block; width: 0; height: 1.1em; vertical-align: text-bottom; border-left: 2px solid #2fbf71; margin-left: -1px; background: none; }
+.grow-mirror mark.cut[data-kind="open"] { border-left-color: #e0a800; }
+[data-band] { border-radius: 2px; background: color-mix(in srgb, #2fbf71 22%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, #2fbf71 22%, transparent); }
+[data-band][data-band-kind="open"] { background: color-mix(in srgb, #ffc21a 26%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, #ffc21a 26%, transparent); }
+.band-tip { position: fixed; z-index: 60; width: 320px; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0008; font-size: 12.5px; pointer-events: none; }
+.band-tip-note { display: flex; flex-direction: column; gap: 3px; }
+.band-tip-head { display: flex; justify-content: space-between; gap: 8px; }
+.band-tip-head .faint { font-size: 11.5px; }
+.band-tip q { color: var(--text); }
+.band-tip-fix { color: var(--text-2); }
+
+/* A note for the video editor ("edit: …"): Edit's agent follows it in that section. */
+.comment[data-edit] { border-left: 3px solid var(--cut-in); }
+.comment[data-edit] .avatar { background: var(--cut-in); color: #000; }

@@ -18,6 +18,13 @@ pub struct Settings {
     pub relay_url: String,
     #[serde(default)]
     pub relay_token: String,
+    /// Claude fixes new review notes by itself while Writer runs (reviews.rs).
+    #[serde(default = "on")]
+    pub auto_fix: bool,
+}
+
+fn on() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -25,6 +32,7 @@ impl Default for Settings {
         Self {
             relay_url: BUILT_RELAY.filter(|url| !url.is_empty()).unwrap_or(DEFAULT_RELAY).into(),
             relay_token: BUILT_TOKEN.unwrap_or("").into(),
+            auto_fix: true,
         }
     }
 }
@@ -41,6 +49,7 @@ pub fn load(data: &Path) -> Settings {
     Settings {
         relay_url: if file.relay_url.trim().is_empty() { built.relay_url } else { file.relay_url },
         relay_token: if file.relay_token.is_empty() { built.relay_token } else { file.relay_token },
+        auto_fix: file.auto_fix,
     }
 }
 
@@ -48,6 +57,7 @@ pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let settings = Settings {
         relay_url: check_relay(&incoming.relay_url)?,
         relay_token: check_secret("Relay token", &incoming.relay_token, 200)?,
+        auto_fix: incoming.auto_fix,
     };
     fs::create_dir_all(data).map_err(|error| error.to_string())?;
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
@@ -62,6 +72,13 @@ pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let mut out = options.open(&file).map_err(|error| error.to_string())?;
     out.write_all(&bytes).map_err(|error| error.to_string())?;
     Ok(settings)
+}
+
+/// Turns Claude's fixing of new review notes on or off, keeping the rest.
+pub fn set_auto_fix(data: &Path, on: bool) -> Result<Settings, String> {
+    let mut settings = load(data);
+    settings.auto_fix = on;
+    save(data, settings)
 }
 
 pub fn check_relay(url: &str) -> Result<String, String> {

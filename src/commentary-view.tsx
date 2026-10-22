@@ -2,7 +2,7 @@ import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
-import { addSource, buildStatus, findClips, getFeedback, getFinds, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, updateSource } from "./api";
+import { addSource, buildStatus, findClips, getFeedback, getFinds, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
@@ -15,6 +15,7 @@ import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
+import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview } from "./review";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const PACINGS: { value: Pacing; label: string; hint: string }[] = [
@@ -134,6 +135,10 @@ export function CommentaryEditor({
   const [stage, setStage] = useState("");
   const [report, setReport] = useState<{ text: string; costUsd: number } | null>(null);
   const [docsOpen, setDocsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const review = useReview(script.id, script.revision);
+  const bands = useMemo(() => bandsOf(review.notes), [review.notes]);
+  const openNotes = review.notes.filter((note) => !note.parentId && note.status !== "done").length;
   const [tab, setTab] = useState<"claude" | "sources" | "clips" | "feedback">(() => (script.commentary?.draft ? "claude" : "sources"));
   const [finds, setFinds] = useState<Finds | null>(null);
   // What the running job is: a build, or a search for clips.
@@ -257,6 +262,16 @@ export function CommentaryEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.id]);
 
+  // A fix Writer starts by itself (review notes) is followed as a build is.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (watching.current) return;
+      void buildStatus(script.id).then((job) => job?.running && follow(job.startedAt), () => {});
+    }, 10_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [script.id]);
+
   const build = async (text: string) => {
     setReport(null);
     setError(null);
@@ -361,9 +376,29 @@ export function CommentaryEditor({
     void persist({ ...draft, sections });
   };
 
+  // With a script written, a message changes the paragraphs it is about; a whole rewrite is asked for.
+  const [rewriting, setRewriting] = useState(false);
+  const revise = async (text: string) => {
+    setReport(null);
+    setError(null);
+    setStage("Editing the script");
+    try {
+      const job = await startRevision(script.id, text, { selected: [], picked: null, playheadMs: null });
+      setSent(text.trim());
+      follow(job.startedAt);
+      return true;
+    } catch (cause) {
+      setError(message(cause));
+      return false;
+    }
+  };
   const send = () => {
     if (busy || !ready || (draft && !note.trim())) return;
-    void build(note).then((done) => done && setNote(""));
+    void (draft && !rewriting ? revise(note) : build(note)).then((done) => {
+      if (!done) return;
+      setNote("");
+      setRewriting(false);
+    });
   };
 
   return (
@@ -401,6 +436,7 @@ export function CommentaryEditor({
           >
             <Icon name="panel" />
           </button>
+          <ReviewButton script={script} open={openNotes} onClick={() => setReviewOpen(true)} />
           <button type="button" className="secondary sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
             <Icon name="doc" size={14} />
             Google Doc
@@ -424,6 +460,7 @@ export function CommentaryEditor({
           disabled={saving === "saving" || busy}
           onParagraph={editParagraph}
           onPreview={preview}
+          bands={bands}
           stats={draft && times ? `${clock(times.totalMs)} · ${narrationWords(draft).toLocaleString()} words · ${clock(times.clipsMs)} of clips` : ""}
           statsTitle={draft ? commentaryTotal(draft) : ""}
         />
@@ -555,12 +592,28 @@ export function CommentaryEditor({
                 value={note}
                 disabled={busy}
                 canSend={!busy && ready && (!draft || !!note.trim())}
-                label={draft ? "Rewrite the script" : "Write the script"}
-                placeholder={busy ? "Claude is writing…" : draft ? "Ask for a rewrite. It replaces the whole script…" : "Notes for the first draft (optional), e.g. aim for 15 minutes…"}
+                label={draft ? (rewriting ? "Rewrite the script" : "Change the script") : "Write the script"}
+                placeholder={
+                  busy
+                    ? "Claude is writing…"
+                    : !draft
+                      ? "Notes for the first draft (optional), e.g. aim for 15 minutes…"
+                      : rewriting
+                        ? "Ask for a rewrite. It replaces the whole script…"
+                        : "Ask for a change. Claude edits only the paragraphs it's about, or adds an edit: note for the editor…"
+                }
                 hint={!ready ? "Add a brief or evidence first" : undefined}
                 onChange={setNote}
                 onSend={send}
               />
+              {draft && (
+                <div className="agent-actions" style={{ padding: "0 14px 8px" }}>
+                  <label className="toggle" title="Off: Claude changes only what the message is about. On: it writes the whole script again from the sources.">
+                    <input type="checkbox" checked={rewriting} disabled={busy} onChange={(event) => setRewriting(event.target.checked)} />
+                    Rewrite the whole script
+                  </label>
+                </div>
+              )}
             </>
           ) : (
             <div className="sources">
@@ -622,6 +675,20 @@ export function CommentaryEditor({
         }}
       />
       <ReadDialog id={script.id} source={reading} onClose={() => setReading(null)} />
+      <ReviewDialog
+        open={reviewOpen}
+        script={script}
+        notes={review.notes}
+        busy={busy}
+        onClose={() => setReviewOpen(false)}
+        onChange={onChange}
+        onJob={(job) => {
+          setReviewOpen(false);
+          follow(job.startedAt);
+        }}
+        onRefresh={review.refresh}
+      />
+      <BandTip notes={review.notes} />
       <DocsDialog
         open={docsOpen}
         script={script}
@@ -677,6 +744,7 @@ function CommentaryDoc({
   statsTitle,
   onParagraph,
   onPreview,
+  bands,
 }: {
   draft: Draft | null;
   items: Item[];
@@ -688,6 +756,8 @@ function CommentaryDoc({
   statsTitle: string;
   onParagraph: (section: number, index: number, next: Paragraph | null) => void;
   onPreview: (id: string) => void;
+  /** Review bands by block (a paragraph's ID, `<id>:heading`, `open`). */
+  bands?: Map<string, Band[]>;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useZoom(zoomKey);
@@ -733,7 +803,7 @@ function CommentaryDoc({
     );
   }
 
-  const range = (cite: Cite, id: string) => {
+  const range = (cite: Cite, id: string, band?: Band[]) => {
     const times = `${clock(cite.startMs)}-${clock(cite.endMs)}`;
     const title = [cite.video, cite.quote ? `“${cite.quote}”` : "", cite.verify ? `Verify: ${cite.verify}` : "", "Click to play it"].filter(Boolean).join("\n");
     return (
@@ -745,6 +815,7 @@ function CommentaryDoc({
         data-state={active === id ? "active" : undefined}
         data-plain={comments ? undefined : ""}
         title={title}
+        {...bandProps(band)}
         onMouseEnter={() => setActive(id)}
         onMouseLeave={() => setActive(null)}
       >
@@ -756,12 +827,12 @@ function CommentaryDoc({
       </span>
     );
   };
-  const ranges = (cites: { cite: Cite; id: string }[], key: string) => (
+  const ranges = (cites: { cite: Cite; id: string; band?: Band[] }[], key: string) => (
     <p className="ranges" key={key}>
-      {cites.map(({ cite, id }, index) => (
+      {cites.map(({ cite, id, band }, index) => (
         <Fragment key={id}>
           {index > 0 && <span className="plus">+</span>}
-          {range(cite, id)}
+          {range(cite, id, band)}
         </Fragment>
       ))}
     </p>
@@ -792,13 +863,14 @@ function CommentaryDoc({
             className="comment human"
             key={card.id}
             data-card={card.id}
+            data-edit={isEditNote(card.paragraph.note) || undefined}
             data-state={active === card.id ? "active" : undefined}
             onMouseEnter={() => setActive(card.id)}
             onMouseLeave={() => setActive(null)}
           >
             <span className="card-head">
               <span className="avatar"><Icon name="note" size={12} /></span>
-              <span className="comment-author">For editor</span>
+              <span className="comment-author">{isEditNote(card.paragraph.note) ? "For editor · edit: lines go to Edit's agent" : "For editor"}</span>
             </span>
             <Grow
               className="card-field"
@@ -839,21 +911,22 @@ function CommentaryDoc({
           )}
           {draft?.sections.map((section, s) => (
             <Fragment key={`${s}-${section.heading}`}>
-              <h2 className="doc-heading" data-block>
+              <h2 className="doc-heading" data-block {...bandProps(section.paragraphs[0]?.id ? bands?.get(`${section.paragraphs[0].id}:heading`) : undefined)}>
                 {section.heading.replace(/^(\d+\.) /, "$1 ")}
               </h2>
               {s === 0 && draft.open.length > 0 && (
-                <div className="block" data-block>
+                <div className="block" data-block {...bandProps(bands?.get("open"))}>
                   {ranges(draft.open.map((cite, index) => ({ cite, id: `o${index}` })), "open")}
                 </div>
               )}
               {section.paragraphs.map((paragraph, p) => {
                 // Clips that follow one another share a line, joined with "+".
-                const lines: ({ kind: "say"; text: string; index: number } | { kind: "clips"; cites: { cite: Cite; id: string }[] })[] = [];
+                const lines: ({ kind: "say"; text: string; index: number } | { kind: "clips"; cites: { cite: Cite; id: string; band?: Band[] }[] })[] = [];
+                const banded = pieceBands(paragraph, paragraph.id ? bands?.get(paragraph.id) : undefined);
                 paragraph.pieces.forEach((piece, i) => {
                   if (piece.kind === "say") return lines.push({ kind: "say", text: piece.text, index: i });
                   const last = lines[lines.length - 1];
-                  const item = { cite: piece, id: `c${s}-${p}-${i}` };
+                  const item = { cite: piece, id: `c${s}-${p}-${i}`, band: banded.get(i) };
                   if (last?.kind === "clips") last.cites.push(item);
                   else lines.push({ kind: "clips", cites: [item] });
                 });
@@ -870,7 +943,7 @@ function CommentaryDoc({
                         ranges(line.cites, `r${index}`)
                       ) : (
                         <div className="said" key={`s${line.index}`} data-anchor={`s${s}-${p}-${line.index}`} data-now={nowId === `s${s}-${p}-${line.index}` || undefined}>
-                          <Grow className="narration" value={line.text} disabled={disabled} onCommit={(text) => setSay(line.index, text)} />
+                          <Grow className="narration" value={line.text} disabled={disabled} bands={banded.get(line.index)} onCommit={(text) => setSay(line.index, text)} />
                         </div>
                       ),
                     )}

@@ -1272,7 +1272,7 @@ mod tests {
             open: vec![Cite { source: "S2".into(), video: "Stream".into(), link: None, start_ms: 0, end_ms: 4_000, quote: "Get him off the stage".into(), verify: None }],
             sections: vec![Section {
                 heading: "1. The Rise".into(),
-                paragraphs: paragraphs.iter().map(|text| Paragraph { pieces: vec![Piece::Say { text: text.to_string() }], note: None }).collect(),
+                paragraphs: paragraphs.iter().map(|text| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: text.to_string() }], note: None }).collect(),
             }],
             checks: vec!["Check the voice.".into()],
             report: String::new(),

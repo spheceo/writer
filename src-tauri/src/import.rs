@@ -1286,6 +1286,7 @@ fn new_script(title: String, kind: &str, source_url: String, original: String) -
         speakers: Default::default(),
         suspects: Vec::new(),
         commentary: None,
+        review: None,
         heading: None,
         corrections: Default::default(),
         proposals: Vec::new(),

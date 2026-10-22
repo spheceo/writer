@@ -253,6 +253,9 @@ pub struct Script {
     /// A commentary project's sources and written script.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commentary: Option<crate::commentary::Commentary>,
+    /// The script's review link on Repack, once shared (reviews.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<crate::reviews::Link>,
     pub revision: u32,
     pub created_at: i64,
     pub updated_at: i64,

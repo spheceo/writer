@@ -5,6 +5,7 @@ import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from ".
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import { wordDiff } from "./diff";
 import type { Clip, Note, Proposal, Script } from "./types";
+import { type Band, bandProps, isEditNote } from "./review";
 import { Icon } from "./ui";
 
 /**
@@ -26,6 +27,7 @@ export function FootageDoc({
   onDecline,
   onNotes,
   onPreview,
+  bands,
 }: {
   script: Script;
   clips: Clip[];
@@ -42,6 +44,8 @@ export function FootageDoc({
   /** The comments on a timestamp, as they now stand. */
   onNotes: (id: string, notes: Note[]) => void;
   onPreview: (index: number) => void;
+  /** Review bands by block (a clip's ID): what each fix changed, and open notes' words. */
+  bands?: Map<string, Band[]>;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useZoom(zoomKey);
@@ -123,10 +127,10 @@ export function FootageDoc({
             <span className="card-text">{boundary(clip, script.words, script.corrections)}</span>
           </button>,
           ...(clip.notes ?? []).map((written) => (
-            <div className="comment human" key={written.id} data-card={clip.id}>
+            <div className="comment human" key={written.id} data-card={clip.id} data-edit={isEditNote(written.text) || undefined}>
               <span className="card-head">
-                <span className="avatar">Y</span>
-                <span className="comment-author">You</span>
+                <span className="avatar">{isEditNote(written.text) ? "E" : "Y"}</span>
+                <span className="comment-author">{isEditNote(written.text) ? "For Edit" : "You"}</span>
                 <button
                   type="button"
                   className="link-button faint card-remove"
@@ -139,7 +143,9 @@ export function FootageDoc({
                 </button>
               </span>
               <span className="card-text">{written.text}</span>
-              <span className="faint card-where">Goes into the Google Doc on this timestamp, as {COMMENT_AUTHOR}.</span>
+              <span className="faint card-where">
+                {isEditNote(written.text) ? "Edit's agent follows this in this section. It goes into the Google Doc too." : `Goes into the Google Doc on this timestamp, as ${COMMENT_AUTHOR}.`}
+              </span>
             </div>
           )),
           writing?.id === clip.id ? (
@@ -227,6 +233,7 @@ export function FootageDoc({
           data-now={nowId === clip.id || undefined}
           data-state={active === clip.id ? "active" : undefined}
           data-plain={comments ? undefined : ""}
+          {...bandProps(bands?.get(clip.id))}
           onMouseEnter={() => setActive(clip.id)}
           onMouseLeave={() => setActive(null)}
         >
@@ -254,7 +261,7 @@ export function FootageDoc({
     const proposal = script.proposals?.find((item) => item.cutIn === cue.id);
     return (
       <>
-        <Grow className="narration" label={`Narration ${index + 1}`} value={cue.narration ?? ""} disabled={disabled} placeholder={placeholder} onCommit={(text) => onNarration(cue.id, text)} />
+        <Grow className="narration" label={`Narration ${index + 1}`} value={cue.narration ?? ""} disabled={disabled} placeholder={placeholder} bands={bands?.get(cue.id)} onCommit={(text) => onNarration(cue.id, text)} />
         {proposal && (
           <div className="proposal" aria-label="Proposed rewrite">
             <p className="proposal-text">

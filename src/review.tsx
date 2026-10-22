@@ -1,0 +1,339 @@
+import { useCallback, useEffect, useState } from "react";
+import { fixNotes, message, onReviews, reviewCounts, reviewNotes, setAutoFix, shareScript } from "./api";
+import type { BuildStatus, Cite, Paragraph, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
+import { Dialog, Icon } from "./ui";
+
+/**
+ * Review on a Repack link (reviews.rs): Share, the notes reviewers leave,
+ * and what Claude changed for each, drawn as bands on the script. Hovering
+ * a band says whose note it was, what they asked, and what Claude did.
+ */
+
+/** A note for the video editor: Edit's agent follows it in that section (a line starting "edit:"). */
+export const isEditNote = (text: string | undefined) => !!text && text.split("\n").some((line) => /^\s*edit:/i.test(line));
+
+/** Open notes per script, for the list's badges. */
+export function useReviewCounts() {
+  const [counts, setCounts] = useState<ReviewCounts | null>(null);
+  useEffect(() => {
+    let live = true;
+    const ask = () => void reviewCounts().then((next) => live && setCounts(next), () => {});
+    ask();
+    const stop = onReviews(ask);
+    const timer = window.setInterval(ask, 20_000);
+    return () => {
+      live = false;
+      stop();
+      window.clearInterval(timer);
+    };
+  }, []);
+  return counts;
+}
+
+/** A script's notes and its blocks as they now read; asked again when notes change or the script does. */
+export function useReview(id: string, revision: number) {
+  const [notes, setNotes] = useState<ReviewNote[]>([]);
+  const [blocks, setBlocks] = useState<ReviewBlock[]>([]);
+  const refresh = useCallback(
+    () =>
+      void reviewNotes(id).then(
+        (found) => {
+          setNotes(found.notes);
+          setBlocks(found.blocks);
+        },
+        () => {},
+      ),
+    [id],
+  );
+  useEffect(() => {
+    refresh();
+    return onReviews(refresh);
+  }, [refresh, revision]);
+  return { notes, blocks, refresh };
+}
+
+/** Part of a block's text a band covers: a fix's change, or an open note's words. */
+export type Band = { start: number; end: number; notes: string[]; kind: "fix" | "open" };
+
+/** Bands by block: each done note's changed ranges, and each open note's anchor. */
+export function bandsOf(notes: ReviewNote[]): Map<string, Band[]> {
+  const out = new Map<string, Band[]>();
+  const add = (blockId: string, band: Band) => out.set(blockId, [...(out.get(blockId) ?? []), band]);
+  for (const note of notes) {
+    if (note.parentId) continue;
+    if (note.status === "done") {
+      for (const range of note.changedRanges) add(range.blockId, { start: range.start, end: range.end, notes: [note.id], kind: "fix" });
+    } else if (note.anchor?.blockId) {
+      add(note.anchor.blockId, { start: note.anchor.start ?? 0, end: note.anchor.end ?? 0, notes: [note.id], kind: "open" });
+    }
+  }
+  return out;
+}
+
+/** A moment as blocks.rs prints a clip: whole seconds, rounded down. */
+function stamp(ms: number) {
+  const seconds = Math.floor(Math.max(0, ms) / 1000);
+  const hours = Math.floor(seconds / 3600);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return hours > 0 ? `${hours}:${pad(Math.floor(seconds / 60) % 60)}:${pad(seconds % 60)}` : `${Math.floor(seconds / 60)}:${pad(seconds % 60)}`;
+}
+
+const citeLine = (cite: Cite) => `[${cite.video} ${stamp(cite.startMs)}–${stamp(cite.endMs)}]${cite.quote.trim() ? ` "${cite.quote.trim()}"` : ""}`;
+
+/**
+ * A paragraph's bands, piece by piece: its text is each piece on its own
+ * line (blocks.rs paragraph_text), so a band on narration lands in that
+ * piece's own offsets, and one touching a clip marks the clip.
+ */
+export function pieceBands(paragraph: Paragraph, bands: Band[] | undefined): Map<number, Band[]> {
+  const out = new Map<number, Band[]>();
+  if (!bands?.length) return out;
+  let at = 0;
+  paragraph.pieces.forEach((piece, index) => {
+    const text = piece.kind === "say" ? piece.text : citeLine(piece);
+    const [from, to] = [at, at + text.length];
+    for (const band of bands) {
+      // An empty band at a piece's start belongs to it; elsewhere a band must overlap.
+      const touches = band.start === band.end ? band.start >= from && band.start <= to : band.start < to && band.end > from;
+      if (!touches) continue;
+      const local = { ...band, start: Math.max(0, band.start - from), end: Math.min(text.length, band.end - from) };
+      out.set(index, [...(out.get(index) ?? []), local]);
+    }
+    at = to + 1;
+  });
+  return out;
+}
+
+/** What an element-wide band carries for the tooltip (a timestamp, a clip, a heading). */
+export function bandProps(bands: Band[] | undefined) {
+  if (!bands?.length) return {};
+  return { "data-band": bands.flatMap((band) => band.notes).join(" "), "data-band-kind": bands.some((band) => band.kind === "fix") ? "fix" : "open" };
+}
+
+// ---- The tooltip --------------------------------------------------------------
+
+type Tip = { ids: string[]; x: number; y: number } | null;
+let tipListener: ((tip: Tip) => void) | null = null;
+
+/** Shows the notes behind a band at the pointer; null hides it. */
+export function showTip(tip: Tip) {
+  tipListener?.(tip);
+}
+
+/**
+ * The card a band shows on hover: the reviewer's words and name, Claude's
+ * summary of what it changed, and the version. Elements marked with
+ * `data-band` (bandProps) show it by themselves; text bands call showTip.
+ */
+export function BandTip({ notes }: { notes: ReviewNote[] }) {
+  const [tip, setTip] = useState<Tip>(null);
+  useEffect(() => {
+    tipListener = setTip;
+    const over = (event: PointerEvent) => {
+      const target = (event.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-band]");
+      if (target) setTip({ ids: (target.dataset.band ?? "").split(" ").filter(Boolean), x: event.clientX, y: event.clientY });
+      else if ((event.target as HTMLElement | null)?.closest?.("[data-band-text]") == null) setTip(null);
+    };
+    window.addEventListener("pointermove", over);
+    return () => {
+      window.removeEventListener("pointermove", over);
+      if (tipListener === setTip) tipListener = null;
+    };
+  }, []);
+  const shown = tip ? notes.filter((note) => tip.ids.includes(note.id)) : [];
+  if (!tip || !shown.length) return null;
+  const left = Math.min(tip.x + 14, window.innerWidth - 340);
+  const top = tip.y + 16 + 220 > window.innerHeight ? Math.max(8, tip.y - 230) : tip.y + 16;
+  return (
+    <div className="band-tip" style={{ left, top }} role="tooltip">
+      {shown.map((note) => (
+        <div key={note.id} className="band-tip-note">
+          <span className="band-tip-head">
+            <b>{note.author}</b>
+            <span className="faint">{note.status === "done" ? `Fixed in v${note.doneInVersion ?? "?"}` : `Open · on v${note.version}`}</span>
+          </span>
+          <q>{note.text}</q>
+          {note.fixSummary && (
+            <span className="band-tip-fix">
+              <span className="faint">Claude: </span>
+              {note.fixSummary}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- Share and the notes -------------------------------------------------------
+
+const when = (ms: number) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+/** The topbar's Share button: "Share" until shared, then the open notes' count. */
+export function ReviewButton({ script, open, onClick }: { script: Script; open: number; onClick: () => void }) {
+  const shared = !!script.review;
+  return (
+    <button
+      type="button"
+      className={open ? "secondary sm review-button has-notes" : "secondary sm review-button"}
+      title={shared ? `Shared for review (v${script.review?.version}). ${open ? `${open} open ${open === 1 ? "note" : "notes"}.` : "No open notes."}` : "Share the script on a Repack link for review"}
+      onClick={onClick}
+    >
+      <Icon name="share" size={14} />
+      {shared ? "Review" : "Share"}
+      {open > 0 && <span className="count-badge">{open}</span>}
+    </button>
+  );
+}
+
+/**
+ * Sharing and the notes: the link to copy, Share again for the next version,
+ * whether Claude fixes new notes by itself, and every note with what Claude
+ * did about it.
+ */
+export function ReviewDialog({
+  open,
+  script,
+  notes,
+  busy,
+  onClose,
+  onChange,
+  onJob,
+  onRefresh,
+}: {
+  open: boolean;
+  script: Script;
+  notes: ReviewNote[];
+  busy: boolean;
+  onClose: () => void;
+  onChange: (script: Script) => void;
+  /** A fix started from here, for the editor to follow. */
+  onJob: (job: BuildStatus) => void;
+  onRefresh: () => void;
+}) {
+  const [sharing, setSharing] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [autoFix, setAuto] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setProblem(null);
+    onRefresh();
+    void reviewCounts().then((counts) => setAuto(counts.autoFix), () => {});
+  }, [open]);
+
+  const link = script.review;
+  const share = async () => {
+    setSharing(true);
+    setProblem(null);
+    try {
+      onChange(await shareScript(script.id));
+    } catch (cause) {
+      setProblem(message(cause));
+    } finally {
+      setSharing(false);
+    }
+  };
+  const copy = async () => {
+    if (!link) return;
+    await navigator.clipboard.writeText(link.url);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  const fix = async () => {
+    setProblem(null);
+    try {
+      onJob(await fixNotes(script.id));
+    } catch (cause) {
+      setProblem(message(cause));
+    }
+  };
+
+  const roots = notes.filter((note) => !note.parentId);
+  const replies = (id: string) => notes.filter((note) => note.parentId === id);
+  const openNotes = roots.filter((note) => note.status !== "done");
+  const waiting = openNotes.length;
+  const ordered = [...openNotes, ...roots.filter((note) => note.status === "done").reverse()];
+  const behind = link && link.revision !== script.revision;
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={link ? "Review" : "Share for review"}
+      description={
+        link
+          ? "Anyone with the link can read the script and leave notes under a name. Share again to publish the script as it is now, as the next version on the same link."
+          : "Publishes the script on a Repack link. Anyone with it can read the script and leave notes under a name, with no account."
+      }
+      width={560}
+      footer={
+        <>
+          {problem && <span className="bad">{problem}</span>}
+          <span className="spacer" />
+          {link && waiting > 0 && (
+            <button type="button" className="ghost" disabled={busy} onClick={() => void fix()}>
+              Fix {waiting} {waiting === 1 ? "note" : "notes"} now
+            </button>
+          )}
+          <button type="button" className={link && !behind ? "ghost" : "primary"} disabled={sharing || busy} onClick={() => void share()}>
+            {sharing ? "Sharing…" : link ? `Share again as v${link.version + 1}` : "Share"}
+          </button>
+        </>
+      }
+    >
+      {link && (
+        <div className="review-link">
+          <input readOnly value={link.url} aria-label="Review link" onFocus={(event) => event.currentTarget.select()} />
+          <button type="button" className="sm" onClick={() => void copy()}>
+            <Icon name={copied ? "check" : "copy"} size={14} />
+            {copied ? "Copied" : "Copy"}
+          </button>
+        </div>
+      )}
+      {link && (
+        <p className="faint review-meta">
+          v{link.version} shared {when(link.sharedAt)}
+          {behind ? " · the script has changed since" : ""}
+        </p>
+      )}
+      {link && autoFix !== null && (
+        <label className="toggle review-auto">
+          <input type="checkbox" checked={autoFix} onChange={(event) => void setAutoFix(event.target.checked).then((counts) => setAuto(counts.autoFix), (cause) => setProblem(message(cause)))} />
+          Claude fixes new notes by itself, two minutes after a reviewer's last one, while Writer is open
+        </label>
+      )}
+      {link && roots.length === 0 && <p className="faint">No notes yet.</p>}
+      {roots.length > 0 && (
+        <ul className="review-notes">
+          {ordered.map((note) => (
+            <li key={note.id} className="review-note" data-status={note.status}>
+              <span className="review-note-head">
+                <b>{note.author}</b>
+                <span className="faint">
+                  {when(note.createdAt)} · v{note.version}
+                </span>
+                <span className={note.status === "done" ? "chip done" : note.attempted ? "chip" : "chip open"}>
+                  {note.status === "done" ? `Fixed in v${note.doneInVersion ?? "?"}` : note.attempted ? "Tried" : "Open"}
+                </span>
+              </span>
+              {note.anchor?.quote && <blockquote>{note.anchor.quote}</blockquote>}
+              <p>{note.text}</p>
+              {note.fixSummary && (
+                <p className="review-fix">
+                  <span className="faint">Claude: </span>
+                  {note.fixSummary}
+                </p>
+              )}
+              {replies(note.id).map((reply) => (
+                <p key={reply.id} className="review-reply">
+                  <b>{reply.author}</b> {reply.text}
+                </p>
+              ))}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Dialog>
+  );
+}

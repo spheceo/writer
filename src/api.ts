@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -291,3 +291,44 @@ export type CloudStatus = {
 
 /** Where syncing to the cloud has got to. */
 export const cloudStatus = () => (inTauri() ? invoke<CloudStatus>("cloud_status") : http<CloudStatus>("/api/cloud"));
+
+/** Shares the script on a Repack review link, or its next version on the same link. */
+export const shareScript = (id: string) =>
+  inTauri() ? invoke<Script>("share_script", { id }) : http<Script>(`/api/scripts/${id}/share`, json({}));
+
+/** Open review notes per script, for the cards' badges, and whether Claude fixes new ones by itself. */
+export const reviewCounts = () =>
+  inTauri() ? invoke<ReviewCounts>("review_counts") : http<ReviewCounts>("/api/reviews");
+
+/** A script's review notes, and its blocks as they now read. */
+export const reviewNotes = (id: string) =>
+  inTauri()
+    ? invoke<{ notes: ReviewNote[]; blocks: ReviewBlock[] }>("review_notes", { id })
+    : http<{ notes: ReviewNote[]; blocks: ReviewBlock[] }>(`/api/scripts/${id}/review`);
+
+/** Has Claude fix the script's open notes now; followed as a build. */
+export const fixNotes = (id: string) =>
+  inTauri() ? invoke<BuildStatus>("fix_notes", { id }) : http<BuildStatus>(`/api/scripts/${id}/review/fix`, json({}));
+
+export const setAutoFix = (on: boolean) =>
+  inTauri() ? invoke<ReviewCounts>("set_auto_fix", { on }) : http<ReviewCounts>("/api/reviews/auto-fix", { ...json({ on }), method: "PUT" });
+
+/** Calls `then` whenever review notes change (in the app; the dev page asks every half minute). */
+export function onReviews(then: () => void): () => void {
+  if (!inTauri()) {
+    const timer = window.setInterval(then, 30_000);
+    return () => window.clearInterval(timer);
+  }
+  let stop: (() => void) | null = null;
+  let gone = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("reviews", then).then((unlisten) => {
+      if (gone) unlisten();
+      else stop = unlisten;
+    }),
+  );
+  return () => {
+    gone = true;
+    stop?.();
+  };
+}

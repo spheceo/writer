@@ -81,6 +81,10 @@ pub enum Piece {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Paragraph {
+    /// Stable for the paragraph's life once given (`ensure_ids`), so a
+    /// review note anchored to it still finds it after other edits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub pieces: Vec<Piece>,
     /// "*For editor*": what to show, blur or bleep.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -166,6 +170,24 @@ pub struct Commentary {
 }
 
 impl Draft {
+    /// Gives every paragraph without one an ID; says whether any was given.
+    pub fn ensure_ids(&mut self) -> bool {
+        let mut taken: std::collections::HashSet<String> = self.sections.iter().flat_map(|section| section.paragraphs.iter().map(|paragraph| paragraph.id.clone())).collect();
+        let mut given = false;
+        for paragraph in self.sections.iter_mut().flat_map(|section| section.paragraphs.iter_mut()) {
+            if paragraph.id.is_empty() {
+                let mut id = format!("p{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+                while taken.contains(&id) {
+                    id = format!("p{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+                }
+                taken.insert(id.clone());
+                paragraph.id = id;
+                given = true;
+            }
+        }
+        given
+    }
+
     pub fn cites(&self) -> impl Iterator<Item = &Cite> {
         self.open.iter().chain(self.sections.iter().flat_map(|section| {
             section.paragraphs.iter().flat_map(|paragraph| {
@@ -249,6 +271,7 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
         speakers: Default::default(),
         suspects: Vec::new(),
         commentary: Some(Commentary::default()),
+        review: None,
         heading: None,
         corrections: Default::default(),
         proposals: Vec::new(),
@@ -958,6 +981,191 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
     }
 }
 
+/// A change made to a written script: the new draft and Claude's reply.
+pub struct Revised {
+    pub draft: Draft,
+    pub answer: String,
+    pub cost_usd: f64,
+}
+
+const REVISE_NOTE: &str = r#"THIS TURN IS A REVISION, NOT A NEW SCRIPT. The script is written; the producer asks for a change to it. Instead of the whole script, answer ONCE with the edits that carry the change out, in order, and a short reply. Paragraphs are named by their IDs in THE SCRIPT. Change only what is asked: every paragraph, clip, heading and note that no edit names stays exactly as it is, and a paragraph you rewrite keeps every word the request doesn't touch. New clips follow the build's rules: copied from a source and checked against it. The edits:
+- {"op":"replace","id":"p1a2b3c4d","paragraph":{"pieces":[…],"note":"…"}}: the paragraph's new content, pieces in reading order, its note included if it keeps one.
+- {"op":"insert_after","id":"p1a2b3c4d","paragraph":{…}} (or "insert_before"): a new paragraph next to that one.
+- {"op":"delete","id":"p1a2b3c4d"}: take the paragraph out.
+- {"op":"heading","id":"p1a2b3c4d","heading":"2. The Lawsuit"}: rename the section that paragraph is in.
+- {"op":"note","id":"p1a2b3c4d","note":"edit: a blue waveform under this call"}: add a note for the video editor to the paragraph, only when asked for one. It starts "edit:" and says what to do in that section; the editor follows it over their usual plan.
+- {"op":"montage","open":[…]}: every clip of the montage, when the change is to the montage.
+A request that needs no change, or that you can't carry out from the sources, gets no edits and a reply that says why. The reply is for the producer: one to three short sentences on what you changed."#;
+
+fn revise_schema() -> String {
+    let mut piece = cite_schema();
+    piece["properties"]["kind"] = json!({ "type": "string", "enum": ["say", "clip"] });
+    piece["properties"]["text"] = json!({ "type": "string", "description": "Narration only." });
+    piece["required"] = json!(["kind"]);
+    let paragraph = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": { "pieces": { "type": "array", "minItems": 1, "items": piece }, "note": { "type": "string" } },
+        "required": ["pieces"]
+    });
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "edits": {
+                "type": "array",
+                "maxItems": 60,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "op": { "type": "string", "enum": ["replace", "insert_after", "insert_before", "delete", "heading", "note", "montage"] },
+                        "id": { "type": "string" },
+                        "paragraph": paragraph,
+                        "heading": { "type": "string" },
+                        "note": { "type": "string" },
+                        "open": { "type": "array", "maxItems": 15, "items": cite_schema() }
+                    },
+                    "required": ["op"]
+                }
+            },
+            "answer": { "type": "string" }
+        },
+        "required": ["edits", "answer"]
+    })
+    .to_string()
+}
+
+/// Opus carries out one request on a written script with edits to named
+/// paragraphs, so nothing it doesn't name can change; up to two repair
+/// turns for edits the checks refuse. Every paragraph must have its ID.
+pub fn revise(dir: &Path, script: &Script, request: &str, lessons: &str) -> Result<Revised, String> {
+    let commentary = script.commentary.as_ref().ok_or("That isn't a commentary script.")?;
+    let draft = commentary.draft.as_ref().ok_or("There's no script to change yet. Write it first.")?;
+    let mut sources = Vec::new();
+    for source in &commentary.sources {
+        sources.push((source.clone(), read_text(dir, &source.id)?));
+    }
+    let mut system = system_prompt(&script.title, commentary.pacing);
+    if !lessons.trim().is_empty() {
+        system.push_str(&format!("\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n{}", lessons.trim()));
+    }
+    system.push_str(&format!("\n\n{REVISE_NOTE}"));
+    let prompt = format!(
+        "SOURCES\n\n{}\n\nTHE SCRIPT, as a plan with each paragraph's ID\n{}\n\n{}",
+        evidence(&sources),
+        serde_json::to_string_pretty(&plan_with_ids(draft)).unwrap_or_default(),
+        request.trim()
+    );
+    let schema = revise_schema();
+    let corpus = Corpus::new(&sources);
+    let mut turn = crate::claude::ask_model_patiently("opus", &system, &schema, &prompt, None).map_err(too_long)?;
+    let mut cost = turn.cost_usd;
+    let mut repairs = 0;
+    loop {
+        let refusal = match &turn.plan {
+            Some(plan) => match apply_edits(draft, plan["edits"].as_array().map(Vec::as_slice).unwrap_or(&[]), &corpus) {
+                Ok(draft) => {
+                    let answer: String = plan["answer"].as_str().unwrap_or("").trim().chars().take(2_000).collect();
+                    return Ok(Revised { draft, answer: if answer.is_empty() { "Done.".into() } else { answer }, cost_usd: cost });
+                }
+                Err(reason) => format!("The app refused your edits: {reason} Nothing was saved. Send the complete corrected answer, every edit again in order."),
+            },
+            None => "Your answer carried no edits. Send the edits and reply as the structured answer.".into(),
+        };
+        if repairs == 2 || turn.session.is_none() {
+            return Err(format!("Claude's edits were refused again. {}", refusal.trim_start_matches("The app refused your edits: ")));
+        }
+        repairs += 1;
+        turn = crate::claude::ask_model_patiently("opus", &system, &schema, &refusal, turn.session.as_deref()).map_err(too_long)?;
+        cost += turn.cost_usd;
+    }
+}
+
+/// The draft as a plan, each paragraph with its ID.
+fn plan_with_ids(draft: &Draft) -> Value {
+    let mut plan = plan_of(draft);
+    for (section, out) in draft.sections.iter().zip(plan["sections"].as_array_mut().into_iter().flatten()) {
+        for (paragraph, item) in section.paragraphs.iter().zip(out["paragraphs"].as_array_mut().into_iter().flatten()) {
+            item["id"] = json!(paragraph.id);
+        }
+    }
+    plan
+}
+
+/// Claude's edits applied in order to a copy of the draft; all or none.
+fn apply_edits(draft: &Draft, edits: &[Value], corpus: &Corpus) -> Result<Draft, String> {
+    let mut out = draft.clone();
+    let find = |draft: &Draft, id: &str| -> Result<(usize, usize), String> {
+        let id = id.trim().trim_end_matches(":heading");
+        draft
+            .sections
+            .iter()
+            .enumerate()
+            .find_map(|(s, section)| section.paragraphs.iter().position(|paragraph| paragraph.id == id).map(|p| (s, p)))
+            .ok_or_else(|| format!("There is no paragraph {id:?}. Name paragraphs by the IDs in THE SCRIPT."))
+    };
+    for (index, edit) in edits.iter().enumerate() {
+        let place = format!("Edit {}", index + 1);
+        let id = edit["id"].as_str().unwrap_or("");
+        let mut clips = 0;
+        match edit["op"].as_str().unwrap_or("") {
+            op @ ("replace" | "insert_after" | "insert_before") => {
+                let (s, p) = find(&out, id)?;
+                let heading = out.sections[s].heading.clone();
+                let mut paragraph = paragraph_of(&edit["paragraph"], corpus, &heading, &mut clips)
+                    .map_err(|reason| format!("{place}: {reason}"))?
+                    .ok_or_else(|| format!("{place} gives a paragraph with nothing in it."))?;
+                match op {
+                    "replace" => {
+                        paragraph.id = out.sections[s].paragraphs[p].id.clone();
+                        out.sections[s].paragraphs[p] = paragraph;
+                    }
+                    "insert_after" => out.sections[s].paragraphs.insert(p + 1, paragraph),
+                    _ => out.sections[s].paragraphs.insert(p, paragraph),
+                }
+                out.ensure_ids();
+            }
+            "delete" => {
+                let (s, p) = find(&out, id)?;
+                out.sections[s].paragraphs.remove(p);
+                if out.sections[s].paragraphs.is_empty() {
+                    out.sections.remove(s);
+                }
+            }
+            "heading" => {
+                let (s, _) = find(&out, id)?;
+                let heading = edit["heading"].as_str().unwrap_or("").trim();
+                if heading.is_empty() || heading.chars().count() > 200 {
+                    return Err(format!("{place}: a heading is up to 200 characters."));
+                }
+                out.sections[s].heading = heading.to_string();
+            }
+            "note" => {
+                let (s, p) = find(&out, id)?;
+                let note = crate::revise::edit_note(edit["note"].as_str().unwrap_or("")).map_err(|reason| format!("{place}: {reason}"))?;
+                let paragraph = &mut out.sections[s].paragraphs[p];
+                paragraph.note = Some(match paragraph.note.take().filter(|kept| !kept.trim().is_empty()) {
+                    Some(kept) => format!("{}\n{note}", kept.trim_end()),
+                    None => note,
+                });
+            }
+            "montage" => {
+                let mut open = Vec::new();
+                for (at, item) in edit["open"].as_array().map(Vec::as_slice).unwrap_or(&[]).iter().enumerate() {
+                    open.push(cite(item, corpus, &format!("{place}, montage clip {}", at + 1))?);
+                }
+                out.open = open;
+            }
+            other => return Err(format!("{place}: there is no edit called {other:?}.")),
+        }
+    }
+    if out.sections.len() < 3 {
+        return Err("Those edits leave fewer than three sections: Intro, the chapters and Ending stay.".into());
+    }
+    Ok(out)
+}
+
 fn cite_plan(cite: &Cite) -> Value {
     let mut item = json!({ "source": cite.source, "video": cite.video, "start": clock(cite.start_ms), "end": clock(cite.end_ms), "quote": cite.quote });
     if let Some(link) = &cite.link {
@@ -1247,6 +1455,40 @@ fn clip_text(text: &str, max: usize) -> String {
     out
 }
 
+/// One paragraph of Claude's, checked; none when it holds nothing.
+fn paragraph_of(paragraph: &Value, corpus: &Corpus, heading: &str, clip_number: &mut usize) -> Result<Option<Paragraph>, String> {
+    let pieces_in = paragraph["pieces"].as_array().filter(|list| !list.is_empty() && list.len() <= 60);
+    let pieces_in = pieces_in.ok_or_else(|| format!("A paragraph in \"{heading}\" needs 1 to 60 pieces."))?;
+    let mut pieces = Vec::new();
+    for piece in pieces_in {
+        match piece["kind"].as_str().unwrap_or("") {
+            "say" => {
+                let text = piece["text"].as_str().unwrap_or("").trim().to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                if text.contains('—') {
+                    return Err(format!("Narration in \"{heading}\" uses an em dash. Narration never uses one; rewrite it."));
+                }
+                if text.chars().count() > 6_000 {
+                    return Err(format!("A paragraph in \"{heading}\" is over 6,000 characters. Split it."));
+                }
+                pieces.push(Piece::Say { text });
+            }
+            "clip" => {
+                *clip_number += 1;
+                pieces.push(Piece::Clip(cite(piece, corpus, &format!("Clip {clip_number} of \"{heading}\""))?));
+            }
+            other => return Err(format!("Unknown piece kind {other:?} in \"{heading}\".")),
+        }
+    }
+    if pieces.is_empty() {
+        return Ok(None);
+    }
+    let note = paragraph["note"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(|note| clip_text(note, 2_000));
+    Ok(Some(Paragraph { id: String::new(), pieces, note }))
+}
+
 /// Checks Claude's script and turns it into a draft.
 fn compile(plan: &Value, corpus: &Corpus) -> Result<Draft, String> {
     let mut open = Vec::new();
@@ -1268,36 +1510,7 @@ fn compile(plan: &Value, corpus: &Corpus) -> Result<Draft, String> {
         let mut paragraphs = Vec::new();
         let mut clip_number = 0;
         for paragraph in paragraphs_in {
-            let pieces_in = paragraph["pieces"].as_array().filter(|list| !list.is_empty() && list.len() <= 60);
-            let pieces_in = pieces_in.ok_or_else(|| format!("A paragraph in \"{heading}\" needs 1 to 60 pieces."))?;
-            let mut pieces = Vec::new();
-            for piece in pieces_in {
-                match piece["kind"].as_str().unwrap_or("") {
-                    "say" => {
-                        let text = piece["text"].as_str().unwrap_or("").trim().to_string();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        if text.contains('—') {
-                            return Err(format!("Narration in \"{heading}\" uses an em dash. Narration never uses one; rewrite it."));
-                        }
-                        if text.chars().count() > 6_000 {
-                            return Err(format!("A paragraph in \"{heading}\" is over 6,000 characters. Split it."));
-                        }
-                        pieces.push(Piece::Say { text });
-                    }
-                    "clip" => {
-                        clip_number += 1;
-                        pieces.push(Piece::Clip(cite(piece, corpus, &format!("Clip {clip_number} of \"{heading}\""))?));
-                    }
-                    other => return Err(format!("Unknown piece kind {other:?} in \"{heading}\".")),
-                }
-            }
-            if pieces.is_empty() {
-                continue;
-            }
-            let note = paragraph["note"].as_str().map(str::trim).filter(|note| !note.is_empty()).map(|note| clip_text(note, 2_000));
-            paragraphs.push(Paragraph { pieces, note });
+            paragraphs.extend(paragraph_of(paragraph, corpus, &heading, &mut clip_number)?);
         }
         if paragraphs.is_empty() {
             return Err(format!("Section \"{heading}\" has nothing in it."));
@@ -1335,6 +1548,40 @@ fn compile(plan: &Value, corpus: &Corpus) -> Result<Draft, String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_revision_changes_only_the_paragraphs_it_names() {
+        let say = |id: &str, text: &str| Paragraph { id: id.into(), pieces: vec![Piece::Say { text: text.into() }], note: None };
+        let draft = Draft {
+            open: Vec::new(),
+            sections: vec![
+                Section { heading: "Intro".into(), paragraphs: vec![say("pa", "One."), say("pb", "Two.")] },
+                Section { heading: "1. Middle".into(), paragraphs: vec![say("pc", "Three.")] },
+                Section { heading: "Ending".into(), paragraphs: vec![say("pd", "Four.")] },
+            ],
+            checks: Vec::new(),
+            report: String::new(),
+            written_at: 0,
+        };
+        let corpus = Corpus::new(&[]);
+        let edits = vec![
+            json!({ "op": "replace", "id": "pb", "paragraph": { "pieces": [{ "kind": "say", "text": "Two, said better." }] } }),
+            json!({ "op": "insert_after", "id": "pc", "paragraph": { "pieces": [{ "kind": "say", "text": "Three and a half." }] } }),
+            json!({ "op": "delete", "id": "pa" }),
+            json!({ "op": "heading", "id": "pc:heading", "heading": "1. The Middle" }),
+            json!({ "op": "note", "id": "pd", "note": "a blue waveform under the call" }),
+        ];
+        let out = apply_edits(&draft, &edits, &corpus).unwrap();
+        assert_eq!(out.sections[0].paragraphs.len(), 1);
+        assert_eq!(out.sections[0].paragraphs[0].id, "pb");
+        assert_eq!(out.sections[0].paragraphs[0].pieces, vec![Piece::Say { text: "Two, said better.".into() }]);
+        assert_eq!(out.sections[1].heading, "1. The Middle");
+        assert_eq!(out.sections[1].paragraphs[0], draft.sections[1].paragraphs[0]);
+        assert!(!out.sections[1].paragraphs[1].id.is_empty());
+        assert_eq!(out.sections[2].paragraphs[0].note.as_deref(), Some("edit: a blue waveform under the call"));
+        assert!(apply_edits(&draft, &[json!({ "op": "delete", "id": "nope" })], &corpus).unwrap_err().contains("no paragraph"));
+        assert!(apply_edits(&draft, &[json!({ "op": "delete", "id": "pc" })], &corpus).unwrap_err().contains("three sections"));
+    }
     use super::*;
 
     fn source(id: &str, role: Role, timed: bool) -> Source {
@@ -1387,7 +1634,7 @@ mod tests {
             open: Vec::new(),
             sections: vec![Section {
                 heading: "1. Cuts".into(),
-                paragraphs: vec![Paragraph { pieces: std::iter::once(Piece::Say { text: "word ".repeat(1_500) }).chain(clips.into_iter().map(Piece::Clip)).collect(), note: None }],
+                paragraphs: vec![Paragraph { id: String::new(), pieces: std::iter::once(Piece::Say { text: "word ".repeat(1_500) }).chain(clips.into_iter().map(Piece::Clip)).collect(), note: None }],
             }],
             checks: Vec::new(),
             report: String::new(),

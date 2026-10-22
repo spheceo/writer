@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use crate::claude::{self, Opening};
 use crate::formats::{self, Format};
-use crate::model::{now_ms, Clip, Proposal, Script, Word, CUT_IN_MS};
+use crate::model::{now_ms, Clip, Note, Proposal, Script, Word, CUT_IN_MS};
 use crate::research::Research;
 use crate::tidy;
 
@@ -62,6 +62,7 @@ const REVISE_EDITS: &str = r#"Edits name timeline items by their IDs in CURRENT 
 - {"op":"correct_word","wordId":"w55","text":"Hernández"}: fix how a word is spelled; its timing never changes.
 - {"op":"tighten_pauses"}: cut quiet pauses over 2 s in the kept footage to a beat (two seconds before an answer), as the build does.
 - {"op":"polish_edges"}: move every clip edge the edge review flags that a small fix can mend.
+- {"op":"note","id":"i3","text":"edit: a blue waveform under this 911 call"}: a note for the video editor on a footage clip, only when asked for one ("tell the editor…", "add an edit note…"). It starts "edit:" and says what to do in that section; the editor follows it over their usual plan.
 A clip stays inside one recording. The reply is for the producer: one to four short sentences on what you changed or proposed and why, or the answer to their question. Never show milliseconds or word IDs in it; give moments as [m:ss] footage times."#;
 
 fn system_prompt(script: &Script, format: &Format) -> String {
@@ -92,7 +93,7 @@ fn schema() -> String {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "op": { "type": "string", "enum": ["trim", "remove_words", "insert_words", "split", "delete", "move", "insert_cut_in", "write", "correct_word", "tighten_pauses", "polish_edges"] },
+                        "op": { "type": "string", "enum": ["trim", "remove_words", "insert_words", "split", "delete", "move", "insert_cut_in", "write", "correct_word", "tighten_pauses", "polish_edges", "note"] },
                         "id": { "type": "string" },
                         "ids": { "type": "array", "items": { "type": "string" } },
                         "afterId": { "type": "string" },
@@ -475,15 +476,38 @@ impl Work<'_> {
                 let corrections = self.corrections.clone();
                 self.clips = tidy::polish(std::mem::take(&mut self.clips), words, &corrections, self.script.duration_ms).0;
             }
+            "note" => {
+                let index = self.at(text("id").unwrap_or(""))?;
+                if self.clips[index].is_cut_in() {
+                    return Err("An edit note goes on a footage clip's timestamp, not a cut-in: put it on the clip it is about.".into());
+                }
+                let note = edit_note(text("text").unwrap_or(""))?;
+                self.clips[index].notes.push(Note { id: uuid::Uuid::new_v4().to_string(), text: note, at: now_ms() });
+            }
             other => return Err(format!("There is no edit called {other:?}.")),
         }
         Ok(())
     }
 }
 
+/// A note for the video editor: one line or two, starting "edit:".
+pub fn edit_note(text: &str) -> Result<String, String> {
+    let text = text.trim();
+    let body = text.strip_prefix("edit:").or_else(|| text.strip_prefix("Edit:")).unwrap_or(text).trim();
+    if body.is_empty() {
+        return Err("Say what the editor should do in the note.".into());
+    }
+    if body.chars().count() > 600 {
+        return Err("Keep an edit note under 600 characters.".into());
+    }
+    Ok(format!("edit: {body}"))
+}
+
 /// Applies Claude's edits in order to the script as it stands. Nothing is
 /// kept unless every edit applies.
-pub fn apply(script: &Script, edits: &[Value], peaks: &[f32]) -> Result<(Vec<Clip>, BTreeMap<String, String>, Vec<Proposal>), String> {
+/// `direct` writes every paragraph straight in, saved or not: a fix from a
+/// review, which the producer checks afterwards by what it marked.
+pub fn apply(script: &Script, edits: &[Value], peaks: &[f32], direct: bool) -> Result<(Vec<Clip>, BTreeMap<String, String>, Vec<Proposal>), String> {
     let mut work = Work {
         script,
         peaks,
@@ -508,7 +532,7 @@ pub fn apply(script: &Script, edits: &[Value], peaks: &[f32]) -> Result<(Vec<Cli
     let mut proposals: Vec<Proposal> = script.proposals.clone();
     for (id, text) in &work.writes {
         let Some(clip) = work.clips.iter_mut().find(|clip| &clip.id == id) else { continue };
-        match saved.get(id.as_str()).copied().filter(|before| !before.is_empty()) {
+        match saved.get(id.as_str()).copied().filter(|before| !before.is_empty() && !direct) {
             Some(before) if before != text => {
                 proposals.retain(|proposal| &proposal.cut_in != id);
                 proposals.push(Proposal { id: uuid::Uuid::new_v4().to_string(), cut_in: id.clone(), before: before.to_string(), after: text.clone(), at: now_ms() });
@@ -540,7 +564,7 @@ pub fn settle(clips: &[Clip], proposals: Vec<Proposal>) -> Vec<Proposal> {
 /// Sonnet carries out one request on a built script: one answer with its
 /// edits, then at most two repair turns on the same session for edits the
 /// app refused. Nothing changes until every edit applies.
-pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, research: Option<&Research>, peaks: &[f32]) -> Result<Revised, String> {
+pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, research: Option<&Research>, peaks: &[f32], direct: bool) -> Result<Revised, String> {
     let request = request.trim();
     if request.is_empty() {
         return Err("Say what to change.".into());
@@ -566,7 +590,7 @@ pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, researc
         let refusal = match &turn.plan {
             Some(plan) => {
                 let edits = plan["edits"].as_array().cloned().unwrap_or_default();
-                match apply(script, &edits, peaks) {
+                match apply(script, &edits, peaks, direct) {
                     Ok((clips, corrections, proposals)) => {
                         let answer = plan["answer"].as_str().unwrap_or("").trim().chars().take(4_000).collect::<String>();
                         return Ok(Revised { clips, corrections, proposals, answer: if answer.is_empty() { "Done.".into() } else { answer }, cost_usd: cost });
@@ -622,7 +646,7 @@ mod tests {
             json!({ "op": "move", "ids": ["n2"], "beforeId": "i1" }),
             json!({ "op": "trim", "id": "n1", "edge": "out", "wordId": "w8" }),
         ];
-        let (clips, _, proposals) = apply(&script(), &edits, &[]).unwrap();
+        let (clips, _, proposals) = apply(&script(), &edits, &[], false).unwrap();
         let kinds: Vec<&str> = clips.iter().map(|clip| if clip.is_cut_in() { "cut" } else { "clip" }).collect();
         assert_eq!(kinds, ["cut", "clip", "cut", "clip", "clip", "cut"]);
         assert_eq!(clips[0].narration.as_deref(), Some("Then he changed his story."));
@@ -632,9 +656,26 @@ mod tests {
     }
 
     #[test]
+    fn a_review_fix_writes_saved_narration_straight_in() {
+        let edits = vec![json!({ "op": "write", "id": "i2", "narration": "He swore he was home." })];
+        let (clips, _, proposals) = apply(&script(), &edits, &[], true).unwrap();
+        assert_eq!(clips[1].narration.as_deref(), Some("He swore he was home."));
+        assert!(proposals.is_empty());
+    }
+
+    #[test]
+    fn adds_an_edit_note_to_a_footage_clip_only() {
+        let edits = vec![json!({ "op": "note", "id": "i1", "text": "a blue waveform for this call" })];
+        let (clips, _, _) = apply(&script(), &edits, &[], false).unwrap();
+        assert_eq!(clips[0].notes.last().map(|note| note.text.as_str()), Some("edit: a blue waveform for this call"));
+        assert!(apply(&script(), &[json!({ "op": "note", "id": "i2", "text": "edit: zoom" })], &[], false).unwrap_err().contains("footage clip"));
+        assert_eq!(edit_note("Edit:  zoom in slowly ").unwrap(), "edit: zoom in slowly");
+    }
+
+    #[test]
     fn writes_an_empty_cut_in_and_proposes_a_change_to_a_saved_one() {
         let edits = vec![json!({ "op": "write", "id": "i2", "narration": "He swore he was home." }), json!({ "op": "write", "id": "i4", "narration": "He was not." })];
-        let (clips, _, proposals) = apply(&script(), &edits, &[]).unwrap();
+        let (clips, _, proposals) = apply(&script(), &edits, &[], false).unwrap();
         assert_eq!(clips[1].narration.as_deref(), Some("He said he was home."));
         assert_eq!(clips[3].narration.as_deref(), Some("He was not."));
         assert_eq!(proposals.len(), 1);
@@ -648,15 +689,15 @@ mod tests {
     #[test]
     fn refuses_a_bad_edit_and_keeps_nothing() {
         let edits = vec![json!({ "op": "delete", "ids": ["i1"] }), json!({ "op": "trim", "id": "i9", "edge": "in", "wordId": "w1" })];
-        let refused = apply(&script(), &edits, &[]).unwrap_err();
+        let refused = apply(&script(), &edits, &[], false).unwrap_err();
         assert!(refused.starts_with("Edit 2 (trim): There is no item i9"), "{refused}");
-        assert!(apply(&script(), &[json!({ "op": "write", "id": "i4", "narration": "A dash — here." })], &[]).unwrap_err().contains("em dash"));
+        assert!(apply(&script(), &[json!({ "op": "write", "id": "i4", "narration": "A dash — here." })], &[], false).unwrap_err().contains("em dash"));
     }
 
     #[test]
     fn removes_words_from_every_clip_and_fixes_spelling() {
         let edits = vec![json!({ "op": "remove_words", "firstWordId": "w4", "lastWordId": "w6" }), json!({ "op": "correct_word", "wordId": "w3", "text": "Smyth." })];
-        let (clips, corrections, _) = apply(&script(), &edits, &[]).unwrap();
+        let (clips, corrections, _) = apply(&script(), &edits, &[], false).unwrap();
         assert!(clips.iter().filter(|clip| !clip.is_cut_in()).all(|clip| clip.end_ms <= 4_000 || clip.start_ms >= 6_500));
         assert_eq!(corrections.get("w3").map(String::as_str), Some("Smyth."));
     }

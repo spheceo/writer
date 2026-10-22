@@ -257,6 +257,18 @@ fn route(
         ("DELETE", ["api", "lessons", lesson]) => json_result(stream, crate::feedback::forget(&data_dir(&app)?, lesson)),
         ("GET", ["api", "scripts", id, "finds"]) => json_result(stream, crate::finds_now(&data_dir(&app)?, id)),
         ("GET", ["api", "scripts", id, "finds", "frames", name]) => send_frames(app, stream, id, name),
+        ("POST", ["api", "scripts", id, "share"]) => json_result(stream, crate::share_now(&data_dir(&app)?, id)),
+        ("PUT", ["api", "reviews", "auto-fix"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let data = data_dir(&app)?;
+            json_result(stream, crate::settings::set_auto_fix(&data, value["on"].as_bool().unwrap_or(true)).map(|_| crate::reviews::counts(&data)))
+        }
+        ("GET", ["api", "reviews"]) => write_json(stream, 200, &crate::reviews::counts(&data_dir(&app)?)),
+        ("GET", ["api", "scripts", id, "review"]) => json_result(stream, crate::review_notes_now(&data_dir(&app)?, id)),
+        ("POST", ["api", "scripts", id, "review", "fix"]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::fix_notes_now(app, &data, (*id).to_string()))
+        }
         ("GET", ["api", "scripts", id, "chat"]) => {
             json_result(stream, store::script_dir(&data_dir(&app)?, id).map(|dir| crate::chat::read(&dir)))
         }

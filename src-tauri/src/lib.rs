@@ -1,4 +1,5 @@
 mod casefiles;
+mod blocks;
 mod chat;
 mod claude;
 mod cloud;
@@ -8,6 +9,7 @@ mod distill;
 mod doctor;
 mod drive;
 mod feedback;
+mod fixing;
 mod formats;
 mod http;
 mod import;
@@ -19,6 +21,7 @@ mod pages;
 mod proc;
 mod research;
 mod reuse;
+mod reviews;
 mod scout;
 mod revise;
 mod settings;
@@ -565,17 +568,24 @@ fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::K
 /// Sonnet revises a built footage script with targeted edits, as Repack's
 /// chat editor does. Runs on a job's thread; the page follows it as a build.
 pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Focus) -> Result<(String, f64), String> {
+    revise_with(app, id, request, request, focus, false)
+}
+
+/// One revision: `request` goes to Claude, `said` into the chat as the
+/// producer's. `direct` (a fix from a review) writes saved narration
+/// straight in rather than proposing it.
+pub fn revise_with(app: &AppHandle, id: &str, request: &str, said: &str, focus: &revise::Focus, direct: bool) -> Result<(String, f64), String> {
     let data = data_dir(app)?;
     let dir = store::script_dir(&data, id)?;
     let script = store::read(&dir)?;
     if script.commentary.is_some() {
-        return Err("A commentary script is rewritten from its sources; use Rewrite.".into());
+        return revise_commentary(&data, &dir, &script, request, said);
     }
     if !script.clips.iter().any(|clip| clip.is_cut_in()) {
         return Err("Build the script first; then ask for changes.".into());
     }
     let earlier = chat::recent(&dir);
-    chat::add(&dir, "producer", request, None, false);
+    chat::add(&dir, "producer", said, None, false);
     let script = if script.parts.iter().any(|part| part.reuse.is_some() && part.highlights.is_none()) {
         jobs::stage(id, "Picking the reused cases' moments");
         let _ = reuse::pick_missing(&dir);
@@ -585,7 +595,7 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
     };
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     let research = casefiles::with_documents(&dir, research::load(&dir).unwrap_or_default());
-    let done = revise::revise(&script, request, focus, &earlier, Some(&research), &peaks);
+    let done = revise::revise(&script, request, focus, &earlier, Some(&research), &peaks, direct);
     let done = match done {
         Ok(done) => done,
         Err(error) => {
@@ -616,6 +626,38 @@ pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Foc
     store::write(&dir, &now)?;
     versions::keep(&dir, "claude", &before, &now);
     chat::add(&dir, "editor", &done.answer, Some(done.cost_usd), false);
+    Ok((done.answer, done.cost_usd))
+}
+
+/// A change to a written commentary script: Opus edits the paragraphs the
+/// request is about and nothing else, written straight in (undo and the
+/// versions bring back what was there).
+pub fn revise_commentary(data: &Path, dir: &Path, script: &model::Script, request: &str, said: &str) -> Result<(String, f64), String> {
+    // Edits name paragraphs by ID: a script never shared gets them now.
+    let mut script = script.clone();
+    if script.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()).is_some_and(|draft| draft.ensure_ids()) {
+        store::write(dir, &script)?;
+    }
+    let script = &script;
+    chat::add(dir, "producer", said, None, false);
+    let done = commentary::revise(dir, script, request, &feedback::lessons_text(data)).inspect_err(|error| chat::add(dir, "editor", error, None, true))?;
+    let mut now = store::read(dir)?;
+    if now.revision != script.revision {
+        let error = "The script changed while Claude was editing it, so nothing was applied. Ask again.".to_string();
+        chat::add(dir, "editor", &error, None, true);
+        return Err(error);
+    }
+    if now.commentary.as_ref().and_then(|commentary| commentary.draft.as_ref()) != Some(&done.draft) {
+        let before = now.clone();
+        if let Some(commentary) = now.commentary.as_mut() {
+            commentary.draft = Some(done.draft);
+        }
+        now.revision += 1;
+        now.updated_at = now_ms();
+        store::write(dir, &now)?;
+        versions::keep(dir, "claude", &before, &now);
+    }
+    chat::add(dir, "editor", &done.answer, Some(done.cost_usd), false);
     Ok((done.answer, done.cost_usd))
 }
 
@@ -752,6 +794,57 @@ fn get_lessons(app: AppHandle) -> Result<Vec<feedback::Lesson>, String> {
 #[tauri::command]
 fn forget_lesson(app: AppHandle, lesson: String) -> Result<Vec<feedback::Lesson>, String> {
     feedback::forget(&data_dir(&app)?, &lesson)
+}
+
+/// Shares the script on a Repack review link, or its next version on the same link.
+pub fn share_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
+    reviews::share(data, id)
+}
+
+#[tauri::command]
+async fn share_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || share_now(&data_dir(&app)?, &id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn review_counts(app: AppHandle) -> Result<reviews::Counts, String> {
+    Ok(reviews::counts(&data_dir(&app)?))
+}
+
+/// A script's review notes, and its blocks as they now read, for the bands.
+pub fn review_notes_now(data: &Path, id: &str) -> Result<serde_json::Value, String> {
+    let script = store::read(&store::script_dir(data, id)?)?;
+    Ok(serde_json::json!({ "notes": reviews::notes_of(data, id), "blocks": blocks::of(&script) }))
+}
+
+#[tauri::command]
+fn review_notes(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    review_notes_now(&data_dir(&app)?, &id)
+}
+
+/// Fixes a script's open notes now, rather than waiting for the quiet.
+pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::BuildStatus, String> {
+    let notes = reviews::open_notes(data, &id);
+    if notes.is_empty() {
+        return Err("No notes are open.".into());
+    }
+    reviews::mark_tried(data, &notes);
+    jobs::start(app, id, jobs::Work::Review { notes })
+}
+
+#[tauri::command]
+fn fix_notes(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    let data = data_dir(&app)?;
+    fix_notes_now(app, &data, id)
+}
+
+#[tauri::command]
+fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
+    let data = data_dir(&app)?;
+    settings::set_auto_fix(&data, on)?;
+    Ok(reviews::counts(&data))
 }
 
 #[tauri::command]
@@ -954,7 +1047,9 @@ pub fn run() {
             http::start(app.handle().clone());
             // Every script in the cloud, pushed and pulled in the background.
             if let Ok(dir) = app.path().app_data_dir() {
-                cloud::start(dir);
+                cloud::start(dir.clone());
+                // Review notes from Repack's links, and fixing them.
+                reviews::start(app.handle().clone(), dir);
             }
             Ok(())
         })
@@ -985,6 +1080,11 @@ pub fn run() {
             start_revision,
             start_reuse_import,
             start_find_clips,
+            share_script,
+            review_counts,
+            review_notes,
+            fix_notes,
+            set_auto_fix,
             set_pacing,
             get_finds,
             pull_feedback,

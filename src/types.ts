@@ -86,6 +86,8 @@ export type Script = {
   suspects?: string[];
   /** A commentary project's sources and written script. */
   commentary?: Commentary;
+  /** Its review link on Repack, once shared. */
+  review?: ReviewLink | null;
   /** The heading as the producer rewrote it, in place of the generated one. */
   heading?: string;
   /** Words the producer respelled, by word ID. */
@@ -296,7 +298,8 @@ export type Cite = {
 
 export type Piece = { kind: "say"; text: string } | ({ kind: "clip" } & Cite);
 
-export type Paragraph = { pieces: Piece[]; note?: string };
+/** `id` is given when the script is first shared, and kept: review notes anchor to it. */
+export type Paragraph = { id?: string; pieces: Piece[]; note?: string };
 
 export type Section = { heading: string; paragraphs: Paragraph[] };
 
@@ -376,3 +379,30 @@ export type TrelloCard = {
 export type TrelloList = "raw" | "comp";
 export type TrelloCards = { list: string; cards: TrelloCard[] };
 export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };
+
+/** A script's review link on Repack (reviews.rs), once shared. */
+export type ReviewLink = { reviewId: string; token: string; url: string; version: number; revision: number; sharedAt: number };
+/** Part of a block's text, in UTF-16 units; empty where words were taken out. */
+export type ReviewRange = { blockId: string; start: number; end: number };
+/** A script as the review page shows it: blocks whose IDs stay as it's edited (blocks.rs). */
+export type ReviewBlock = { id: string; kind: "footage" | "narration" | "montage" | "heading" | "paragraph"; label?: string; text: string };
+export type ReviewAnchor = { kind?: string; blockId?: string; start?: number; end?: number; quote?: string };
+/** A reviewer's note, or a reply to one, with what the fix changed once it's done. */
+export type ReviewNote = {
+  id: string;
+  reviewId: string;
+  scriptId?: string | null;
+  version: number;
+  parentId?: string | null;
+  anchor: ReviewAnchor | null;
+  text: string;
+  author: string;
+  status: "open" | "done";
+  doneInVersion?: number | null;
+  changedRanges: ReviewRange[];
+  fixSummary?: string | null;
+  attempted: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+export type ReviewCounts = { open: Record<string, number>; autoFix: boolean };

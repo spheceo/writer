@@ -15,6 +15,7 @@ import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript
 import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
+import { BandTip, bandsOf, ReviewButton, ReviewDialog, useReview } from "./review";
 import { Icon } from "./ui";
 
 export type View = "video" | "script" | "split";
@@ -147,6 +148,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [notesShown, setNotesShown] = useState(true);
   const [docsOpen, setDocsOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const review = useReview(script.id, script.revision);
+  const bands = useMemo(() => bandsOf(review.notes), [review.notes]);
+  const openNotes = review.notes.filter((note) => !note.parentId && note.status !== "done").length;
   const [copied, setCopied] = useState(false);
   const [started, setStarted] = useState<number | null>(null);
   const [stage, setStage] = useState("");
@@ -430,6 +435,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.id]);
 
+  // A fix Writer starts by itself (review notes) is followed as a build is.
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (watching.current) return;
+      void buildStatus(script.id).then((job) => job?.running && follow(job.startedAt), () => {});
+    }, 10_000);
+    return () => window.clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [script.id]);
+
   const build = async () => {
     setError(null);
     setStage("Starting");
@@ -575,6 +590,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           >
             <Icon name="panel" />
           </button>
+          <ReviewButton script={script} open={openNotes} onClick={() => setReviewOpen(true)} />
           <button type="button" className="secondary sm" disabled={!cueCount} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
             <Icon name="doc" size={14} />
             Google Doc
@@ -609,6 +625,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
             onDecline={(proposal) => void change(() => declineProposal(script.id, proposal.id))}
             onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
+            bands={bands}
           />
         )}
         {view === "split" && (
@@ -882,6 +899,20 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           setVersionsOpen(false);
         }}
       />
+      <ReviewDialog
+        open={reviewOpen}
+        script={script}
+        notes={review.notes}
+        busy={busy}
+        onClose={() => setReviewOpen(false)}
+        onChange={onChange}
+        onJob={(job) => {
+          setReviewOpen(false);
+          follow(job.startedAt);
+        }}
+        onRefresh={review.refresh}
+      />
+      <BandTip notes={review.notes} />
       <DocsDialog
         open={docsOpen}
         script={script}

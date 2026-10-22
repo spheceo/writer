@@ -157,6 +157,38 @@ pub fn sync_soon() {
     }
 }
 
+/// Beyond the sync: one call through the relay to a Convex function it lets
+/// Writer reach besides its own (`reviews:*`, always as Writer, and Edit's
+/// `edit:getMedia`/`edit:putMedia`), for sharing (reviews.rs) and the
+/// handoff to Edit. Answers the function's value, or what it refused with.
+pub fn call(data: &Path, kind: &str, path: &str, args: Value) -> Result<Value, String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let answer = cloud.relay("convex", json!({ "kind": kind, "path": path, "args": args })).map_err(|problem| problem.message)?;
+    if answer["status"] == "success" {
+        return Ok(answer["value"].clone());
+    }
+    let said = answer["errorData"]["message"].as_str().or(answer["errorMessage"].as_str()).unwrap_or("unknown error");
+    // Convex leads with "[Request ID: …] Server Error" and the error's class.
+    let said = said.rsplit("Uncaught ConvexError: ").next().unwrap_or(said);
+    let said = said.rsplit("Uncaught Error: ").next().unwrap_or(said);
+    Err(format!("The cloud refused {path}: {}", said.lines().last().unwrap_or(said).trim()))
+}
+
+/// Puts bytes at a key Writer may write (its own, or Edit's shared prefixes).
+pub fn put_bytes(data: &Path, key: &str, bytes: &[u8], content_type: &str) -> Result<(), String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    let url = cloud.url(key, "PUT").map_err(|problem| problem.message)?;
+    cloud.long.put(&url).set("content-type", content_type).send_bytes(bytes).map_err(|error| transfer_problem(error, key).message)?;
+    Ok(())
+}
+
+/// Who this Mac is, as commits and claims name it.
+pub fn holder_name() -> String {
+    holder()
+}
+
+const OFF: &str = "This copy of Writer has no cloud: it needs its relay token.";
+
 /// Starts syncing in the background, for as long as Writer runs.
 pub fn start(data: PathBuf) {
     std::thread::spawn(move || {

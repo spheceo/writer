@@ -1,4 +1,5 @@
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type Band, showTip } from "./review";
 import { Icon } from "./ui";
 
 /** A sheet as Docs lays out the export, at 96 dpi with one-inch margins. */
@@ -207,6 +208,7 @@ export function Grow({
   className,
   label,
   oneLine,
+  bands,
   onCommit,
 }: {
   value: string;
@@ -216,18 +218,27 @@ export function Grow({
   label?: string;
   /** A single line, such as a heading: Enter commits rather than breaking it. */
   oneLine?: boolean;
+  /** Review bands on the text (review.tsx): drawn under it, their notes shown on hover. */
+  bands?: Band[];
   onCommit: (text: string) => void;
 }) {
   const [text, setText] = useState(value);
   const area = useRef<HTMLTextAreaElement>(null);
+  const mirror = useRef<HTMLDivElement>(null);
+  const banded = !!bands?.length;
   useEffect(() => setText(value), [value]);
   useLayoutEffect(() => {
     const node = area.current;
     if (!node) return;
     node.style.height = "auto";
     node.style.height = `${node.scrollHeight}px`;
-  }, [text]);
-  return (
+    // The bands sit in a copy of the text behind it, laid out as it is.
+    const copy = mirror.current;
+    if (!copy) return;
+    const style = window.getComputedStyle(node);
+    for (const key of MIRRORED) copy.style.setProperty(key, style.getPropertyValue(key));
+  }, [text, banded]);
+  const textarea = (
     <textarea
       ref={area}
       className={className}
@@ -245,6 +256,57 @@ export function Grow({
         }
       }}
       onBlur={() => text !== value && onCommit(text)}
+      onPointerMove={
+        banded
+          ? (event) => {
+              const marks = [...(mirror.current?.querySelectorAll<HTMLElement>("mark") ?? [])];
+              const hit = marks.find((mark) => [...mark.getClientRects()].some((box) => event.clientX >= box.left - 2 && event.clientX <= box.right + 2 && event.clientY >= box.top && event.clientY <= box.bottom));
+              showTip(hit ? { ids: (hit.dataset.ids ?? "").split(" ").filter(Boolean), x: event.clientX, y: event.clientY } : null);
+            }
+          : undefined
+      }
+      onPointerLeave={banded ? () => showTip(null) : undefined}
     />
   );
+  if (!banded || !bands) return textarea;
+  return (
+    <div className="grow-banded" data-band-text>
+      <div className="grow-mirror" ref={mirror} aria-hidden="true">
+        {marked(text, bands)}
+        {"\u200b"}
+      </div>
+      {textarea}
+    </div>
+  );
+}
+
+/** What the copy behind a banded field takes from it, so its lines break alike. */
+const MIRRORED = [
+  "font-family", "font-size", "font-weight", "font-style", "line-height", "letter-spacing", "word-spacing", "text-transform", "text-indent", "text-align",
+  "padding-top", "padding-right", "padding-bottom", "padding-left", "border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "box-sizing",
+];
+
+/** The text cut at every band's edges, each banded stretch a mark carrying its notes. */
+function marked(text: string, bands: Band[]) {
+  const edges = [...new Set([0, text.length, ...bands.flatMap((band) => [band.start, band.end]).map((at) => Math.max(0, Math.min(text.length, at)))])].sort((a, b) => a - b);
+  const out: ReactNode[] = [];
+  edges.forEach((at, index) => {
+    // A cut: where words were taken out.
+    const cuts = bands.filter((band) => band.start === band.end && Math.min(band.start, text.length) === at);
+    if (cuts.length) out.push(<mark key={`cut-${at}`} className="cut" data-ids={cuts.flatMap((band) => band.notes).join(" ")} data-kind={cuts.some((band) => band.kind === "fix") ? "fix" : "open"} />);
+    const next = edges[index + 1];
+    if (next === undefined || next === at) return;
+    const over = bands.filter((band) => band.start < next && band.end > at);
+    const piece = text.slice(at, next);
+    out.push(
+      over.length ? (
+        <mark key={at} data-ids={over.flatMap((band) => band.notes).join(" ")} data-kind={over.some((band) => band.kind === "fix") ? "fix" : "open"}>
+          {piece}
+        </mark>
+      ) : (
+        <span key={at}>{piece}</span>
+      ),
+    );
+  });
+  return out;
 }

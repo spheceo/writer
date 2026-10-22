@@ -16,6 +16,7 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { useReviewCounts } from "./review";
 import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
 
@@ -123,6 +124,7 @@ export function Library({
   onChanged: () => void;
 }) {
   const [creating, setCreating] = useState(false);
+  const reviews = useReviewCounts();
   const [renaming, setRenaming] = useState<Summary | null>(null);
   const [deleting, setDeleting] = useState<Summary | null>(null);
   const [recovering, setRecovering] = useState<Summary | null>(null);
@@ -267,6 +269,11 @@ export function Library({
                           {splitTitle(script.title).name}
                           {splitTitle(script.title).from && <span className="from"> · {splitTitle(script.title).from}</span>}
                         </button>
+                        {(reviews?.open[script.id] ?? 0) > 0 && (
+                          <span className="count-badge" title={`${reviews?.open[script.id]} open review ${reviews?.open[script.id] === 1 ? "note" : "notes"} from its Repack link`}>
+                            {reviews?.open[script.id]}
+                          </span>
+                        )}
                         {script.compilation ? (
                           <span className="script-kind">Compilation</span>
                         ) : script.sourceKind === "commentary" ? (
