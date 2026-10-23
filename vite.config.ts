@@ -1,19 +1,16 @@
-import { hostname } from "node:os";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-const name = hostname().split(".")[0].toLowerCase();
-
-// The page is opened from other machines as http://kenobi:1420. The Rust API
-// stays on localhost; this server proxies it.
+// The dev page, on this Mac only: it proxies the whole API (http.rs), so it
+// never listens on the network. To open it from another Mac on the tailnet,
+// `tailscale serve 1420` here.
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   server: {
     port: 1420,
     strictPort: true,
-    host: "0.0.0.0",
-    allowedHosts: [name, "kenobi", ".ts.net"],
+    host: "127.0.0.1",
     proxy: {
       "/api": {
         target: "http://127.0.0.1:1421",

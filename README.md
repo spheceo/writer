@@ -95,7 +95,7 @@ When an import goes wrong it stops in a state you can act on, as in Repack:
 
 Every import makes a 480p preview (a joined folder's footage is that preview) and is transcribed through the relay.
 
-`just dev` listens on every interface, so the same page is at `http://kenobi:1420/` (or `kenobi.tail863066.ts.net:1420`) from another machine on the tailnet. The Writer window must stay open on this Mac, since it serves the API that Vite proxies; port 1421 itself only listens on localhost. Opening a file from that browser takes a path on this Mac. The file dialog only runs in the Writer window.
+`just dev` listens on this Mac only (127.0.0.1:1420), since the page proxies the whole API. To open it from another machine on the tailnet, run `tailscale serve 1420` here. The Writer window must stay open on this Mac, since it serves the API that Vite proxies; port 1421 itself only listens on localhost, and answers only its own address and the dev page. Opening a file from that browser takes a path on this Mac. The file dialog only runs in the Writer window.
 
 Builds and imports run on this Mac, not in the browser. A build is a background job the page checks every few seconds, so a dropped connection, a sleeping laptop or a reload does not lose it, and the open script is in the URL. Over plain `http` the browser has no Clipboard API; **Copy script** falls back to the older copy command.
 
