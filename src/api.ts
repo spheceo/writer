@@ -361,6 +361,21 @@ export const getActivity = () => (inTauri() ? invoke<Activity[]>("get_activity")
 export type About = { name: string; version: string; tag: string | null; release: boolean };
 export const getAbout = () => (inTauri() ? invoke<About>("about") : http<About>("/api/about"));
 
+/** Who's signed in (account.rs), at accounts.spheceo.com. */
+export type Person = { sub: string; email: string; name: string; image: string | null; perms: string[]; admin: boolean };
+export type AccountStatus = {
+  signedIn: boolean;
+  person: Person | null;
+  signingIn: boolean;
+  error: string | null;
+  /** No old team token to fall back on: signing in is a must. */
+  required: boolean;
+};
+export const accountStatus = () => (inTauri() ? invoke<AccountStatus>("account_status") : http<AccountStatus>("/api/account"));
+export const signIn = () => (inTauri() ? invoke<AccountStatus>("sign_in") : http<AccountStatus>("/api/account/sign-in", json({})));
+export const cancelSignIn = () => (inTauri() ? invoke<AccountStatus>("cancel_sign_in") : http<AccountStatus>("/api/account/cancel", json({})));
+export const signOut = () => (inTauri() ? invoke<AccountStatus>("sign_out") : http<AccountStatus>("/api/account/sign-out", json({})));
+
 /** Self-update (update.rs): this build, the channel, and the build on offer. */
 export type UpdateStatus = {
   name: string;

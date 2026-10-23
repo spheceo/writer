@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { type About, doctor, getAbout, setUpdateChannel, updateStatus, type UpdateStatus } from "./api";
 import type { Check } from "./types";
 import { Dialog } from "./ui";
+import { AccountRow } from "./account";
 
 /**
  * What Writer needs on this Mac. Only Claude Code is the user's to install;
- * the relay (and every key on it) is built into the app, out of sight.
+ * the relay (and every key on it) is built into the app, out of sight, and
+ * answers whoever is signed in.
  */
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [checks, setChecks] = useState<Check[] | null>(null);
@@ -64,6 +66,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       ) : (
         <p className="faint">Checking…</p>
       )}
+      <AccountRow />
       {update && (
         <div className="update-channel">
           <b>Updates</b>

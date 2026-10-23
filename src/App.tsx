@@ -7,6 +7,7 @@ import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
 import { ActivityPanel, LogsDialog } from "./logs";
 import { UpdatePill } from "./update";
+import { SignInDialog } from "./account";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
 type Route = { name: "library" } | { name: "script"; id: string };
@@ -162,6 +163,7 @@ export function App() {
       <ActivityPanel onOpen={(id) => setRoute({ name: "script", id })} onLogs={() => setLogs(true)} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
       <UpdatePill />
+      <SignInDialog />
     </>
   );
 }

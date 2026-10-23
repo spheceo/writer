@@ -1,0 +1,8 @@
+{
+  "name": "writer-relay",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "jose": "^6"
+  }
+}

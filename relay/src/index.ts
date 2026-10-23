@@ -1,3 +1,4 @@
+import { type AuthEnv, allowed, type Caller, identify, limitKey, named, permissionFor } from "./auth";
 import { type CloudEnv, cloud } from "./cloud";
 
 declare const FixedLengthStream: {
@@ -41,14 +42,20 @@ declare const FixedLengthStream: {
  *                         registry and shared keys, for the handoff (cloud.ts)
  *   GET  /health
  *
- * Spend is bounded three ways: a burst limit per IP, a daily byte quota per
- * IP, and a daily byte cap across everyone (atomic reservations). Audio streams
+ * Every route but /health needs a signed-in person's access token, with the
+ * route's permission (auth.ts): transcription `use`, the watcher `ai`, Drive
+ * and Docs `drive`, Trello `trello`, the proxy `proxy`, the cloud `cloud`.
+ * The old team-wide CLIENT_TOKEN still passes, for the transition.
+ *
+ * Spend is bounded three ways: a burst limit per person (per IP for the old
+ * token), a daily byte quota per person (or IP), and a daily byte cap across
+ * everyone (atomic reservations). Audio streams
  * straight through to ElevenLabs and the answer streams straight back, so the
  * Worker never buffers either. Byte quotas are a stand-in for duration; they
  * are not a guaranteed money cap for arbitrary uploaded audio.
  */
 
-export interface Env extends CloudEnv {
+export interface Env extends CloudEnv, AuthEnv {
   ELEVENLABS_API_KEY?: string;
   GOOGLE_DRIVE_CLIENT_ID?: string;
   GOOGLE_DRIVE_CLIENT_SECRET?: string;
@@ -65,8 +72,6 @@ export interface Env extends CloudEnv {
   /** Vercel AI Gateway, for the watcher. */
   AI_GATEWAY_API_KEY?: string;
   WATCH_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
-  /** If set, requests must send `authorization: Bearer <token>`. */
-  CLIENT_TOKEN?: string;
   BUDGET: {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
@@ -92,12 +97,17 @@ export default {
         docs: docsReady(env),
         watch: Boolean(env.AI_GATEWAY_API_KEY),
         trello: Boolean(env.TRELLO_API_KEY && env.TRELLO_TOKEN),
-        cloud: Boolean(env.CLIENT_TOKEN && env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
+        cloud: Boolean(env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
       });
     }
     if (!url.pathname.startsWith("/v1/")) return json(404, { error: "not found" });
-    if (env.CLIENT_TOKEN && request.headers.get("authorization") !== `Bearer ${env.CLIENT_TOKEN}`) {
-      return json(401, { error: "This relay needs a client token." });
+    const who = await identify(request, env);
+    if ("refused" in who) return json(401, { error: who.refused });
+    const caller = who.caller;
+    const permission = permissionFor(url.pathname);
+    console.log(JSON.stringify({ who: named(caller), method: request.method, route: url.pathname, permission }));
+    if (!allowed(caller, permission)) {
+      return json(403, { error: `Your account can't use ${PERMISSION_NAMES[permission]} in Writer yet. Ask an admin at accounts.spheceo.com.`, permission });
     }
     if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env);
     if (url.pathname === "/v1/drive/token") {
@@ -114,7 +124,7 @@ export default {
     }
     if (url.pathname === "/v1/watch") {
       if (request.method !== "POST") return json(405, { error: "POST a clip to watch." });
-      return watch(request, env);
+      return watch(request, env, caller);
     }
     if (url.pathname === "/v1/docs/export") {
       if (request.method !== "POST") return json(405, { error: "POST a script to export." });
@@ -143,8 +153,8 @@ export default {
     }
     if (size > Number(env.MAX_UPLOAD_BYTES)) return json(413, { error: "That recording is too long for one request." });
 
-    const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-    if (!(await env.BURST.limit({ key: ip })).success) {
+    const limit = limitKey(caller, request);
+    if (!(await env.BURST.limit({ key: limit })).success) {
       return json(429, { error: "Too many transcriptions at once; try again in a minute." });
     }
     const language = url.searchParams.get("language");
@@ -155,7 +165,7 @@ export default {
       return json(400, { error: "Invalid keyterms: at most 100, each under 50 characters." });
     }
     const day = new Date().toISOString().slice(0, 10);
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip));
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(limit));
     const client = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
     const budget = env.BUDGET.get(env.BUDGET.idFromName(day));
     const reserved = await budget.fetch(new Request("https://budget/reserve", {
@@ -186,6 +196,16 @@ export default {
       },
     });
   },
+};
+
+/** Each permission as the person reads it, when they lack it. */
+const PERMISSION_NAMES: Record<ReturnType<typeof permissionFor>, string> = {
+  use: "transcription",
+  ai: "the watcher (Gemini)",
+  drive: "Google Drive and Docs",
+  trello: "Trello",
+  proxy: "the download proxy",
+  cloud: "the cloud",
 };
 
 const driveReady = (env: Env) =>
@@ -231,13 +251,12 @@ const WATCH_MODEL = "google/gemini-3.8-flash";
 /** A window of 360p, 3 fps footage is a few MB; base64 adds a third. */
 const MAX_WATCH_BYTES = 24_000_000;
 
-async function watch(request: Request, env: Env): Promise<Response> {
+async function watch(request: Request, env: Env, caller: Caller): Promise<Response> {
   if (!env.AI_GATEWAY_API_KEY) return json(503, { error: "The watcher is not configured on the relay yet." });
   const size = Number(request.headers.get("content-length"));
   if (!Number.isSafeInteger(size) || size <= 0) return json(411, { error: "Content-Length is required." });
   if (size > MAX_WATCH_BYTES) return json(413, { error: "That clip is too large to watch in one request." });
-  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
-  if (!(await env.WATCH_BURST.limit({ key: ip })).success) {
+  if (!(await env.WATCH_BURST.limit({ key: limitKey(caller, request) })).success) {
     return json(429, { error: "Too many clips at once; try again in a minute." });
   }
   const body = (await request.json().catch(() => null)) as {
@@ -583,7 +602,7 @@ export class TranscriptionBudget {
       const ipUsed = (await storage.get<number>(ipKey)) ?? 0;
       const allUsed = (await storage.get<number>("all")) ?? 0;
       if (ipUsed + size > Number(this.env.DAILY_BYTES_PER_IP)) {
-        return json(429, { error: "Today's transcription allowance for this connection is used up; it resets at midnight UTC." });
+        return json(429, { error: "Today's transcription allowance for you is used up; it resets at midnight UTC." });
       }
       if (allUsed + size > Number(this.env.DAILY_BYTES_TOTAL)) {
         return json(429, { error: "Writer's shared transcription budget for today is used up; it resets at midnight UTC." });

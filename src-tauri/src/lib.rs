@@ -1,4 +1,5 @@
 mod casefiles;
+mod account;
 mod activity;
 mod archive;
 mod blocks;
@@ -915,6 +916,33 @@ async fn set_update_channel(app: AppHandle, channel: update::Channel) -> Result<
         .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+fn account_status() -> account::Status {
+    account::status()
+}
+
+#[tauri::command]
+fn sign_in() -> Result<account::Status, String> {
+    account::sign_in()?;
+    Ok(account::status())
+}
+
+#[tauri::command]
+fn cancel_sign_in() -> account::Status {
+    account::cancel();
+    account::status()
+}
+
+#[tauri::command]
+async fn sign_out() -> Result<account::Status, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        account::sign_out();
+        account::status()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
 /// Which Writer this is: its name ("Writer nightly-1"), version and tag.
 #[tauri::command]
 fn about() -> release::About {
@@ -1153,6 +1181,8 @@ pub fn run() {
             http::start(app.handle().clone());
             // Every script in the cloud, pushed and pulled in the background.
             if let Ok(dir) = app.path().app_data_dir() {
+                // Who's signed in, their access token kept fresh for the relay.
+                account::start(app.handle().clone(), dir.clone());
                 cloud::start(dir.clone());
                 // Review notes from Repack's links, and fixing them.
                 reviews::start(app.handle().clone(), dir.clone());
@@ -1202,6 +1232,10 @@ pub fn run() {
             check_update,
             install_update,
             set_update_channel,
+            account_status,
+            sign_in,
+            cancel_sign_in,
+            sign_out,
             get_activity,
             reveal_logs,
             restore_script,

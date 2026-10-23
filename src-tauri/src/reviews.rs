@@ -526,7 +526,7 @@ pub fn start(app: AppHandle, data: PathBuf) {
 
 /// One round of changes; says whether anything changed.
 fn poll(data: &Path) -> Result<bool, String> {
-    if settings::load(data).relay_token.is_empty() {
+    if !crate::account::can_call(&settings::load(data).relay_token) {
         return Ok(false);
     }
     // Approvals, made here or on Repack's page: only reviews:open carries them.

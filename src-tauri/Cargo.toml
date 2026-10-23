@@ -30,6 +30,11 @@ ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 # Local time for the log (localtime_r); already in the lockfile through Tauri.
 libc = "0.2"
+# Signing in (account.rs): the refresh token in the Keychain, PKCE's random
+# verifier and its base64url.
+security-framework = "3"
+getrandom = "0.3"
+base64 = "0.22"
 
 [features]
 default = ["custom-protocol"]

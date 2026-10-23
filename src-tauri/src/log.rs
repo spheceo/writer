@@ -177,6 +177,9 @@ pub fn redact(text: &str) -> String {
                 out.push('?');
                 out.push_str(query);
             }
+        } else if word.starts_with("eyJ") && word.matches('.').count() >= 2 {
+            // A JWT (a signed-in person's access token).
+            out.push_str("[secret]");
         } else if lower.starts_with("sk-") || lower.starts_with("xi-") || (word.len() >= 32 && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') && word.chars().any(|c| c.is_ascii_digit()) && word.chars().any(|c| c.is_ascii_alphabetic()) && !word.contains('-')) {
             out.push_str("[secret]");
         } else {
@@ -242,6 +245,7 @@ mod tests {
         assert_eq!(line, "PUT https://acct.r2.cloudflarestorage.com/bucket/writer/x.json?… failed");
         assert_eq!(redact("authorization: Bearer abc123def done"), "authorization: Bearer [secret] done");
         assert_eq!(redact("key sk-ant-12345 used"), "key [secret] used");
+        assert_eq!(redact("token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwIn0.c2ln sent"), "token [secret] sent");
         assert_eq!(redact("https://youtu.be/abc?t=5 kept"), "https://youtu.be/abc?t=5 kept");
         // A script's ID is no secret.
         assert_eq!(redact("script 505316aa-1b19-482b-9265-6b652da3b764"), "script 505316aa-1b19-482b-9265-6b652da3b764");

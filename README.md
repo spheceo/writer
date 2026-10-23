@@ -97,41 +97,26 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 
 ## Relay
 
-`relay/` holds Writer's keys. Everything but `/health` needs the client token:
+`relay/` holds Writer's keys. Everything but `/health` needs a signed-in person's token, with the route's permission (`relay/src/auth.ts`):
 
 - `POST /v1/transcribe` forwards Opus audio to ElevenLabs Scribe v2 with Edit's parameters, the case's names as `keyterm`s. It caps bursts and a day's audio per IP and across everyone (~20 hours, as Edit's). Byte caps stand in for duration; they are not a hard dollar cap.
 - `GET /v1/drive/token` gives a one-hour access token for Repack's Drive account. The refresh token stays on the relay.
 - `GET /v1/proxy` gives the DataImpulse proxy for YouTube downloads.
 - `POST /v1/watch` sends a few minutes of footage to Gemini 3.8 Flash through the Vercel AI Gateway (the relay picks the model; 40 a minute per IP).
 - `POST /v1/docs/export`, `GET /v1/docs/exports` and `GET /v1/docs/comments` make a script's Docs, list them and read their comments, as the account that owns Repack's script Docs. Only Docs in its "Writer scripts" folder marked with the script are listed or read.
-- `POST /v1/cloud/*` is the cloud, as Edit's relay has it: presigned R2 URLs for keys under `writer/` only, and calls to Convex functions named `writer:` only, with Convex's service token added. It refuses everything when no client token is set (`relay/src/cloud.ts`).
+- `POST /v1/cloud/*` is the cloud, as Edit's relay has it: presigned R2 URLs for keys under `writer/` only, and calls to Convex functions named `writer:` only, with Convex's service token added (`relay/src/cloud.ts`).
+
+**Who may use it.** People sign in to Writer with Google at `accounts.spheceo.com`, where admins add them and tick what they may use. Writer opens the browser on first launch (RFC 8252: a listener on `127.0.0.1:<free port>/callback`, `/app/authorize` with PKCE and `state`, the code traded at `/app/token`; `src-tauri/src/account.rs`), keeps the refresh token in the Keychain (a dev build: `account-dev.json`, 0600, so rebuilds don't ask for Keychain access), renews the hour-long access token quietly, and sends it on every relay call. Setup shows "Signed in as …" and Sign out (`/app/revoke`). The relay checks the token's signature against the site's JWKS (cached ten minutes, refetched on an unknown `kid`), `iss`, `aud: "writer"` and `exp`, then the route's permission: transcription `use`, the watcher `ai`, Drive and Docs `drive`, Trello `trello`, the proxy `proxy`, the cloud `cloud`; admins pass everything. Bursts and the daily audio allowance are counted per person. Each request is logged with who made it (their id and email's first part, never the token). Until everyone is on a build that signs in, the old team token (`CLIENT_TOKEN`, built into older Writers as `WRITER_RELAY_TOKEN`) still passes, with everything, and a signed-out Writer sends it; the sign-in window has "Not now" while it lasts.
+
+To try it all on one Mac, `relay/test/accounts-stub.ts` stands in for the accounts site (its own keys; `STUB_PERMS`, `STUB_TTL`, `STUB_DENY`), with `wrangler dev --var ACCOUNTS_URL:http://127.0.0.1:8788` and a dev Writer started with `WRITER_ACCOUNTS_URL=http://127.0.0.1:8788` (debug builds only) and its relay URL set to the local worker.
+
+**Its secrets** live in Infisical, Repack's project, `dev`, folder `/writer-relay`: references to the canonical values at the root (`CONVEX_URL` is `NEXT_PUBLIC_CONVEX_URL`, the Docs client is the Drive client), and `CLIENT_TOKEN`, which has no root value. `just relay-secrets` puts them on the Worker with `wrangler secret put`, through pipes, printing none (`--dry-run` lists them; name keys to put only those). Then:
 
 ```sh
-cd relay
-bunx wrangler deploy
-bunx wrangler secret put CLIENT_TOKEN          # users paste it into Settings
-bunx wrangler secret put ELEVENLABS_API_KEY
-# Repack's, copied from its Infisical (/media, dev) without printing them:
-for k in GOOGLE_DRIVE_CLIENT_ID GOOGLE_DRIVE_CLIENT_SECRET GOOGLE_DRIVE_REFRESH_TOKEN PROXY_URL; do
-  infisical secrets get $k --projectId cdf4a0c5-eca4-4415-af3a-40871af285f3 --path=/media --env=dev --plain \
-    | tr -d '\n' | bunx wrangler secret put $k
-done
-# The cloud: Repack's R2 bucket and Convex deployment (shared with Edit; Writer keeps to writer/):
-for pair in /web:R2_ACCOUNT_ID:R2_ACCOUNT_ID /web:R2_ACCESS_KEY_ID:R2_ACCESS_KEY_ID /web:R2_SECRET_ACCESS_KEY:R2_SECRET_ACCESS_KEY \
-  /web:R2_BUCKET:R2_BUCKET /web:NEXT_PUBLIC_CONVEX_URL:CONVEX_URL /convex:CONVEX_SERVICE_TOKEN:CONVEX_SERVICE_TOKEN; do
-  scope=${pair%%:*}; rest=${pair#*:}   # not "path": in zsh that is PATH
-  infisical secrets get ${rest%%:*} --projectId cdf4a0c5-eca4-4415-af3a-40871af285f3 --path=$scope --env=dev --plain \
-    | tr -d '\n' | bunx wrangler secret put ${rest#*:}
-done
-# The script Docs account (Repack's GOOGLE_DOCS_REFRESH_TOKEN and its client, at /) and the AI Gateway:
-for pair in GOOGLE_DOCS_CLIENT_ID:GOOGLE_DRIVE_CLIENT_ID GOOGLE_DOCS_CLIENT_SECRET:GOOGLE_DRIVE_CLIENT_SECRET \
-  GOOGLE_DOCS_REFRESH_TOKEN:GOOGLE_DOCS_REFRESH_TOKEN AI_GATEWAY_API_KEY:AI_GATEWAY_API_KEY; do
-  infisical secrets get ${pair#*:} --projectId cdf4a0c5-eca4-4415-af3a-40871af285f3 --path=/ --env=dev --plain \
-    | tr -d '\n' | bunx wrangler secret put ${pair%%:*}
-done
+cd relay && bunx wrangler deploy
 ```
 
-Anyone with the client token can read that Drive account for an hour at a time and use the proxy, so treat the token like a password. The app looks for `https://writer-relay.sphe-g-personal.workers.dev` until you change that URL.
+The Drive token and the proxy hand out a working credential (an hour of Repack's Drive account; the DataImpulse login), so `drive` and `proxy` are worth giving with care. The app looks for `https://writer-relay.sphe-g-personal.workers.dev` until you change that URL.
 
 Footage is heard as Edit hears it, one system for both apps (`hearing.rs`, a port of Edit's `transcribe.ts`): a recording up to 90 s in one go; a longer one twice at once, in 40 s pieces (4 s either side) for its words and times, and whole for who speaks, the two lined up by what they say. A joined case is heard recording by recording, from each one's own file (joined cases now keep their recordings). Every request listens for the case's names (`names.rs`, Edit's `names.ts`: Gemini lists the people and places its articles, case files and narration give, each word checked against them, surnames on their own too); case PDFs are read before the footage is heard, so their names count. What's heard is kept as it comes in, so a retry never pays twice; each recording's transcript is `transcript/<recording>/transcript.json` in Edit's format.
 

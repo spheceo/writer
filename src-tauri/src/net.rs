@@ -1,6 +1,7 @@
 //! HTTP, done by Writer itself, so nobody needs curl or a key of their own.
 //! Every secret (ElevenLabs, Repack's Drive account, the DataImpulse proxy)
-//! lives on the relay; Writer only holds the relay's client token.
+//! lives on the relay; Writer sends the signed-in person's access token
+//! (account.rs), or, signed out, the old team token built into it.
 
 use std::fs::File;
 use std::path::Path;
@@ -72,10 +73,9 @@ impl Relay {
 
     fn request(&self, agent: &ureq::Agent, method: &str, path: &str) -> ureq::Request {
         let request = agent.request(method, &format!("{}{path}", self.base));
-        if self.token.is_empty() {
-            request
-        } else {
-            request.set("authorization", &format!("Bearer {}", self.token))
+        match crate::account::bearer(&self.token) {
+            Some(value) => request.set("authorization", &value),
+            None => request,
         }
     }
 
@@ -83,7 +83,7 @@ impl Relay {
         match self.request(&agent(), "GET", path).call() {
             Ok(response) => response.into_json().map_err(|_| "Writer's service answered with something Writer can't read.".into()),
             Err(error) => Err(match Failed::from(error) {
-                Failed::Status(401, _) => "Writer's service turned this copy of Writer away. Get a fresh copy of Writer.".into(),
+                Failed::Status(code @ (401 | 403), body) => crate::account::turned_away(code, &said(&body)),
                 Failed::Status(code, body) => {
                     let said = said(&body);
                     if said.is_empty() { format!("Writer's service answered {code}.") } else { said }
@@ -188,7 +188,7 @@ impl Relay {
 
 fn explain_docs(failed: Failed) -> String {
     match failed {
-        Failed::Status(401, _) => "Writer's service turned this copy of Writer away. Get a fresh copy of Writer.".into(),
+        Failed::Status(code @ (401 | 403), body) => crate::account::turned_away(code, &said(&body)),
         Failed::Status(code, body) => {
             let said = said(&body);
             if said.is_empty() { format!("Google Docs export failed ({code}).") } else { said }

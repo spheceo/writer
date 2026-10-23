@@ -8,11 +8,14 @@ workers_dev = true
 preview_urls = false
 
 [vars]
-# Daily audio per client IP and across everyone, in bytes of 32 kbps Opus
-# (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
+# Where people sign in: the access tokens' issuer, and the home of its JWKS.
+ACCOUNTS_URL = "https://accounts.spheceo.com"
+
+# Daily audio per person (per IP for the old team token) and across everyone,
+# in bytes of 32 kbps Opus (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
 # its words and whole for its voices, so an hour of footage is ~2.2 hours of
 # audio here. A long interview is a few hours.
-DAILY_BYTES_PER_IP = "288000000"  # ~20 hours of audio, ~9 hours of footage
+DAILY_BYTES_PER_IP = "288000000"  # per person: ~20 hours of audio, ~9 hours of footage
 DAILY_BYTES_TOTAL = "288000000"   # ~20 hours, Edit's cap too (~16.6k credits a day at most)
 MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
 
@@ -46,3 +49,8 @@ class_name = "TranscriptionBudget"
 [[migrations]]
 tag = "v1-budget"
 new_sqlite_classes = ["TranscriptionBudget"]
+
+# Who made each request (person id and email's first part, never a token) is
+# logged per request; Workers Logs keeps them (free plan: 200k lines a day).
+[observability]
+enabled = true

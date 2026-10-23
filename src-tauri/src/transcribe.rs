@@ -144,7 +144,7 @@ pub fn explain(code: u16, said: &str) -> String {
         return format!("ElevenLabs has no credit left for this.{detail}");
     }
     match code {
-        401 | 403 => format!("Writer's service turned this copy of Writer away. Get a fresh copy of Writer.{detail}"),
+        401 | 403 => crate::account::turned_away(code, said),
         413 => format!("This audio was too large to send in one piece.{detail}"),
         429 => format!("Today's transcription allowance is used up. It resets at midnight UTC; what was heard is kept.{detail}"),
         500..=599 => format!("Transcription failed ({code}). Retry: what was heard is kept.{detail}"),
@@ -175,6 +175,6 @@ mod tests {
     #[test]
     fn says_what_a_refusal_means() {
         assert!(explain(400, "quota_exceeded").contains("no credit"));
-        assert!(explain(401, "").contains("turned this copy"));
+        assert!(explain(401, "").contains("sign in"));
     }
 }

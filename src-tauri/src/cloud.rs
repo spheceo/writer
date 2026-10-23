@@ -315,11 +315,11 @@ struct Cloud {
 }
 
 impl Cloud {
-    /// The cloud is on whenever this copy of Writer has its relay token.
+    /// The cloud is on whenever Writer can call the relay: signed in, or with the old team token.
     fn new(data: &Path) -> Option<Self> {
         let settings = settings::load(data);
         let base = settings::check_relay(&settings.relay_url).ok()?;
-        if settings.relay_token.is_empty() || settings.relay_token.chars().any(char::is_control) {
+        if !crate::account::can_call(&settings.relay_token) || settings.relay_token.chars().any(char::is_control) {
             return None;
         }
         let quick = ureq::AgentBuilder::new()
@@ -338,15 +338,20 @@ impl Cloud {
     }
 
     fn relay(&self, route: &str, body: Value) -> Done<Value> {
+        let Some(authorization) = crate::account::bearer(&self.token) else {
+            return Err(Problem::said("Sign in to Writer to use the cloud."));
+        };
         let answer = self
             .quick
             .post(&format!("{}/v1/cloud/{route}", self.base))
-            .set("authorization", &format!("Bearer {}", self.token))
+            .set("authorization", &authorization)
             .set("content-type", "application/json")
             .send_json(body);
         match answer {
             Ok(response) => response.into_json().map_err(|_| Problem::said("Writer's service answered with something Writer can't read.")),
-            Err(ureq::Error::Status(401, _)) => Err(Problem::said("Writer's service turned this copy of Writer away. Get a fresh copy of Writer.")),
+            Err(ureq::Error::Status(code @ (401 | 403), response)) => {
+                Err(Problem::said(crate::account::turned_away(code, &crate::net::said(&response.into_string().unwrap_or_default()))))
+            }
             Err(ureq::Error::Status(code, response)) => {
                 let said = crate::net::said(&response.into_string().unwrap_or_default());
                 Err(Problem::said(if said.is_empty() { format!("The cloud answered {code}.") } else { said }))

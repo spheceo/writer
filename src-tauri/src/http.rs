@@ -105,6 +105,16 @@ fn route(
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("GET", ["api", "account"]) => write_json(stream, 200, &crate::account::status()),
+        ("POST", ["api", "account", "sign-in"]) => json_result(stream, crate::account::sign_in().map(|_| crate::account::status())),
+        ("POST", ["api", "account", "cancel"]) => {
+            crate::account::cancel();
+            write_json(stream, 200, &crate::account::status())
+        }
+        ("POST", ["api", "account", "sign-out"]) => {
+            crate::account::sign_out();
+            write_json(stream, 200, &crate::account::status())
+        }
         ("GET", ["api", "update"]) => write_json(stream, 200, &crate::update::status(&data_dir(&app)?)),
         ("POST", ["api", "update", "check"]) => {
             let data = data_dir(&app)?;

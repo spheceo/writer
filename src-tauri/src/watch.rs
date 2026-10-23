@@ -331,7 +331,7 @@ enum Trouble {
 
 fn explain(failed: Failed) -> Trouble {
     match failed {
-        Failed::Status(401 | 403, _) => Trouble::All("Writer's service turned this copy of Writer away".into()),
+        Failed::Status(code @ (401 | 403), body) => Trouble::All(crate::account::turned_away(code, &net::said(&body))),
         Failed::Status(code, body) => {
             let said = net::said(&body);
             let what = if said.is_empty() { format!("the watcher answered {code}") } else { format!("the watcher answered {code}: {said}") };

@@ -4,9 +4,8 @@
  * module). The relay holds the R2 keys and Convex's service token; Writer only
  * ever gets short-lived presigned URLs and the answers of `writer:` functions.
  *
- * Every route is POST JSON and needs `authorization: Bearer <CLIENT_TOKEN>`;
- * with no client token set on the relay, the cloud is refused outright. The
- * bucket is shared with Repack and Edit, so keys must sit under `writer/`.
+ * Every route is POST JSON, from someone with the `cloud` permission (index.ts
+ * checks who's asking before routing here). The bucket is shared with Repack and Edit, so keys must sit under `writer/`.
  *
  *   /v1/cloud/r2/url                {key, method: GET|PUT|HEAD, expires?} → {url}
  *   /v1/cloud/r2/multipart/create   {key, contentType?}                    → {uploadId}
@@ -29,8 +28,6 @@
  */
 
 export interface CloudEnv {
-  /** Writer's client token, which the cloud also requires. */
-  CLIENT_TOKEN?: string;
   R2_ACCOUNT_ID?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
@@ -60,7 +57,6 @@ export const callable = (path: string) => CONVEX_PATH.test(path) || REVIEWS_PATH
 const SHARED_PREFIXES = ["edit/originals/", "edit/analysis/"];
 
 export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<Response> {
-  if (!(await cloudAuthorized(request, env))) return json(401, { error: "This relay needs Writer's client token." });
   if (request.method !== "POST") return json(405, { error: `POST JSON to ${url.pathname}` });
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) return json(413, { error: "Request too large." });
   let body: Record<string, unknown>;
@@ -84,16 +80,6 @@ export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<
     if (error instanceof Upstream) return json(502, { error: error.message });
     throw error;
   }
-}
-
-/** `Bearer <CLIENT_TOKEN>`, compared in constant time; refused when unset. */
-export async function cloudAuthorized(request: Request, env: CloudEnv): Promise<boolean> {
-  if (!env.CLIENT_TOKEN) return false;
-  const sent = request.headers.get("authorization") ?? "";
-  const [a, b] = await Promise.all([sha256(sent), sha256(`Bearer ${env.CLIENT_TOKEN}`)]);
-  let difference = 0;
-  for (let i = 0; i < a.length; i++) difference |= a[i] ^ b[i];
-  return difference === 0;
 }
 
 /** A key Writer may touch: under `writer/`, no empty, `.` or `..` segments, no control characters. */

@@ -7,6 +7,7 @@ dev:
 
 # Typecheck, clip tests, and the Rust tests
 check:
+    bun install --cwd relay --frozen-lockfile --silent
     bun run typecheck
     bun test
     cargo test --manifest-path src-tauri/Cargo.toml
@@ -14,6 +15,10 @@ check:
 # Local relay. The ElevenLabs key is a worker secret, not an env file.
 relay:
     bunx wrangler dev --cwd relay
+
+# Put the relay's secrets on the Worker from Infisical (/writer-relay), printing none
+relay-secrets *args:
+    bun scripts/push-relay-secrets.ts {{args}}
 
 # The app to hand out: ffmpeg and ffprobe inside it, and the relay's address and
 # token built in, so users install only Claude Code and never see the relay.
