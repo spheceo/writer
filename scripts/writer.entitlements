@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Writer under the hardened runtime. It needs no exceptions: it's plain
+     Rust (no JIT, no libraries loaded at run time), the web view's JIT runs in
+     WebKit's own processes, and the programs it starts (ffmpeg and ffprobe
+     beside it, yt-dlp and the Claude CLI) run under their own signatures.
+     Kept so an exception, if one is ever needed, has one place to go. -->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

@@ -5,10 +5,20 @@
 # a library a Mac doesn't ship with.
 set -euo pipefail
 
-case "$(uname -m)" in
-  arm64) triple=aarch64-apple-darwin; arch=arm64 ;;
-  x86_64) triple=x86_64-apple-darwin; arch=amd64 ;;
-  *) echo "Unknown Mac architecture: $(uname -m)" >&2; exit 1 ;;
+# The target to fetch for: this Mac's by default, or the one given (the
+# release workflow builds the Intel app on an Apple Silicon runner).
+triple="${1:-}"
+if [ -z "$triple" ]; then
+  case "$(uname -m)" in
+    arm64) triple=aarch64-apple-darwin ;;
+    x86_64) triple=x86_64-apple-darwin ;;
+    *) echo "Unknown Mac architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+fi
+case "$triple" in
+  aarch64-apple-darwin) arch=arm64 ;;
+  x86_64-apple-darwin) arch=amd64 ;;
+  *) echo "No ffmpeg for $triple" >&2; exit 1 ;;
 esac
 
 out="$(cd "$(dirname "$0")/.." && pwd)/src-tauri/binaries"
@@ -28,6 +38,9 @@ for tool in ffmpeg ffprobe; do
     exit 1
   fi
   install -m 755 "$found" "$out/$tool-$triple"
-  "$out/$tool-$triple" -version | head -1
+  # Only a binary for this Mac can be run to check it.
+  if [ "$(lipo -archs "$out/$tool-$triple" 2>/dev/null)" = "$(uname -m)" ]; then
+    "$out/$tool-$triple" -version | head -1
+  fi
 done
 echo "Saved to $out"

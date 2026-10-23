@@ -105,6 +105,7 @@ fn route(
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("GET", ["api", "about"]) => write_json(stream, 200, &crate::release::about()),
         ("GET", ["api", "activity"]) => write_json(stream, 200, &crate::activity::list()),
         ("POST", ["api", "logs", "reveal"]) => json_result(stream, crate::reveal_logs_now()),
         ("GET", ["api", "progress"]) => write_json(stream, 200, &crate::import::latest_progress()),

@@ -1,0 +1,138 @@
+name: Release
+
+# `just publish` bumps the patch version, tags it and pushes; this builds
+# Writer.app for Apple Silicon and Intel and publishes the GitHub Release once
+# both are up (a draft until then, so updaters never see a half-built one).
+# `just nightly` tags `nightly-<N>`: the same build, published as a
+# pre-release with its number in it (installs on the Nightly channel take it).
+#
+# Run it by hand (Actions → Release → Run workflow) for a test build: what it
+# makes lands as workflow artifacts and nothing is released.
+
+on:
+  push:
+    tags: ["v*", "nightly-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  TAG: ${{ github.ref_name }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GH_REPO: ${{ github.repository }}
+  RELEASE: ${{ github.event_name == 'push' }}
+  NIGHTLY: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'nightly-') }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Every tag, for a nightly's notes (what changed since the build before).
+          fetch-depth: 0
+      - name: Tag matches the version
+        if: env.RELEASE == 'true' && env.NIGHTLY != 'true'
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          conf="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' src-tauri/tauri.conf.json | head -1)"
+          if [ "v$version" != "$TAG" ] || [ "$conf" != "$version" ]; then
+            echo "::error::tag $TAG but Cargo.toml says $version and tauri.conf.json $conf"
+            exit 1
+          fi
+      - name: Create the draft release
+        if: env.RELEASE == 'true' && env.NIGHTLY != 'true'
+        run: gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Writer $TAG" --generate-notes
+      - name: Create the draft nightly
+        if: env.NIGHTLY == 'true'
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 && exit 0
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          previous="$(git tag --list 'nightly-*' 'v*' --sort=-creatordate --merged "$TAG^" | head -1)"
+          {
+            echo "Nightly build of Writer $version: a pre-release. Installs on the Nightly channel (the default) offer it; one click installs it and restarts."
+            echo
+            # The first nightly has nothing before it: its last 60 changes.
+            git log --no-merges --format='- %s' -n 60 ${previous:+$previous..}"$TAG"
+          } > notes.md
+          gh release create "$TAG" --draft --prerelease --title "Writer $TAG" --notes-file notes.md
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both on the Apple Silicon runner; Intel is cross-compiled.
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          workspaces: src-tauri
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # ffmpeg and ffprobe ship beside Writer (Tauri sidecars, scripts/fetch-ffmpeg.sh);
+      # kept between runs so a build doesn't need their host up.
+      - uses: actions/cache@v6
+        with:
+          path: src-tauri/binaries
+          key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/fetch-ffmpeg.sh') }}
+      # Writer.app, the zip installed apps update from, and the disk image (scripts/package-app.sh):
+      # signed with the Developer ID when MACOS_CERTIFICATE is set, notarised when NOTARY_* are too,
+      # ad hoc until then. The build carries its tag as its name (src-tauri/src/release.rs), turns
+      # on self-update, and has the relay's token built in (src-tauri/src/settings.rs).
+      - name: Writer.app and its disk image
+        env:
+          WRITER_BUILD: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          WRITER_RELEASE: ${{ github.event_name == 'push' && '1' || '' }}
+          WRITER_RELAY_TOKEN: ${{ secrets.WRITER_RELAY_TOKEN }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+        run: scripts/package-app.sh "${{ matrix.target }}" dist
+      - name: Check the signature
+        env:
+          NOTARISED: ${{ secrets.NOTARY_KEY != '' && secrets.NOTARY_KEY_ID != '' && secrets.NOTARY_ISSUER != '' }}
+        run: |
+          set -euo pipefail
+          app="$(mktemp -d)"
+          ditto -x -k dist/Writer-${{ matrix.target }}.zip "$app"
+          codesign --verify --deep --strict --verbose=2 "$app/Writer.app"
+          codesign -dv "$app/Writer.app" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|Runtime|Timestamp)' || true
+          # Notarised: Gatekeeper accepts it and the ticket is stapled.
+          if [ "$NOTARISED" = true ]; then
+            spctl -a -vv "$app/Writer.app"
+            xcrun stapler validate dist/Writer-*.dmg
+          fi
+      - name: Upload to the release
+        if: env.RELEASE == 'true'
+        run: gh release upload "$TAG" --clobber dist/*
+      - name: Keep as a test build
+        if: env.RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: Writer-${{ matrix.target }}
+          path: dist
+
+  publish:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      # A nightly stays a pre-release: Stable installs read `releases/latest`, which skips it.
+      - name: Publish the release
+        run: |
+          if [ "$NIGHTLY" = true ]; then
+            gh release edit "$TAG" --draft=false
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi

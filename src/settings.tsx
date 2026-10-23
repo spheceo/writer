@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { doctor } from "./api";
+import { type About, doctor, getAbout } from "./api";
 import type { Check } from "./types";
 import { Dialog } from "./ui";
 
@@ -10,6 +10,7 @@ import { Dialog } from "./ui";
 export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const [about, setAbout] = useState<About | null>(null);
 
   const run = () => {
     setBusy(true);
@@ -23,6 +24,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     if (!open) return;
     setChecks(null);
     run();
+    void getAbout().then(setAbout, () => {});
   }, [open]);
 
   const broken = checks?.filter((check) => !check.ok).length ?? 0;
@@ -38,6 +40,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           {checks && (
             <span className={broken ? "bad" : "ok"}>{broken ? `${broken} to fix` : "All set"}</span>
           )}
+          {about && <span className="faint" title={about.release ? "Built by the release workflow" : "A dev build: it never updates itself"}>{about.name}</span>}
           <span className="spacer" />
           <button type="button" className="ghost" disabled={busy} onClick={run}>
             {busy ? "Checking…" : "Check again"}

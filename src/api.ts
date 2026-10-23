@@ -356,3 +356,7 @@ export const revealLogs = () => (inTauri() ? invoke<void>("reveal_logs") : http<
 export type Activity = { key: string; script: string | null; what: string; title: string; step: string; done: number; total: number; unit: "count" | "bytes" | "percent"; started: number };
 
 export const getActivity = () => (inTauri() ? invoke<Activity[]>("get_activity") : http<Activity[]>("/api/activity"));
+
+/** Which Writer this is: "Writer nightly-1", "Writer v0.0.0", or a dev build. */
+export type About = { name: string; version: string; tag: string | null; release: boolean };
+export const getAbout = () => (inTauri() ? invoke<About>("about") : http<About>("/api/about"));

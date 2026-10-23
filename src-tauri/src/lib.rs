@@ -26,6 +26,7 @@ mod model;
 mod pages;
 mod proc;
 mod research;
+mod release;
 mod reuse;
 mod reviews;
 mod scout;
@@ -883,6 +884,12 @@ fn restore_script(app: AppHandle, id: String) -> Result<jobs::BuildStatus, Strin
     restore_now(app, &data, &id)
 }
 
+/// Which Writer this is: its name ("Writer nightly-1"), version and tag.
+#[tauri::command]
+fn about() -> release::About {
+    release::about()
+}
+
 /// The log's lines after `since` (ms), for the Logs window, and where the file is.
 #[tauri::command]
 fn get_logs(since: i64) -> serde_json::Value {
@@ -1101,7 +1108,7 @@ pub fn run() {
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
                 log::init(&dir);
-                log::info("app", format!("Writer {} started", env!("CARGO_PKG_VERSION")));
+                log::info("app", format!("{} started", release::name()));
                 let _ = std::fs::create_dir_all(dir.join("scripts"));
                 store::mark_interrupted(&dir);
                 tools::init(&dir);
@@ -1157,6 +1164,7 @@ pub fn run() {
             set_auto_fix,
             approve_review,
             get_logs,
+            about,
             get_activity,
             reveal_logs,
             restore_script,
