@@ -213,7 +213,7 @@ pub(crate) fn ask_opus(system: &str, schema: &str, prompt: &str, resume: Option<
 
 /// Whether asking again could help.
 #[derive(Debug, PartialEq)]
-enum Trouble {
+pub(crate) enum Trouble {
     Again(String),
     Stop(String),
 }
@@ -253,6 +253,37 @@ pub(crate) fn reading_turn(model: &str, system: &str, schema: &Value, prompt: &s
     patiently(|| ask(model, system, &schema.to_string(), prompt, None, Some(dir)))
 }
 
+/// A reply that stopped at the model's output limit before it was complete.
+pub(crate) const CUT_OFF: &str = "Claude's reply was cut off at its output limit before the plan was complete. Nothing was saved. Build again; if it keeps happening, the script may be too long to write in one go.";
+
+/// Why a reply stopped, as the result says it, for the log and for a refusal:
+/// the result's subtype (success, error_max_turns, …), the last reply's stop
+/// reason (end_turn, tool_use, max_tokens, refusal) and the output tokens.
+pub(crate) fn why_stopped(value: &Value) -> String {
+    let field = |key: &str| value[key].as_str().unwrap_or("?").to_string();
+    format!(
+        "subtype {}, stop {}, {} turns, {} output tokens",
+        field("subtype"),
+        value["stop_reason"].as_str().or(value["terminal_reason"].as_str()).unwrap_or("?"),
+        value["num_turns"].as_u64().unwrap_or(0),
+        value["usage"]["output_tokens"].as_u64().unwrap_or(0)
+    )
+}
+
+/// What a result means when it carries no answer: cut off, out of turns, refused.
+pub(crate) fn stopped_short(value: &Value) -> Option<Trouble> {
+    if value["stop_reason"] == "max_tokens" {
+        return Some(Trouble::Stop(CUT_OFF.into()));
+    }
+    if value["subtype"] == "error_max_turns" {
+        return Some(Trouble::Stop("Claude used all its turns before the plan was finished. Build again; nothing was changed.".into()));
+    }
+    if value["stop_reason"] == "refusal" {
+        return Some(Trouble::Stop("Claude declined to write this. Nothing was changed.".into()));
+    }
+    None
+}
+
 /// What a Claude Code failure means, said plainly. Nothing is saved to the
 /// script until a plan passes, so every one of these leaves it as it was.
 fn explain(said: &str, status: Option<u64>) -> Trouble {
@@ -266,6 +297,13 @@ fn explain(said: &str, status: Option<u64>) -> Trouble {
     }
     if lower.contains("usage limit") || lower.contains("limit reached") || lower.contains("limit will reset") {
         return Trouble::Stop(format!("Your Claude plan's usage limit is reached: \"{quoted}\" Build again once it resets."));
+    }
+    // A reply cut off at its output limit: what a whole plan in one answer can run into.
+    if lower.contains("max_tokens") || lower.contains("output token") || lower.contains("output limit") || lower.contains("maximum output") {
+        return Trouble::Stop(CUT_OFF.into());
+    }
+    if lower.contains("error_max_turns") || lower.contains("maximum number of turns") || lower.contains("max turns") {
+        return Trouble::Stop("Claude used all its turns before the plan was finished. Build again; nothing was changed.".into());
     }
     if lower.contains("prompt is too long") || lower.contains("context length") || lower.contains("too many tokens") {
         return Trouble::Stop("This transcript is too long for one build.".into());
@@ -353,14 +391,21 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
     })?;
     if value["is_error"].as_bool() == Some(true) {
         let said = value["result"].as_str().unwrap_or("Claude stopped with an error.");
-        crate::log::error("agent", format!("{asked}: stopped with an error after {}: {}", crate::log::since_start(began), clip_text(said, 300)));
-        return Err(explain(said, value["api_error_status"].as_u64()));
+        crate::log::error("agent", format!("{asked}: stopped with an error after {} ({}): {}", crate::log::since_start(began), why_stopped(&value), clip_text(said, 300)));
+        return Err(stopped_short(&value).unwrap_or_else(|| explain(said, value["api_error_status"].as_u64())));
     }
-    crate::log::info("agent", format!("{asked}: answered in {} (${:.2} at API prices)", crate::log::since_start(began), value["total_cost_usd"].as_f64().unwrap_or(0.0)));
+    crate::log::info("agent", format!("{asked}: answered in {} (${:.2} at API prices; {})", crate::log::since_start(began), value["total_cost_usd"].as_f64().unwrap_or(0.0), why_stopped(&value)));
     let plan = match &value["structured_output"] {
         Value::Object(_) => Some(value["structured_output"].clone()),
         _ => value["result"].as_str().and_then(extract_json).filter(|plan| plan.is_object()),
     };
+    // No answer because the reply was cut off (or turns ran out): say that, not "no plan".
+    if plan.is_none() {
+        if let Some(trouble) = stopped_short(&value) {
+            crate::log::warn("agent", format!("{asked}: no answer: {}", why_stopped(&value)));
+            return Err(trouble);
+        }
+    }
     Ok(Turn {
         plan,
         session: value["session_id"].as_str().map(str::to_string),
@@ -1016,7 +1061,18 @@ fn clip_text(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compile, evidence, explain, start_hint, Trouble};
+    use super::{compile, evidence, explain, start_hint, stopped_short, why_stopped, Trouble, CUT_OFF};
+
+    #[test]
+    fn says_why_a_reply_stopped_short() {
+        let cut = serde_json::json!({ "subtype": "success", "stop_reason": "max_tokens", "num_turns": 1, "usage": { "output_tokens": 32000 } });
+        assert_eq!(stopped_short(&cut), Some(Trouble::Stop(CUT_OFF.into())));
+        assert_eq!(why_stopped(&cut), "subtype success, stop max_tokens, 1 turns, 32000 output tokens");
+        let turns = serde_json::json!({ "subtype": "error_max_turns", "stop_reason": "tool_use" });
+        assert!(matches!(stopped_short(&turns), Some(Trouble::Stop(reason)) if reason.contains("turns")));
+        assert_eq!(stopped_short(&serde_json::json!({ "subtype": "success", "stop_reason": "end_turn" })), None);
+        assert_eq!(explain("API Error: response exceeded the 32000 output token maximum", None), Trouble::Stop(CUT_OFF.into()));
+    }
 
     #[test]
     fn says_why_claude_stopped() {
