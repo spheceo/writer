@@ -75,6 +75,11 @@ for program in "$app"/Contents/MacOS/*(.); do
 done
 codesign --force "${runtime[@]}" -s "$identity" --entitlements "$here/writer.entitlements" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
+# writer-agent must start as signed: a Bun that hangs under the hardened runtime
+# (1.4.4 did) would otherwise ship. With no request it says so and exits at once.
+said=$(perl -e 'alarm 30; exec @ARGV' "$app/Contents/MacOS/writer-agent" </dev/null 2>&1 || true)
+[[ "$said" == *"can't read"* ]] || { echo "writer-agent didn't start as signed: ${said:-no answer in 30 s}" >&2; exit 1; }
+echo "==> writer-agent starts as signed"
 
 notarise() {
   xcrun notarytool submit "$1" --key "$work/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait

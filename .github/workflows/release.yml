@@ -76,7 +76,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
           workspaces: src-tauri
+      # Pinned: writer-agent is compiled with this Bun, and one built by Bun 1.4.4
+      # hangs at start under the hardened runtime (1.4.0 runs; package-app.sh checks).
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       # ffmpeg and ffprobe ship beside Writer (Tauri sidecars, scripts/fetch-ffmpeg.sh);
       # kept between runs so a build doesn't need their host up.
