@@ -1066,6 +1066,13 @@ fn reveal_logs() -> Result<(), String> {
 /// nothing; answers the draft, as text too, and what it took.
 #[cfg(debug_assertions)]
 pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value, String> {
+    teach_with(data, id, mode, None, "")
+}
+
+/// A teaching step on a given draft: `apply` carries out `request` on it
+/// (what the last round still missed, fixed directly), as a revision.
+#[cfg(debug_assertions)]
+pub fn teach_with(data: &Path, id: &str, mode: &str, draft: Option<commentary::Draft>, request: &str) -> Result<serde_json::Value, String> {
     const REVIEW: &str = "The team read this script and sent it back with a round of notes. You don't get the notes: review the whole script the way the team would, find everything they would flag, and fix it across the script, the house way (the guide). Keep what they wouldn't flag as it is. Send the complete script. In the report, a short list of what you found and what you changed.";
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
@@ -1074,10 +1081,17 @@ pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value,
     let built = match mode {
         "build" => commentary::build(&dir, &script, "", &lessons)?,
         "review" => {
-            let base = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("That script isn't written yet.")?;
+            let base = draft.clone().or_else(|| script.commentary.as_ref().and_then(|commentary| commentary.draft.clone())).ok_or("That script isn't written yet.")?;
             commentary::write(&dir, &script, &commentary::Writing { base: Some(&base), lessons: &lessons, extra: "", request: REVIEW, pace: false })?
         }
-        _ => return Err("Ask for mode build or review.".into()),
+        "apply" => {
+            let base = draft.or_else(|| script.commentary.as_ref().and_then(|commentary| commentary.draft.clone())).ok_or("That script isn't written yet.")?;
+            if request.trim().is_empty() {
+                return Err("Say what to carry out.".into());
+            }
+            commentary::write(&dir, &script, &commentary::Writing { base: Some(&base), lessons: &lessons, extra: "", request, pace: false })?
+        }
+        _ => return Err("Ask for mode build, review or apply.".into()),
     };
     Ok(serde_json::json!({
         "id": id,
@@ -1088,6 +1102,38 @@ pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value,
         "costUsd": built.cost_usd,
         "seconds": began.elapsed().as_secs(),
     }))
+}
+
+/// Debug builds only: a new commentary script copied from one (its sources
+/// and settings), with the given draft and title, ready to share as a review
+/// of its own. Answers its id.
+#[cfg(debug_assertions)]
+pub fn copy_script_now(data: &Path, id: &str, title: &str, draft: commentary::Draft) -> Result<serde_json::Value, String> {
+    let from = store::script_dir(data, id)?;
+    let mut script = store::read(&from)?;
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let to = store::scripts_root(data).join(&new_id);
+    std::fs::create_dir_all(&to).map_err(|error| error.to_string())?;
+    let sources = from.join("sources");
+    if sources.is_dir() {
+        std::fs::create_dir_all(to.join("sources")).map_err(|error| error.to_string())?;
+        for entry in std::fs::read_dir(&sources).map_err(|error| error.to_string())?.flatten() {
+            std::fs::copy(entry.path(), to.join("sources").join(entry.file_name())).map_err(|error| error.to_string())?;
+        }
+    }
+    script.id = new_id.clone();
+    script.title = title.to_string();
+    script.review = None;
+    script.doc_export = None;
+    script.revision = 1;
+    script.created_at = model::now_ms();
+    script.updated_at = script.created_at;
+    if let Some(commentary) = script.commentary.as_mut() {
+        commentary.draft = Some(draft);
+    }
+    store::write(&to, &script)?;
+    store::library_changed();
+    Ok(serde_json::json!({ "id": new_id }))
 }
 
 /// Debug builds only: builds a script with one engine and saves nothing, for

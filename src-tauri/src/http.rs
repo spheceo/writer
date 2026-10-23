@@ -191,7 +191,14 @@ fn route(
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "teach"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
-            json_result(stream, crate::teach_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["mode"].as_str().unwrap_or("build")))
+            let draft = serde_json::from_value(value["draft"].clone()).ok();
+            json_result(stream, crate::teach_with(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["mode"].as_str().unwrap_or("build"), draft, value["request"].as_str().unwrap_or("")))
+        }
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "copy-script"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let draft = serde_json::from_value(value["draft"].clone()).map_err(|_| "Send the draft to copy in.".to_string())?;
+            json_result(stream, crate::copy_script_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["title"].as_str().unwrap_or("Untitled"), draft))
         }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
