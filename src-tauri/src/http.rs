@@ -122,6 +122,7 @@ fn route(
     }
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("GET", ["api", "library"]) => write_json(stream, 200, &json!({ "version": crate::store::library_version() })),
         ("GET", ["api", "account"]) => write_json(stream, 200, &crate::account::status()),
         ("POST", ["api", "account", "sign-in"]) => json_result(stream, crate::account::sign_in().map(|_| crate::account::status())),
         ("POST", ["api", "account", "cancel"]) => {

@@ -318,6 +318,36 @@ export const setAutoFix = (on: boolean) =>
   inTauri() ? invoke<ReviewCounts>("set_auto_fix", { on }) : http<ReviewCounts>("/api/reviews/auto-fix", { ...json({ on }), method: "PUT" });
 
 /** Calls `then` whenever review notes change (in the app; the dev page asks every half minute). */
+/** Scripts came, went or changed behind the page's back (the cloud, the local
+ * API): Writer says so; a page in a browser asks every few seconds. */
+export function onLibrary(then: () => void): () => void {
+  if (!inTauri()) {
+    let seen: number | null = null;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void http<{ version: number }>("/api/library")
+        .then(({ version }) => {
+          if (seen !== null && version !== seen) then();
+          seen = version;
+        })
+        .catch(() => {});
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }
+  let stop: (() => void) | null = null;
+  let gone = false;
+  void import("@tauri-apps/api/event").then(({ listen }) =>
+    listen("scripts", then).then((unlisten) => {
+      if (gone) unlisten();
+      else stop = unlisten;
+    }),
+  );
+  return () => {
+    gone = true;
+    stop?.();
+  };
+}
+
 export function onReviews(then: () => void): () => void {
   if (!inTauri()) {
     const timer = window.setInterval(then, 30_000);

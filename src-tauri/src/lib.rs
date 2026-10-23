@@ -409,6 +409,7 @@ fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
     let data = data_dir(&app)?;
     store::remove(&data, &id)?;
     cloud::deleted(&data, &id);
+    store::library_changed();
     Ok(())
 }
 
@@ -1246,6 +1247,8 @@ pub fn run() {
             // The dev page on Tailscale talks to this. It stays on localhost;
             // Vite is what listens on the tailnet.
             http::start(app.handle().clone());
+            // The library's list follows scripts that come or go behind its back.
+            store::watch(app.handle().clone());
             // Every script in the cloud, pushed and pulled in the background.
             if let Ok(dir) = app.path().app_data_dir() {
                 // Who's signed in, their access token kept fresh for the relay.

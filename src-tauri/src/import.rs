@@ -273,6 +273,7 @@ fn start(app: &AppHandle, data: &Path, mut script: Script, article: Option<crate
     let dir = store::script_dir(data, &script.id)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     store::write(&dir, &script)?;
+    store::library_changed();
     // The producer's article is the case's research: no search runs.
     if let Some(found) = &article {
         crate::research::keep(&dir, found)?;

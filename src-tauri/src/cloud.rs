@@ -563,6 +563,7 @@ impl Cloud {
             if dir.is_dir() && !changed_here(&dir, known.as_ref()) {
                 crate::log::info("cloud", format!("{}: deleted on another Mac, so here too", crate::log::named(&id, row["title"].as_str().unwrap_or(""))));
                 let _ = fs::remove_dir_all(&dir);
+                store::library_changed();
             }
             ledger.scripts.remove(&id);
             return Ok(());
@@ -606,6 +607,7 @@ impl Cloud {
         // A row committed before the summary's newest field gets committed again, from here.
         let summary = if row["summary"]["kind"].is_string() { SUMMARY_VERSION } else { 0 };
         ledger.scripts.insert(id, Known { rev, body: hash(&body), files, summary });
+        store::library_changed();
         Ok(())
     }
 
@@ -769,7 +771,9 @@ fn keep_copy(data: &Path, dir: &Path) -> Done<()> {
     script.id = id;
     script.title = format!("{} (conflicted copy)", script.title);
     script.updated_at = now_ms();
-    store::write(&copy, &script).map_err(Problem::said)
+    store::write(&copy, &script).map_err(Problem::said)?;
+    store::library_changed();
+    Ok(())
 }
 
 fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {

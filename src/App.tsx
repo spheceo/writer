@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { claudeStatus, getProgress, getScript, listScripts, message } from "./api";
+import { claudeStatus, getProgress, getScript, listScripts, message, onLibrary } from "./api";
 import { CommentaryEditor } from "./commentary-view";
 import { Editor } from "./editor";
 import { Library } from "./library";
@@ -115,6 +115,19 @@ export function App() {
     }, 8000);
     return () => window.clearInterval(timer);
   }, [route, ready]);
+
+  // Scripts that come, go or change behind the list's back (the cloud, the
+  // local API) show up straight away, and the list catches up when the window comes back.
+  useEffect(() => {
+    const stop = onLibrary(refresh);
+    const back = () => !document.hidden && refresh();
+    document.addEventListener("visibilitychange", back);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", back);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // While something imports or Claude is writing, keep the list current. The
   // request that started it may have been dropped on the way.

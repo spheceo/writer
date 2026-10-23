@@ -1,7 +1,33 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use tauri::Emitter;
 
 use crate::model::{now_ms, Script, ScriptDetail, Summary};
+
+/// Goes up whenever a script arrives, goes or changes other than through the
+/// open page (the cloud pulled it, the local API made or deleted it), so the
+/// library's list follows: a `scripts` event to the window, and this count
+/// for a page in a browser (`GET /api/library`).
+static LIBRARY: AtomicU64 = AtomicU64::new(0);
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub fn watch(app: tauri::AppHandle) {
+    let _ = APP.set(app);
+}
+
+pub fn library_changed() {
+    LIBRARY.fetch_add(1, Ordering::SeqCst);
+    if let Some(app) = APP.get() {
+        let _ = app.emit("scripts", ());
+    }
+}
+
+pub fn library_version() -> u64 {
+    LIBRARY.load(Ordering::SeqCst)
+}
 
 pub fn scripts_root(data: &Path) -> PathBuf {
     data.join("scripts")

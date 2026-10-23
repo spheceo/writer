@@ -288,6 +288,7 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
         put(&dir, &mut script, name, role, link, text, false)?;
     }
     store::write(&dir, &script)?;
+    store::library_changed();
     Ok(store::detail(script, &dir))
 }
 
