@@ -7,9 +7,14 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_RELAY: &str = "https://writer-relay.sphe-g-personal.workers.dev";
 
 /// The relay Writer talks to, built into the app, so users never see or
-/// enter it. A settings.json beside the scripts still overrides it, for
-/// development. No token is built in: people sign in (account.rs).
+/// enter it, and the only one a release build sends its person's token to.
+/// A dev build may use a local worker instead (settings.json). No token is
+/// built in: people sign in (account.rs).
 const BUILT_RELAY: Option<&str> = option_env!("WRITER_RELAY_URL");
+
+fn built_relay() -> String {
+    BUILT_RELAY.filter(|url| !url.is_empty()).unwrap_or(DEFAULT_RELAY).trim_end_matches('/').to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -40,7 +45,7 @@ fn on() -> bool {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            relay_url: BUILT_RELAY.filter(|url| !url.is_empty()).unwrap_or(DEFAULT_RELAY).into(),
+            relay_url: built_relay(),
             auto_fix: true,
             engine: Engine::default(),
         }
@@ -57,7 +62,7 @@ pub fn load(data: &Path) -> Settings {
         return built;
     };
     Settings {
-        relay_url: if file.relay_url.trim().is_empty() { built.relay_url } else { file.relay_url },
+        relay_url: check_relay(&file.relay_url).unwrap_or(built.relay_url),
         auto_fix: file.auto_fix,
         engine: file.engine,
     }
@@ -107,21 +112,21 @@ pub fn set_auto_fix(data: &Path, on: bool) -> Result<Settings, String> {
     save(data, settings)
 }
 
+/// The relay to use: the built one, or in a dev build a worker on this Mac.
+/// Anything else would send the person's token to someone else's server.
 pub fn check_relay(url: &str) -> Result<String, String> {
-    let url = url.trim();
-    if url.is_empty() {
-        return Ok(DEFAULT_RELAY.into());
+    let url = url.trim().trim_end_matches('/');
+    if url.is_empty() || url == built_relay() {
+        return Ok(built_relay());
     }
     if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
         return Err("The relay URL is invalid.".into());
     }
-    if !(url.starts_with("https://")
-        || url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost"))
-    {
-        return Err("The relay URL has to be https, or localhost for a local worker.".into());
+    let local = ["http://127.0.0.1:", "http://localhost:"].iter().any(|start| url.strip_prefix(start).is_some_and(|rest| rest.chars().next().is_some_and(|c| c.is_ascii_digit())));
+    if cfg!(debug_assertions) && local {
+        return Ok(url.to_string());
     }
-    Ok(url.trim_end_matches('/').to_string())
+    Err("Writer talks only to its own relay.".into())
 }
 
 #[cfg(test)]
@@ -129,12 +134,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relay_url_rejects_plain_http() {
+    fn only_the_built_relay_or_a_local_worker() {
         assert!(check_relay("http://example.com").is_err());
-        assert_eq!(
-            check_relay("https://writer.example/").unwrap(),
-            "https://writer.example"
-        );
+        assert!(check_relay("https://writer.example/").is_err());
+        assert!(check_relay("http://localhost.evil.example").is_err());
+        assert_eq!(check_relay("").unwrap(), built_relay());
+        assert_eq!(check_relay(&format!("{}/", built_relay())).unwrap(), built_relay());
+        // Tests are a debug build: a local worker is allowed there only.
         assert!(check_relay("http://localhost:8787").is_ok());
     }
 
@@ -145,7 +151,8 @@ mod tests {
         fs::write(path(&data), r#"{"relayUrl":"https://writer.example","relayToken":"old","autoFix":false}"#).unwrap();
         forget_old_token(&data);
         let text = fs::read_to_string(path(&data)).unwrap();
-        assert!(!text.contains("relayToken") && text.contains("https://writer.example") && text.contains("false"), "{text}");
+        // The old file's relay isn't Writer's own, so the built one replaces it.
+        assert!(!text.contains("relayToken") && !text.contains("https://writer.example") && text.contains(&built_relay()) && text.contains("false"), "{text}");
         let _ = fs::remove_dir_all(&data);
     }
 }

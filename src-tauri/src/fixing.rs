@@ -219,7 +219,7 @@ fn fix(app: &AppHandle, id: &str, script: &Script, note: &Note, replies: &[Note]
     let direct = if intent == Intent::Editor {
         editor_note(script, note)
     } else if wanted(note).is_some() {
-        suggested(script, note)
+        carried_out(&dir, script, note)?
     } else if note.action.is_some() {
         acted(&dir, script, note)?
     } else {
@@ -266,7 +266,7 @@ fn fix_group(app: &AppHandle, id: &str, script: &Script, members: &[&Note]) -> R
     let mut out = script.clone();
     let mut done = Vec::new();
     for note in members {
-        match suggested(&out, note) {
+        match carried_out(&dir, &out, note)? {
             Some((next, line)) => {
                 out = next;
                 done.push(line);
@@ -503,6 +503,21 @@ fn suggested(script: &Script, note: &Note) -> Option<(Script, String)> {
     Some((out, format!("Respelled \"{quote}\" as \"{with}\".")))
 }
 
+/// A suggestion carried out as written. On a footage clip's own words the
+/// page allows only deletions: those words are cut from the clip (its start
+/// or end trimmed, or the clip split), as a "cut" action does.
+fn carried_out(dir: &std::path::Path, script: &Script, note: &Note) -> Result<Option<(Script, String)>, String> {
+    let block = note.anchor["blockId"].as_str().unwrap_or("");
+    let footage = script.commentary.is_none() && script.clips.iter().any(|clip| clip.id == block && !clip.is_cut_in());
+    if footage && note.replacement.as_deref().is_some_and(|text| text.trim().is_empty()) {
+        let mut cut = note.clone();
+        cut.action = Some("cut".into());
+        cut.anchor["side"] = serde_json::Value::Null;
+        return acted(dir, script, &cut);
+    }
+    Ok(suggested(script, note))
+}
+
 /// What a suggestion puts in: a suggestion note's replacement ("" deletes),
 /// else the composer's suggested words, when there are some.
 fn wanted(note: &Note) -> Option<String> {
@@ -730,6 +745,22 @@ mod tests {
         assert!(suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 2, "end": 2, "quote": "" }, "replacement": "alone", "context": { "before": "in court", "after": " today" } }))).is_none());
         assert!(note(json!({ "intent": "suggestion", "replacement": "" })).is_suggestion());
         assert!(!note(json!({ "suggestion": "x" })).is_suggestion());
+    }
+
+    #[test]
+    fn a_deletion_on_footage_words_cuts_them_from_the_clip() {
+        let dir = std::env::temp_dir().join(format!("writer-fixing-cut-{}", std::process::id()));
+        // "I'm" is 4..7 in "Hi, I'm Detective Smith.".
+        let (cut, said) = carried_out(&dir, &script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "c1", "start": 4, "end": 7, "quote": "I'm" }, "replacement": "" }))).unwrap().unwrap();
+        let (action, _) = acted(&dir, &script(), &note(json!({ "anchor": { "blockId": "c1", "start": 4, "end": 7, "quote": "I'm" }, "action": "cut" }))).unwrap().unwrap();
+        let spans = |clips: &[crate::model::Clip]| clips.iter().map(|clip| (clip.start_ms, clip.end_ms)).collect::<Vec<_>>();
+        assert_eq!(spans(&cut.clips), spans(&action.clips));
+        assert_eq!(spans(&cut.clips)[..2], [(0, 1_000), (1_500, 3_900)]);
+        assert!(said.starts_with("Cut"));
+        // In a cut-in's narration, a deletion edits the words.
+        let narration = carried_out(&dir, &script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 21, "end": 31, "quote": " all night" }, "replacement": "" }))).unwrap().unwrap();
+        assert_eq!(narration.0.clips[1].narration.as_deref(), Some("He swears he was home."));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
