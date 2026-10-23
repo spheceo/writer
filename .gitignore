@@ -11,3 +11,4 @@ work/
 !.env.example
 .dev.vars
 .dev.vars.*
+/out

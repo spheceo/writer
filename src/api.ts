@@ -360,3 +360,19 @@ export const getActivity = () => (inTauri() ? invoke<Activity[]>("get_activity")
 /** Which Writer this is: "Writer nightly-1", "Writer v0.0.0", or a dev build. */
 export type About = { name: string; version: string; tag: string | null; release: boolean };
 export const getAbout = () => (inTauri() ? invoke<About>("about") : http<About>("/api/about"));
+
+/** Self-update (update.rs): this build, the channel, and the build on offer. */
+export type UpdateStatus = {
+  name: string;
+  channel: "nightly" | "stable";
+  enabled: boolean;
+  offer: { tag: string; size: number } | null;
+  phase: "idle" | "downloading" | "installing" | "restarting";
+  error: string | null;
+  checkedAt: number | null;
+};
+export const updateStatus = () => (inTauri() ? invoke<UpdateStatus>("update_status") : http<UpdateStatus>("/api/update"));
+export const checkUpdate = () => (inTauri() ? invoke<UpdateStatus>("check_update") : http<UpdateStatus>("/api/update/check", json({})));
+export const installUpdate = () => (inTauri() ? invoke<void>("install_update") : http<void>("/api/update/install", json({})));
+export const setUpdateChannel = (channel: "nightly" | "stable") =>
+  inTauri() ? invoke<UpdateStatus>("set_update_channel", { channel }) : http<UpdateStatus>("/api/update/channel", { ...json({ channel }), method: "PUT" });

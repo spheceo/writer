@@ -105,6 +105,20 @@ fn route(
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("GET", ["api", "update"]) => write_json(stream, 200, &crate::update::status(&data_dir(&app)?)),
+        ("POST", ["api", "update", "check"]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::update::check(&data).map(|_| crate::update::status(&data)))
+        }
+        ("POST", ["api", "update", "install"]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::update::install(&app, &data).map(|_| json!({ "ok": true })))
+        }
+        ("PUT", ["api", "update", "channel"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let channel = if value["channel"] == "stable" { crate::update::Channel::Stable } else { crate::update::Channel::Nightly };
+            json_result(stream, crate::update::set_channel(&data_dir(&app)?, channel))
+        }
         ("GET", ["api", "about"]) => write_json(stream, 200, &crate::release::about()),
         ("GET", ["api", "activity"]) => write_json(stream, 200, &crate::activity::list()),
         ("POST", ["api", "logs", "reveal"]) => json_result(stream, crate::reveal_logs_now()),

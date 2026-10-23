@@ -6,6 +6,7 @@ import { Library } from "./library";
 import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
 import { ActivityPanel, LogsDialog } from "./logs";
+import { UpdatePill } from "./update";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
 type Route = { name: "library" } | { name: "script"; id: string };
@@ -160,6 +161,7 @@ export function App() {
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <ActivityPanel onOpen={(id) => setRoute({ name: "script", id })} onLogs={() => setLogs(true)} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
+      <UpdatePill />
     </>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type About, doctor, getAbout } from "./api";
+import { type About, doctor, getAbout, setUpdateChannel, updateStatus, type UpdateStatus } from "./api";
 import type { Check } from "./types";
 import { Dialog } from "./ui";
 
@@ -11,6 +11,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [checks, setChecks] = useState<Check[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [about, setAbout] = useState<About | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
 
   const run = () => {
     setBusy(true);
@@ -25,6 +26,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     setChecks(null);
     run();
     void getAbout().then(setAbout, () => {});
+    void updateStatus().then(setUpdate, () => {});
   }, [open]);
 
   const broken = checks?.filter((check) => !check.ok).length ?? 0;
@@ -61,6 +63,23 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         </ul>
       ) : (
         <p className="faint">Checking…</p>
+      )}
+      {update && (
+        <div className="update-channel">
+          <b>Updates</b>
+          <select
+            value={update.channel}
+            disabled={!update.enabled}
+            aria-label="Update channel"
+            onChange={(event) => void setUpdateChannel(event.target.value as "nightly" | "stable").then(setUpdate, () => {})}
+          >
+            <option value="nightly">Nightly: every build as it's made</option>
+            <option value="stable">Stable: releases only</option>
+          </select>
+          <span className="faint">
+            {!update.enabled ? "This is a dev build: it never updates itself." : update.offer ? `${update.offer.tag} is ready to install.` : "Up to date."}
+          </span>
+        </div>
       )}
     </Dialog>
   );

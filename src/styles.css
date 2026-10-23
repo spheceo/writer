@@ -1290,3 +1290,8 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .activity-bar i { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: width 0.4s; }
 .activity-bar[data-unknown] i { width: 30%; animation: activity-slide 1.4s ease-in-out infinite; }
 @keyframes activity-slide { from { left: -30%; } to { left: 100%; } }
+
+/* The update pill: the newer Writer on this install's channel. */
+.update-pill { position: fixed; right: 14px; bottom: 14px; z-index: 41; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; }
+.update-pill button { box-shadow: 0 6px 18px #0008; }
+.update-channel { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; }

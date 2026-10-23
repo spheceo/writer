@@ -37,6 +37,7 @@ mod store;
 mod tidy;
 mod tools;
 mod transcribe;
+mod update;
 mod trello;
 mod versions;
 mod watch;
@@ -884,6 +885,36 @@ fn restore_script(app: AppHandle, id: String) -> Result<jobs::BuildStatus, Strin
     restore_now(app, &data, &id)
 }
 
+#[tauri::command]
+fn update_status(app: AppHandle) -> Result<update::Status, String> {
+    Ok(update::status(&data_dir(&app)?))
+}
+
+#[tauri::command]
+async fn check_update(app: AppHandle) -> Result<update::Status, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data_dir(&app)?;
+        update::check(&data)?;
+        Ok(update::status(&data))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn install_update(app: AppHandle) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || update::install(&app, &data_dir(&app)?))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_update_channel(app: AppHandle, channel: update::Channel) -> Result<update::Status, String> {
+    tauri::async_runtime::spawn_blocking(move || update::set_channel(&data_dir(&app)?, channel))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 /// Which Writer this is: its name ("Writer nightly-1"), version and tag.
 #[tauri::command]
 fn about() -> release::About {
@@ -1126,7 +1157,9 @@ pub fn run() {
                 // Review notes from Repack's links, and fixing them.
                 reviews::start(app.handle().clone(), dir.clone());
                 // Archives heard from Repack, restores, and the footage backfill.
-                archive::start(app.handle().clone(), dir);
+                archive::start(app.handle().clone(), dir.clone());
+                // Self-update, for Writer as downloaded (release builds only).
+                update::start(dir);
             }
             Ok(())
         })
@@ -1165,6 +1198,10 @@ pub fn run() {
             approve_review,
             get_logs,
             about,
+            update_status,
+            check_update,
+            install_update,
+            set_update_channel,
             get_activity,
             reveal_logs,
             restore_script,
