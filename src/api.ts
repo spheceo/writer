@@ -370,8 +370,6 @@ export type AccountStatus = {
   /** While signing in: the page to open, if the browser didn't. */
   signInUrl: string | null;
   error: string | null;
-  /** No old team token to fall back on: signing in is a must. */
-  required: boolean;
 };
 export const accountStatus = () => (inTauri() ? invoke<AccountStatus>("account_status") : http<AccountStatus>("/api/account"));
 export const signIn = () => (inTauri() ? invoke<AccountStatus>("sign_in") : http<AccountStatus>("/api/account/sign-in", json({})));

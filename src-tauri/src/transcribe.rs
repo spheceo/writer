@@ -175,6 +175,6 @@ mod tests {
     #[test]
     fn says_what_a_refusal_means() {
         assert!(explain(400, "quota_exceeded").contains("no credit"));
-        assert!(explain(401, "").contains("sign in"));
+        assert!(explain(401, "").to_lowercase().contains("sign in"));
     }
 }

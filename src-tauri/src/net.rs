@@ -1,7 +1,7 @@
 //! HTTP, done by Writer itself, so nobody needs curl or a key of their own.
 //! Every secret (ElevenLabs, Repack's Drive account, the DataImpulse proxy)
 //! lives on the relay; Writer sends the signed-in person's access token
-//! (account.rs), or, signed out, the old team token built into it.
+//! (account.rs).
 
 use std::fs::File;
 use std::path::Path;
@@ -59,21 +59,16 @@ pub fn said(body: &str) -> String {
 
 pub struct Relay {
     base: String,
-    token: String,
 }
 
 impl Relay {
     pub fn new(settings: &Settings) -> Result<Self, String> {
-        let base = settings::check_relay(&settings.relay_url)?;
-        if settings.relay_token.chars().any(char::is_control) {
-            return Err("This copy of Writer has a broken service token. Get a fresh copy of Writer.".into());
-        }
-        Ok(Self { base, token: settings.relay_token.clone() })
+        Ok(Self { base: settings::check_relay(&settings.relay_url)? })
     }
 
     fn request(&self, agent: &ureq::Agent, method: &str, path: &str) -> ureq::Request {
         let request = agent.request(method, &format!("{}{path}", self.base));
-        match crate::account::bearer(&self.token) {
+        match crate::account::bearer() {
             Some(value) => request.set("authorization", &value),
             None => request,
         }

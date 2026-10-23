@@ -6,18 +6,15 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_RELAY: &str = "https://writer-relay.sphe-g-personal.workers.dev";
 
-/// The relay Writer talks to, built into the app (`just bundle` sets these),
-/// so users never see or enter it. A settings.json beside the scripts still
-/// overrides them, for development.
+/// The relay Writer talks to, built into the app, so users never see or
+/// enter it. A settings.json beside the scripts still overrides it, for
+/// development. No token is built in: people sign in (account.rs).
 const BUILT_RELAY: Option<&str> = option_env!("WRITER_RELAY_URL");
-const BUILT_TOKEN: Option<&str> = option_env!("WRITER_RELAY_TOKEN");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub relay_url: String,
-    #[serde(default)]
-    pub relay_token: String,
     /// Claude fixes new review notes by itself while Writer runs (reviews.rs).
     #[serde(default = "on")]
     pub auto_fix: bool,
@@ -31,7 +28,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             relay_url: BUILT_RELAY.filter(|url| !url.is_empty()).unwrap_or(DEFAULT_RELAY).into(),
-            relay_token: BUILT_TOKEN.unwrap_or("").into(),
             auto_fix: true,
         }
     }
@@ -48,15 +44,22 @@ pub fn load(data: &Path) -> Settings {
     };
     Settings {
         relay_url: if file.relay_url.trim().is_empty() { built.relay_url } else { file.relay_url },
-        relay_token: if file.relay_token.is_empty() { built.relay_token } else { file.relay_token },
         auto_fix: file.auto_fix,
+    }
+}
+
+/// Older Writers kept the retired team token in settings.json: rewrites the
+/// file without it.
+pub fn forget_old_token(data: &Path) {
+    let had = fs::read(path(data)).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok()).is_some_and(|value| value.get("relayToken").is_some());
+    if had {
+        let _ = save(data, load(data));
     }
 }
 
 pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let settings = Settings {
         relay_url: check_relay(&incoming.relay_url)?,
-        relay_token: check_secret("Relay token", &incoming.relay_token, 200)?,
         auto_fix: incoming.auto_fix,
     };
     fs::create_dir_all(data).map_err(|error| error.to_string())?;
@@ -98,17 +101,6 @@ pub fn check_relay(url: &str) -> Result<String, String> {
     Ok(url.trim_end_matches('/').to_string())
 }
 
-fn check_secret(label: &str, value: &str, max: usize) -> Result<String, String> {
-    let value = value.trim();
-    if value.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        return Err(format!("{label} has a space or a line break."));
-    }
-    if value.len() > max {
-        return Err(format!("{label} is too long."));
-    }
-    Ok(value.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +113,16 @@ mod tests {
             "https://writer.example"
         );
         assert!(check_relay("http://localhost:8787").is_ok());
+    }
+
+    #[test]
+    fn forgets_the_retired_token() {
+        let data = std::env::temp_dir().join(format!("writer-settings-{}", std::process::id()));
+        fs::create_dir_all(&data).unwrap();
+        fs::write(path(&data), r#"{"relayUrl":"https://writer.example","relayToken":"old","autoFix":false}"#).unwrap();
+        forget_old_token(&data);
+        let text = fs::read_to_string(path(&data)).unwrap();
+        assert!(!text.contains("relayToken") && text.contains("https://writer.example") && text.contains("false"), "{text}");
+        let _ = fs::remove_dir_all(&data);
     }
 }

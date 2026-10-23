@@ -1182,6 +1182,7 @@ pub fn run() {
             // Every script in the cloud, pushed and pulled in the background.
             if let Ok(dir) = app.path().app_data_dir() {
                 // Who's signed in, their access token kept fresh for the relay.
+                settings::forget_old_token(&dir);
                 account::start(app.handle().clone(), dir.clone());
                 cloud::start(dir.clone());
                 // Review notes from Repack's links, and fixing them.

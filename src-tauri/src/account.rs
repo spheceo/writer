@@ -10,8 +10,7 @@
 //! a dev build, re-signed on every rebuild, would be asked for Keychain access
 //! each time, so it keeps it in `account-dev.json` (0600) instead.
 //!
-//! Until everyone is on a build that signs in, the relay still takes the old
-//! team token built into Writer: signed out, Writer sends that.
+//! Signed out, Writer can't use the relay: it asks the person to sign in.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -101,8 +100,6 @@ pub struct Status {
     /// While signing in: the page to open, if the browser didn't.
     pub sign_in_url: Option<String>,
     pub error: Option<String>,
-    /// Signing in is a must: this copy has no old team token to fall back on.
-    pub required: bool,
 }
 
 pub fn status() -> Status {
@@ -113,12 +110,7 @@ pub fn status() -> Status {
         signing_in: state.signing_in,
         sign_in_url: state.signing_in.then(|| state.url.clone()).flatten(),
         error: state.error.clone(),
-        required: !has_old_token(),
     }
-}
-
-fn has_old_token() -> bool {
-    DATA.get().is_some_and(|data| !crate::settings::load(data).relay_token.is_empty())
 }
 
 fn changed() {
@@ -150,18 +142,15 @@ pub fn start(app: AppHandle, data: PathBuf) {
     });
 }
 
-/// The `Authorization` value for a relay call: the person's access token when
-/// signed in (renewed first if it's about to end), or else the old team token.
-pub fn bearer(old_token: &str) -> Option<String> {
-    if let Some(token) = access_token() {
-        return Some(format!("Bearer {token}"));
-    }
-    (!old_token.is_empty()).then(|| format!("Bearer {old_token}"))
+/// The `Authorization` value for a relay call: the person's access token,
+/// renewed first if it's about to end. None when signed out.
+pub fn bearer() -> Option<String> {
+    access_token().map(|token| format!("Bearer {token}"))
 }
 
-/// Writer can reach the relay at all: signed in, or with the old team token.
-pub fn can_call(old_token: &str) -> bool {
-    lock().kept || !old_token.is_empty()
+/// Writer can reach the relay at all: someone is signed in.
+pub fn can_call() -> bool {
+    lock().kept
 }
 
 fn access_token() -> Option<String> {
@@ -213,7 +202,7 @@ pub fn turned_away(code: u16, said: &str) -> String {
         refused();
         return "Writer's service didn't accept your sign-in. Try again; if it keeps happening, sign in again in Setup.".into();
     }
-    "Writer's service needs you to sign in. Open Setup and sign in.".into()
+    "Sign in to Writer first (Setup → Sign in with Google).".into()
 }
 
 /// Trades the kept refresh token for a new pair. Only `invalid_grant` signs

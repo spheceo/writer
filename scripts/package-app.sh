@@ -7,7 +7,7 @@
 # Writes <out>/Writer-<target>.zip (+ .sha256) and
 # <out>/Writer-<Apple-Silicon|Intel>.dmg. The build's name comes from
 # WRITER_BUILD ("v0.0.0", "nightly-1") and WRITER_RELEASE=1 turns on
-# self-update; WRITER_RELAY_TOKEN is built in (src-tauri/src/settings.rs).
+# self-update. No token is built in: people sign in (src-tauri/src/account.rs).
 #
 # Signing: with MACOS_CERTIFICATE (a Developer ID Application .p12, base64) and
 # MACOS_CERTIFICATE_PASSWORD, every program in the app is signed with it under

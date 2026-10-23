@@ -308,18 +308,17 @@ type Done<T> = Result<T, Problem>;
 
 struct Cloud {
     base: String,
-    token: String,
     holder: String,
     quick: ureq::Agent,
     long: ureq::Agent,
 }
 
 impl Cloud {
-    /// The cloud is on whenever Writer can call the relay: signed in, or with the old team token.
+    /// The cloud is on whenever someone is signed in.
     fn new(data: &Path) -> Option<Self> {
         let settings = settings::load(data);
         let base = settings::check_relay(&settings.relay_url).ok()?;
-        if !crate::account::can_call(&settings.relay_token) || settings.relay_token.chars().any(char::is_control) {
+        if !crate::account::can_call() {
             return None;
         }
         let quick = ureq::AgentBuilder::new()
@@ -334,11 +333,11 @@ impl Cloud {
             .timeout_write(Duration::from_secs(120))
             .user_agent("Writer")
             .build();
-        Some(Self { base, token: settings.relay_token, holder: holder(), quick, long })
+        Some(Self { base, holder: holder(), quick, long })
     }
 
     fn relay(&self, route: &str, body: Value) -> Done<Value> {
-        let Some(authorization) = crate::account::bearer(&self.token) else {
+        let Some(authorization) = crate::account::bearer() else {
             return Err(Problem::said("Sign in to Writer to use the cloud."));
         };
         let answer = self

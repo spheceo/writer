@@ -20,14 +20,11 @@ relay:
 relay-secrets *args:
     bun scripts/push-relay-secrets.ts {{args}}
 
-# The app to hand out: ffmpeg and ffprobe inside it, and the relay's address and
-# token built in, so users install only Claude Code and never see the relay.
-# The token comes from WRITER_RELAY_TOKEN, or this Mac's Writer settings.
+# The app to hand out: ffmpeg and ffprobe inside it, and the relay's address
+# built in, so users install only Claude Code, sign in, and never see the relay.
 bundle:
     test -x "src-tauri/binaries/ffmpeg-$(rustc -vV | sed -n 's/host: //p')" || ./scripts/fetch-ffmpeg.sh
-    WRITER_RELAY_TOKEN="${WRITER_RELAY_TOKEN:-$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/Library/Application Support/com.spheceo.writer/settings.json"))).get("relayToken",""))')}" \
-      && test -n "$WRITER_RELAY_TOKEN" || { echo "Set WRITER_RELAY_TOKEN to the relay's client token." >&2; exit 1; } \
-      && WRITER_RELAY_TOKEN="$WRITER_RELAY_TOKEN" bun run tauri build --config src-tauri/tauri.bundle.conf.json
+    bun run tauri build --config src-tauri/tauri.bundle.conf.json
 
 # Releases go up a patch at a time (v0.0.0, v0.0.1, …); in between, nightlies
 # (nightly-1, nightly-2, …). GitHub Actions (.github/workflows/release.yml)

@@ -101,27 +101,20 @@ export function AccountRow() {
   );
 }
 
-/** At launch, signed out: sign in at accounts.spheceo.com. "Not now" only while the old team token still works. */
+/** Signed out (at launch, or when a sign-in ends): Writer needs someone signed in at accounts.spheceo.com. */
 export function SignInDialog() {
   const [status, setStatus] = useAccount();
-  const [later, setLater] = useState(false);
-  const open = Boolean(status && !status.signedIn && (status.required || !later));
   if (!status) return null;
   return (
     <Dialog
-      open={open}
-      onClose={() => !status.required && setLater(true)}
+      open={!status.signedIn}
+      onClose={() => {}}
       title="Sign in to Writer"
       description="Sign in with the Google account an admin added at accounts.spheceo.com. Your browser opens to do it."
       width={420}
       footer={
         <>
           <span className="spacer" />
-          {!status.required && (
-            <button type="button" className="ghost" onClick={() => setLater(true)}>
-              Not now
-            </button>
-          )}
           <SignInButton status={status} onChange={setStatus} />
         </>
       }

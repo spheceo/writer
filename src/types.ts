@@ -147,7 +147,6 @@ export type ImportProgress = {
 
 export type Settings = {
   relayUrl: string;
-  relayToken: string;
 };
 
 export type ClaudeStatus = {

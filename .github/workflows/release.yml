@@ -87,13 +87,12 @@ jobs:
       # Writer.app, the zip installed apps update from, and the disk image (scripts/package-app.sh),
       # into out/ (dist/ is the web UI's build):
       # signed with the Developer ID when MACOS_CERTIFICATE is set, notarised when NOTARY_* are too,
-      # ad hoc until then. The build carries its tag as its name (src-tauri/src/release.rs), turns
-      # on self-update, and has the relay's token built in (src-tauri/src/settings.rs).
+      # ad hoc until then. The build carries its tag as its name (src-tauri/src/release.rs) and turns
+      # on self-update. No token is built in: people sign in (src-tauri/src/account.rs).
       - name: Writer.app and its disk image
         env:
           WRITER_BUILD: ${{ github.event_name == 'push' && github.ref_name || '' }}
           WRITER_RELEASE: ${{ github.event_name == 'push' && '1' || '' }}
-          WRITER_RELAY_TOKEN: ${{ secrets.WRITER_RELAY_TOKEN }}
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
