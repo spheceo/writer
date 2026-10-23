@@ -14,12 +14,13 @@ on:
     tags: ["v*", "nightly-*"]
   workflow_dispatch:
 
+# Read-only unless a job says otherwise; the token goes only to the steps
+# that call gh, never to installs and builds (they see the signing secrets).
 permissions:
-  contents: write
+  contents: read
 
 env:
   TAG: ${{ github.ref_name }}
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   GH_REPO: ${{ github.repository }}
   RELEASE: ${{ github.event_name == 'push' }}
   NIGHTLY: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'nightly-') }}
@@ -27,8 +28,12 @@ env:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Every tag, for a nightly's notes (what changed since the build before).
           fetch-depth: 0
@@ -67,24 +72,38 @@ jobs:
         # Both on the Apple Silicon runner; Intel is cross-compiled.
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # A tag is released to every installed Writer: never unsigned.
+      - name: Signing is set up
+        if: env.RELEASE == 'true'
+        env:
+          SIGNED: ${{ secrets.MACOS_CERTIFICATE != '' && secrets.MACOS_CERTIFICATE_PASSWORD != '' && secrets.NOTARY_KEY != '' && secrets.NOTARY_KEY_ID != '' && secrets.NOTARY_ISSUER != '' }}
+        run: |
+          if [ "$SIGNED" != true ]; then
+            echo "::error::A release needs MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD and NOTARY_*: installed Writers only take signed, notarised updates."
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           key: ${{ matrix.target }}
           workspaces: src-tauri
       # Pinned: writer-agent is compiled with this Bun, and one built by Bun 1.4.4
       # hangs at start under the hardened runtime (1.4.0 runs; package-app.sh checks).
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       # ffmpeg and ffprobe ship beside Writer (Tauri sidecars, scripts/fetch-ffmpeg.sh);
       # kept between runs so a build doesn't need their host up.
-      - uses: actions/cache@v6
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: src-tauri/binaries
           key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/fetch-ffmpeg.sh') }}
@@ -126,10 +145,12 @@ jobs:
           fi
       - name: Upload to the release
         if: env.RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "$TAG" --clobber out/*
       - name: Keep as a test build
         if: env.RELEASE != 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Writer-${{ matrix.target }}
           path: out
@@ -138,6 +159,10 @@ jobs:
     needs: build
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       # Installed Writers read GitHub's releases (src-tauri/src/update.rs): a draft is invisible to them.
       # A nightly stays a pre-release: Stable installs read `releases/latest`, which skips it.
