@@ -357,11 +357,12 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
     let Some(draft) = draft else { return Err("Writer lost track of the build. Build again; nothing was changed.".into()) };
     crate::log::info("agent", format!("steps build: {} tool calls, {} refused, the biggest {}, {} items in the draft, {}", draft.calls, draft.refused, crate::log::size(draft.biggest_call as u64), draft.items.len(), if draft.done.is_some() { "finished" } else if draft.best.is_some() { "kept off target" } else { "not finished" }));
     let cost = answer.as_ref().map(|answer| answer.cost_usd).unwrap_or(0.0);
+    let stats = json!({ "engine": "sdk", "toolCalls": draft.calls, "refused": draft.refused, "biggestCallBytes": draft.biggest_call, "outputTokens": answer.as_ref().ok().and_then(|answer| answer.result["usage"]["output_tokens"].as_u64()).unwrap_or(0), "turns": answer.as_ref().ok().and_then(|answer| answer.result["num_turns"].as_u64()).unwrap_or(0) });
     if let Some((done, report)) = draft.done {
-        return Ok(Built { report: format!("{report}\n\n{}", claude::cleanup_line(&done)), clips: done.clips, cost_usd: cost });
+        return Ok(Built { report: format!("{report}\n\n{}", claude::cleanup_line(&done)), clips: done.clips, cost_usd: cost, stats: stats.clone() });
     }
     if let Some((done, report, miss)) = draft.best {
-        return Ok(Built { report: format!("{report}\n\n{}\n\n{miss}", claude::cleanup_line(&done)), clips: done.clips, cost_usd: cost });
+        return Ok(Built { report: format!("{report}\n\n{}\n\n{miss}", claude::cleanup_line(&done)), clips: done.clips, cost_usd: cost, stats });
     }
     match answer {
         Err(claude::Trouble::Again(reason) | claude::Trouble::Stop(reason)) => Err(reason),

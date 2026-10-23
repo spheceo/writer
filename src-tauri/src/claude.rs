@@ -23,6 +23,9 @@ pub struct Built {
     pub clips: Vec<Clip>,
     pub report: String,
     pub cost_usd: f64,
+    /// How the build went, for comparing engines: turns or tool calls,
+    /// repairs, the biggest single reply.
+    pub stats: Value,
 }
 
 pub fn status() -> ClaudeStatus {
@@ -165,6 +168,9 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
     let mut turn = ask_patiently(&system, &schema, &prompt, None)?;
     cost += turn.cost_usd;
     let mut repairs = 0;
+    let mut biggest = turn.output_tokens;
+    let mut refusals: Vec<String> = Vec::new();
+    let stats = |repairs: u32, biggest: u64, refusals: &[String]| json!({ "engine": "cli", "turns": repairs + 1, "repairs": repairs, "biggestReplyTokens": biggest, "refusals": refusals });
     // A plan that passed but missed its target (a compilation's pages, a FOIA
     // cut's floor), kept in case a repair does no better, as Repack's build
     // goes on to bring an off-target cut in rather than refuse it.
@@ -176,7 +182,7 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
                     let mut said = report(plan);
                     said.push_str(&format!("\n\n{}", cleanup_line(&done)));
                     let miss = off_target(script, &format, &done);
-                    let built = Built { clips: done.clips, report: said, cost_usd: cost };
+                    let built = Built { clips: done.clips, report: said, cost_usd: cost, stats: stats(repairs, biggest, &refusals) };
                     match miss {
                         None => return Ok(built),
                         Some(miss) => {
@@ -189,9 +195,10 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
             },
             None => "Your answer carried no plan. Send the complete plan as the structured answer.".to_string(),
         };
+        refusals.push(refusal.chars().take(300).collect());
         if repairs == 2 || turn.session.is_none() {
             if let Some(best) = best {
-                return Ok(Built { cost_usd: cost, ..best });
+                return Ok(Built { cost_usd: cost, stats: stats(repairs, biggest, &refusals), ..best });
             }
             return Err(match &turn.plan {
                 Some(_) => format!("Claude's plan was refused again. {}", refusal.trim_start_matches("The app refused that plan: ")),
@@ -201,6 +208,7 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
         repairs += 1;
         turn = ask_patiently(&system, &schema, &refusal, turn.session.as_deref())?;
         cost += turn.cost_usd;
+        biggest = biggest.max(turn.output_tokens);
     }
 }
 
@@ -289,8 +297,24 @@ pub(crate) fn explain_failure(said: &str, status: Option<u64>) -> Trouble {
     explain(said, status)
 }
 
+thread_local! {
+    /// An engine for this thread's questions in place of Setup's (comparing engines, debug builds only).
+    static ENGINE: std::cell::Cell<Option<crate::settings::Engine>> = const { std::cell::Cell::new(None) };
+}
+
+/// Asks on this thread with `engine`, whatever Setup says, for as long as `run` runs.
+pub(crate) fn with_engine<T>(engine: crate::settings::Engine, run: impl FnOnce() -> T) -> T {
+    ENGINE.with(|cell| cell.set(Some(engine)));
+    let out = run();
+    ENGINE.with(|cell| cell.set(None));
+    out
+}
+
 /// Setup's engine: one `claude -p` answer, or the Agent SDK (agent.rs).
 pub(crate) fn engine() -> crate::settings::Engine {
+    if let Some(engine) = ENGINE.with(std::cell::Cell::get) {
+        return engine;
+    }
     crate::account::data_dir().map(|data| crate::settings::load(&data).engine).unwrap_or_default()
 }
 
@@ -334,6 +358,8 @@ pub(crate) struct Turn {
     pub plan: Option<Value>,
     pub session: Option<String>,
     pub cost_usd: f64,
+    /// The reply's output tokens (the whole plan, on a one-answer build).
+    pub output_tokens: u64,
 }
 
 /// One structured answer from a smaller model (Haiku or Sonnet), tools off,
@@ -423,6 +449,7 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
         plan,
         session: value["session_id"].as_str().map(str::to_string),
         cost_usd: value["total_cost_usd"].as_f64().unwrap_or(0.0),
+        output_tokens: value["usage"]["output_tokens"].as_u64().unwrap_or(0),
     })
 }
 
@@ -441,7 +468,8 @@ fn ask_sdk(model: &str, system: &str, schema: &str, prompt: &str, resume: Option
             return Err(trouble);
         }
     }
-    Ok(Turn { plan, session: answer.session, cost_usd: answer.cost_usd })
+    let output_tokens = answer.result["usage"]["output_tokens"].as_u64().unwrap_or(0);
+    Ok(Turn { plan, session: answer.session, cost_usd: answer.cost_usd, output_tokens })
 }
 
 /// How a cut that passed misses its format's target, if it does: a

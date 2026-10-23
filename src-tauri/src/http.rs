@@ -144,6 +144,13 @@ fn route(
         }
         // Debug builds only: one audio file heard through the relay as Writer
         // calls it, for testing the sign-in without an import.
+        // Debug builds only: one engine's build of a script, saved nowhere (comparing engines).
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "ab-build"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let kind = serde_json::from_value(value["kind"].clone()).ok();
+            json_result(stream, crate::ab_build_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["engine"].as_str().unwrap_or("cli"), kind))
+        }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
         #[cfg(debug_assertions)]

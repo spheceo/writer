@@ -1035,6 +1035,34 @@ fn reveal_logs() -> Result<(), String> {
     reveal_logs_now()
 }
 
+/// Debug builds only: builds a script with one engine and saves nothing, for
+/// comparing them. The speakers and research are made once and kept, so every
+/// build of the script reads the same evidence.
+#[cfg(debug_assertions)]
+pub fn ab_build_now(data: &Path, id: &str, engine: &str, kind: Option<formats::Kind>) -> Result<serde_json::Value, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    if let Some(kind) = kind {
+        script.kind = kind;
+    }
+    if script.speakers.is_empty() && speakers::identify(&mut script).is_ok() {
+        let mut now = store::read(&dir)?;
+        now.speakers = script.speakers.clone();
+        now.suspects = script.suspects.clone();
+        store::write(&dir, &now)?;
+    }
+    let research = research::load(&dir).filter(|found| !found.articles.is_empty() || found.problem.is_none()).unwrap_or_else(|| research::run(&script, &dir));
+    let research = casefiles::with_documents(&dir, research);
+    let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
+    let began = std::time::Instant::now();
+    let built = if engine == "sdk" { steps::build(&script, "", Some(&research), &peaks) } else { claude::with_engine(settings::Engine::Cli, || claude::build(&script, "", Some(&research), &peaks)) };
+    let seconds = began.elapsed().as_secs_f64();
+    Ok(match built {
+        Ok(built) => serde_json::json!({ "ok": true, "engine": engine, "kind": script.kind, "clips": built.clips, "report": built.report, "costUsd": built.cost_usd, "seconds": seconds, "stats": built.stats, "pages": pages::count(&script, &built.clips) }),
+        Err(error) => serde_json::json!({ "ok": false, "engine": engine, "kind": script.kind, "error": error, "seconds": seconds }),
+    })
+}
+
 /// How Writer reaches Claude (Setup): one `claude -p` answer, or the Agent SDK in steps.
 #[tauri::command]
 fn set_engine(app: AppHandle, engine: settings::Engine) -> Result<settings::Settings, String> {
