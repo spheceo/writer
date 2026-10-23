@@ -1,0 +1,11 @@
+{
+  "name": "writer-agent",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.303"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4"
+  }
+}

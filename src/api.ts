@@ -314,6 +314,8 @@ export const approveReview = (id: string, approve: boolean) =>
 export const fixNotes = (id: string) =>
   inTauri() ? invoke<BuildStatus>("fix_notes", { id }) : http<BuildStatus>(`/api/scripts/${id}/review/fix`, json({}));
 
+export const setEngine = (engine: "cli" | "sdk") =>
+  inTauri() ? invoke<Settings>("set_engine", { engine }) : http<Settings>("/api/settings/engine", { ...json({ engine }), method: "PUT" });
 export const setAutoFix = (on: boolean) =>
   inTauri() ? invoke<ReviewCounts>("set_auto_fix", { on }) : http<ReviewCounts>("/api/reviews/auto-fix", { ...json({ on }), method: "PUT" });
 

@@ -156,6 +156,11 @@ pub fn bearer() -> Option<String> {
     access_token().map(|token| format!("Bearer {token}"))
 }
 
+/// Writer's data folder, once the app has started.
+pub fn data_dir() -> Option<PathBuf> {
+    DATA.get().cloned()
+}
+
 /// The signed-in person, as a script records who started it.
 pub fn creator() -> Option<crate::model::Creator> {
     status().person.filter(|person| !person.sub.is_empty()).map(|person| crate::model::Creator { sub: person.sub, name: person.name, email: person.email, picture: person.image })

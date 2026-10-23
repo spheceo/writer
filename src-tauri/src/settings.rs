@@ -18,6 +18,19 @@ pub struct Settings {
     /// Claude fixes new review notes by itself while Writer runs (reviews.rs).
     #[serde(default = "on")]
     pub auto_fix: bool,
+    /// How Writer reaches Claude: `cli` (one `claude -p` answer per question,
+    /// a script's plan in one reply) or `sdk` (the Agent SDK through
+    /// writer-agent, as Edit; a script built in steps with Writer's tools).
+    #[serde(default)]
+    pub engine: Engine,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    #[default]
+    Cli,
+    Sdk,
 }
 
 fn on() -> bool {
@@ -29,6 +42,7 @@ impl Default for Settings {
         Self {
             relay_url: BUILT_RELAY.filter(|url| !url.is_empty()).unwrap_or(DEFAULT_RELAY).into(),
             auto_fix: true,
+            engine: Engine::default(),
         }
     }
 }
@@ -45,6 +59,7 @@ pub fn load(data: &Path) -> Settings {
     Settings {
         relay_url: if file.relay_url.trim().is_empty() { built.relay_url } else { file.relay_url },
         auto_fix: file.auto_fix,
+        engine: file.engine,
     }
 }
 
@@ -61,6 +76,7 @@ pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let settings = Settings {
         relay_url: check_relay(&incoming.relay_url)?,
         auto_fix: incoming.auto_fix,
+        engine: incoming.engine,
     };
     fs::create_dir_all(data).map_err(|error| error.to_string())?;
     let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
@@ -75,6 +91,13 @@ pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let mut out = options.open(&file).map_err(|error| error.to_string())?;
     out.write_all(&bytes).map_err(|error| error.to_string())?;
     Ok(settings)
+}
+
+/// Picks how Writer reaches Claude, keeping the rest.
+pub fn set_engine(data: &Path, engine: Engine) -> Result<Settings, String> {
+    let mut settings = load(data);
+    settings.engine = engine;
+    save(data, settings)
 }
 
 /// Turns Claude's fixing of new review notes on or off, keeping the rest.

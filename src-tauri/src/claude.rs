@@ -78,7 +78,7 @@ const EDITOR_FOOT: &str = r#"Clip edges decide whether a cut feels finished. Sta
 The guides below were written for Repack, where the editor has tools (read_script, write_cut_ins, build_script, curate_assets and others). Here there are none and you need none: the complete transcript is in the message, your answer is the build_script plan. Research found for the case, if any, is in the evidence under RESEARCH: use it for dates, names, places and outcomes the footage doesn't give, and say in the report when a fact you needed was found nowhere.
 The plan: items in timeline order. A clip is {"kind":"clip","firstWordId":"w12","lastWordId":"w40"}, an inclusive range of word IDs from the transcript, first before last. A cut-in is {"kind":"cut-in","narration":"the finished paragraph"}. {shape_rule} The report is for the producer: one to three short sentences, under 80 words, naming any judgment call that changed the usual shape or any shortfall. Never show milliseconds or word IDs in it; give moments in the footage as [m:ss]."#;
 
-fn system_prompt(script: &Script, format: &Format) -> String {
+pub(crate) fn system_prompt(script: &Script, format: &Format) -> String {
     let cases = if format.compilation { crate::model::case_count(&script.parts).max(1) } else { 1 };
     let (shape, length, sequence) = formats::shape_length_sequence(format, cases);
     let shape_rule = if format.compilation {
@@ -284,6 +284,16 @@ pub(crate) fn stopped_short(value: &Value) -> Option<Trouble> {
     None
 }
 
+/// `explain` for the Agent SDK's failures too (agent.rs).
+pub(crate) fn explain_failure(said: &str, status: Option<u64>) -> Trouble {
+    explain(said, status)
+}
+
+/// Setup's engine: one `claude -p` answer, or the Agent SDK (agent.rs).
+pub(crate) fn engine() -> crate::settings::Engine {
+    crate::account::data_dir().map(|data| crate::settings::load(&data).engine).unwrap_or_default()
+}
+
 /// What a Claude Code failure means, said plainly. Nothing is saved to the
 /// script until a plan passes, so every one of these leaves it as it was.
 fn explain(said: &str, status: Option<u64>) -> Trouble {
@@ -334,6 +344,9 @@ pub fn structured(model: &str, system: &str, schema: &Value, prompt: &str) -> Re
 }
 
 fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>, read: Option<&std::path::Path>) -> Result<Turn, Trouble> {
+    if engine() == crate::settings::Engine::Sdk {
+        return ask_sdk(model, system, schema, prompt, resume, read);
+    }
     let read_dir = read.map(|dir| dir.to_string_lossy().into_owned());
     let mut args = vec![
         "-p",
@@ -413,9 +426,27 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
     })
 }
 
+/// One structured answer through the Agent SDK (agent.rs): the same question
+/// and shape as `ask`, the same session for a repair turn.
+fn ask_sdk(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>, read: Option<&std::path::Path>) -> Result<Turn, Trouble> {
+    let schema: Value = serde_json::from_str(schema).map_err(|_| Trouble::Stop("Writer asked Claude in a shape it can't describe. Nothing was changed.".into()))?;
+    let label = format!("Claude {model}{}{}", if resume.is_some() { " (repair turn)" } else { "" }, if read.is_some() { " reading files" } else { "" });
+    let answer = crate::agent::ask(
+        crate::agent::Question { model, system, prompt, schema: Some(&schema), resume, read, tools: None, max_turns: None, timeout: Duration::from_secs(40 * 60), label },
+        &crate::agent::workspace(),
+    )?;
+    let plan = answer.structured.clone().or_else(|| answer.text.as_deref().and_then(extract_json).filter(Value::is_object));
+    if plan.is_none() {
+        if let Some(trouble) = stopped_short(&answer.result) {
+            return Err(trouble);
+        }
+    }
+    Ok(Turn { plan, session: answer.session, cost_usd: answer.cost_usd })
+}
+
 /// How a cut that passed misses its format's target, if it does: a
 /// compilation outside 6 to 7 Letter pages, a FOIA cut under ten minutes.
-fn off_target(script: &Script, format: &Format, done: &Compiled) -> Option<String> {
+pub(crate) fn off_target(script: &Script, format: &Format, done: &Compiled) -> Option<String> {
     if format.compilation {
         let pages = crate::pages::count(script, &done.clips);
         let (least, most) = crate::pages::COMPILATION_PAGES;
@@ -431,7 +462,7 @@ fn off_target(script: &Script, format: &Format, done: &Compiled) -> Option<Strin
 }
 
 /// What the clean-up did, as Repack's build report says it.
-fn cleanup_line(done: &Compiled) -> String {
+pub(crate) fn cleanup_line(done: &Compiled) -> String {
     let cut_ins = done.clips.iter().filter(|clip| clip.is_cut_in()).count();
     let length: u64 = done.clips.iter().map(|clip| clip.end_ms - clip.start_ms).sum();
     let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
@@ -448,7 +479,7 @@ fn cleanup_line(done: &Compiled) -> String {
     line
 }
 
-fn report(plan: &Value) -> String {
+pub(crate) fn report(plan: &Value) -> String {
     clip_text(plan["report"].as_str().unwrap_or(""), 2_000)
 }
 
@@ -739,72 +770,9 @@ pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Comp
     let mut clips = Vec::with_capacity(items.len());
     let mut opened = false;
     for item in items {
-        match kind(item).as_str() {
-            "cut-in" => {
-                let narration = item["narration"].as_str().unwrap_or("").trim();
-                let reuse = reuse_of(item);
-                if let Some(link) = reuse {
-                    if !format.compilation {
-                        return Err("Only a compilation has reused cases.".into());
-                    }
-                    if !script.reuses.iter().any(|known| known.url == link) {
-                        return Err(format!("{link} is not one of this compilation's reused cases. Give a reuse's cut-in the link listed under REUSED CASES."));
-                    }
-                }
-                if narration.is_empty() && reuse.is_none() {
-                    return Err("Write every cut-in's narration in the plan.".into());
-                }
-                if narration.contains('—') {
-                    return Err("Narration never uses an em dash. Rewrite it before saving the plan.".into());
-                }
-                if narration.chars().count() > 6_000 {
-                    return Err("A cut-in holds at most 6,000 characters.".into());
-                }
-                opened = true;
-                clips.push(Clip {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    start_ms: 0,
-                    end_ms: CUT_IN_MS,
-                    kind: Some("cut-in".into()),
-                    narration: (!narration.is_empty()).then(|| narration.to_string()),
-                    reuse: reuse.map(str::to_string),
-                    ..Default::default()
-                });
-            }
-            "clip" => {
-                let first = word_at(&script.words, item["firstWordId"].as_str());
-                let last = word_at(&script.words, item["lastWordId"].as_str());
-                let (Some(first), Some(last)) = (first, last) else {
-                    return Err(format!(
-                        "Invalid clip range {} to {}. Use source word IDs in order.",
-                        item["firstWordId"], item["lastWordId"]
-                    ));
-                };
-                let (a, b) = (&script.words[first], &script.words[last]);
-                if last < first || b.end_ms <= a.start_ms {
-                    return Err(format!("Invalid clip range w{first} to w{last}. Use source word IDs in order."));
-                }
-                let parts = &script.parts;
-                let (lo, hi) = match parts.get(part_at(parts, a.start_ms)) {
-                    Some(part) if parts.len() > 1 => {
-                        if part_at(parts, a.start_ms) != part_at(parts, b.start_ms) {
-                            return Err("A clip cannot cross recording boundaries. Choose a separate word range for each recording.".into());
-                        }
-                        if part.reuse.is_some() && opened {
-                            return Err(format!(
-                                "w{first} to w{last} is a reused case's footage, which only opens the video as intro clips before the first cut-in. Move it into the opening or leave it out."
-                            ));
-                        }
-                        (part.start_ms, part.start_ms + part.duration_ms)
-                    }
-                    _ => (0, script.duration_ms),
-                };
-                let (start_ms, end_ms) = crate::tidy::breathe(&script.words, a.start_ms, b.end_ms, script.duration_ms);
-                let (start_ms, end_ms) = (start_ms.max(lo), end_ms.min(hi.max(b.end_ms)));
-                clips.push(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms, end_ms, ..Default::default() });
-            }
-            other => return Err(format!("Unknown item kind {other:?}.")),
-        }
+        let clip = item_clip(script, &format, item, opened)?;
+        opened |= clip.is_cut_in();
+        clips.push(clip);
     }
 
     // Each cut-in's role, from where it sits, as Repack reads it.
@@ -847,6 +815,83 @@ pub fn compile_with(script: &Script, plan: &Value, peaks: &[f32]) -> Result<Comp
         }
     }
     Ok(clean_up(script, clips, &format, opening, peaks))
+}
+
+/// One plan item as the app takes it: a clip's range checked against the
+/// words and recordings, a cut-in's narration and reused case checked.
+/// `opened` says whether a cut-in already came before it (a reused case's
+/// footage only opens the video). The steps build checks each item with this
+/// as it arrives; `compile_with` checks every item with it.
+pub(crate) fn item_clip(script: &Script, format: &Format, item: &Value, opened: bool) -> Result<Clip, String> {
+    fn reuse_of(item: &Value) -> Option<&str> {
+        item["reuseLink"].as_str().map(str::trim).filter(|link| !link.is_empty())
+    }
+    let kind = item["kind"].as_str().unwrap_or("");
+    match kind {
+        "cut-in" => {
+            let narration = item["narration"].as_str().unwrap_or("").trim();
+            let reuse = reuse_of(item);
+            if let Some(link) = reuse {
+                if !format.compilation {
+                    return Err("Only a compilation has reused cases.".into());
+                }
+                if !script.reuses.iter().any(|known| known.url == link) {
+                    return Err(format!("{link} is not one of this compilation's reused cases. Give a reuse's cut-in the link listed under REUSED CASES."));
+                }
+            }
+            if narration.is_empty() && reuse.is_none() {
+                return Err("Write every cut-in's narration in the plan.".into());
+            }
+            if narration.contains('—') {
+                return Err("Narration never uses an em dash. Rewrite it before saving the plan.".into());
+            }
+            if narration.chars().count() > 6_000 {
+                return Err("A cut-in holds at most 6,000 characters.".into());
+            }
+            Ok(Clip {
+                id: uuid::Uuid::new_v4().to_string(),
+                start_ms: 0,
+                end_ms: CUT_IN_MS,
+                kind: Some("cut-in".into()),
+                narration: (!narration.is_empty()).then(|| narration.to_string()),
+                reuse: reuse.map(str::to_string),
+                ..Default::default()
+            })
+        }
+        "clip" => {
+            let first = word_at(&script.words, item["firstWordId"].as_str());
+            let last = word_at(&script.words, item["lastWordId"].as_str());
+            let (Some(first), Some(last)) = (first, last) else {
+                return Err(format!(
+                    "Invalid clip range {} to {}. Use source word IDs in order.",
+                    item["firstWordId"], item["lastWordId"]
+                ));
+            };
+            let (a, b) = (&script.words[first], &script.words[last]);
+            if last < first || b.end_ms <= a.start_ms {
+                return Err(format!("Invalid clip range w{first} to w{last}. Use source word IDs in order."));
+            }
+            let parts = &script.parts;
+            let (lo, hi) = match parts.get(part_at(parts, a.start_ms)) {
+                Some(part) if parts.len() > 1 => {
+                    if part_at(parts, a.start_ms) != part_at(parts, b.start_ms) {
+                        return Err("A clip cannot cross recording boundaries. Choose a separate word range for each recording.".into());
+                    }
+                    if part.reuse.is_some() && opened {
+                        return Err(format!(
+                            "w{first} to w{last} is a reused case's footage, which only opens the video as intro clips before the first cut-in. Move it into the opening or leave it out."
+                        ));
+                    }
+                    (part.start_ms, part.start_ms + part.duration_ms)
+                }
+                _ => (0, script.duration_ms),
+            };
+            let (start_ms, end_ms) = crate::tidy::breathe(&script.words, a.start_ms, b.end_ms, script.duration_ms);
+            let (start_ms, end_ms) = (start_ms.max(lo), end_ms.min(hi.max(b.end_ms)));
+            Ok(Clip { id: uuid::Uuid::new_v4().to_string(), start_ms, end_ms, ..Default::default() })
+        }
+        other => Err(format!("Unknown item kind {other:?}.")),
+    }
 }
 
 /// Polish the edges, relax a Courtroom cut's second half, then tighten its

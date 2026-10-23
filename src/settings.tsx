@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type About, doctor, getAbout, setUpdateChannel, updateStatus, type UpdateStatus } from "./api";
+import { type About, doctor, getAbout, getSettings, setEngine, setUpdateChannel, updateStatus, type UpdateStatus } from "./api";
 import type { Check } from "./types";
 import { Dialog } from "./ui";
 import { AccountRow } from "./account";
@@ -14,6 +14,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [busy, setBusy] = useState(false);
   const [about, setAbout] = useState<About | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [engine, setEngineShown] = useState<"cli" | "sdk" | null>(null);
 
   const run = () => {
     setBusy(true);
@@ -29,6 +30,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     run();
     void getAbout().then(setAbout, () => {});
     void updateStatus().then(setUpdate, () => {});
+    void getSettings().then((settings) => setEngineShown(settings.engine ?? "cli"), () => {});
   }, [open]);
 
   const broken = checks?.filter((check) => !check.ok).length ?? 0;
@@ -67,6 +69,15 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <p className="faint">Checking…</p>
       )}
       <AccountRow />
+      {engine && (
+        <div className="update-channel">
+          <b>Claude</b>
+          <select value={engine} aria-label="How Writer reaches Claude" onChange={(event) => void setEngine(event.target.value as "cli" | "sdk").then((settings) => setEngineShown(settings.engine ?? "cli"), () => {})}>
+            <option value="cli">One answer (claude -p)</option>
+            <option value="sdk">Agent SDK, building in steps (test)</option>
+          </select>
+        </div>
+      )}
       {update && (
         <div className="update-channel">
           <b>Updates</b>

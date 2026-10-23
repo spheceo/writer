@@ -152,6 +152,8 @@ export type ImportProgress = {
 
 export type Settings = {
   relayUrl: string;
+  /** How Writer reaches Claude: one `claude -p` answer, or the Agent SDK building in steps. */
+  engine?: "cli" | "sdk";
 };
 
 export type ClaudeStatus = {

@@ -2,7 +2,9 @@ mod casefiles;
 mod account;
 mod can;
 mod activity;
+mod agent;
 mod avatar;
+mod steps;
 mod archive;
 mod blocks;
 mod chat;
@@ -522,7 +524,9 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
     chat::add(&dir, "producer", &if note.trim().is_empty() { "Build the script.".to_string() } else { format!("Build the script. {}", note.trim()) }, None, false);
-    let mut built = match claude::build(&script, note, Some(&research), &peaks) {
+    // Setup's engine: the Agent SDK builds in steps; the CLI in one answer.
+    let built = if claude::engine() == settings::Engine::Sdk { steps::build(&script, note, Some(&research), &peaks) } else { claude::build(&script, note, Some(&research), &peaks) };
+    let mut built = match built {
         Ok(built) => built,
         Err(error) => {
             chat::add(&dir, "editor", &error, None, true);
@@ -1031,6 +1035,12 @@ fn reveal_logs() -> Result<(), String> {
     reveal_logs_now()
 }
 
+/// How Writer reaches Claude (Setup): one `claude -p` answer, or the Agent SDK in steps.
+#[tauri::command]
+fn set_engine(app: AppHandle, engine: settings::Engine) -> Result<settings::Settings, String> {
+    settings::set_engine(&data_dir(&app)?, engine)
+}
+
 #[tauri::command]
 fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
     can::require(can::SHARE)?;
@@ -1296,6 +1306,7 @@ pub fn run() {
             review_notes,
             fix_notes,
             set_auto_fix,
+            set_engine,
             approve_review,
             get_logs,
             about,

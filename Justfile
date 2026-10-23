@@ -8,6 +8,8 @@ dev:
 # Typecheck, clip tests, and the Rust tests
 check:
     bun install --cwd relay --frozen-lockfile --silent
+    bun install --cwd sidecar --frozen-lockfile --silent
+    node_modules/.bin/tsc -p sidecar
     bun run typecheck
     bun test
     cargo test --manifest-path src-tauri/Cargo.toml

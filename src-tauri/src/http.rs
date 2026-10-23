@@ -19,7 +19,7 @@ use crate::{
     remove_source, rename_script, save_clips, save_draft, save_settings, source_text, start_build, start_revision, update_source,
 };
 
-const PORT: u16 = 1421;
+pub const PORT: u16 = 1421;
 
 pub fn start(app: AppHandle) {
     thread::spawn(move || {
@@ -112,6 +112,10 @@ fn route(
     range: Option<&str>,
 ) -> Result<(), String> {
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    // Writer's tools for a build in steps (steps.rs), as an MCP server over HTTP.
+    if let ["mcp", token] = segments.as_slice() {
+        return mcp(stream, method, token, body);
+    }
     // A script of a kind this person can't write isn't there for them (can.rs).
     if let ["api", "scripts", id, ..] = segments.as_slice() {
         if !["file", "youtube", "compilation", "drive", "commentary"].contains(id) {
@@ -122,6 +126,11 @@ fn route(
     }
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
+        ("PUT", ["api", "settings", "engine"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let engine = if value["engine"] == "sdk" { crate::settings::Engine::Sdk } else { crate::settings::Engine::Cli };
+            json_result(stream, crate::settings::set_engine(&data_dir(&app)?, engine))
+        }
         ("GET", ["api", "library"]) => write_json(stream, 200, &json!({ "version": crate::store::library_version() })),
         ("GET", ["api", "account"]) => write_json(stream, 200, &crate::account::status()),
         ("POST", ["api", "account", "sign-in"]) => json_result(stream, crate::account::sign_in().map(|_| crate::account::status())),
@@ -416,6 +425,57 @@ fn send_frames(app: AppHandle, stream: &mut TcpStream, id: &str, name: &str) -> 
     write_bytes(stream, 200, &[("content-type", "image/jpeg")], &bytes)
 }
 
+/// Writer's tools for one build in steps, over MCP's HTTP transport: JSON-RPC
+/// requests answered as JSON, notifications accepted, no event stream. Only
+/// the build's own random token reaches its draft.
+fn mcp(stream: &mut TcpStream, method: &str, token: &str, body: &[u8]) -> Result<(), String> {
+    if !crate::steps::exists(token) {
+        return write_json(stream, 404, &json!({ "error": "No build is under way here." }));
+    }
+    if method == "DELETE" {
+        return write_bytes(stream, 200, &[], b"");
+    }
+    if method != "POST" {
+        return write_bytes(stream, 405, &[("allow", "POST, DELETE")], b"");
+    }
+    let request: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let answers: Vec<Value> = match &request {
+        Value::Array(batch) => batch.iter().filter_map(|one| mcp_answer(token, one)).collect(),
+        one => mcp_answer(token, one).into_iter().collect(),
+    };
+    match (request.is_array(), answers.len()) {
+        (_, 0) => write_bytes(stream, 202, &[], b""),
+        (false, _) => write_json(stream, 200, &answers[0]),
+        (true, _) => write_json(stream, 200, &answers),
+    }
+}
+
+/// One JSON-RPC request's answer, or none for a notification.
+fn mcp_answer(token: &str, request: &Value) -> Option<Value> {
+    let id = request.get("id").cloned().filter(|id| !id.is_null());
+    let failure = |code: i64, message: &str| json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } });
+    let result = match request["method"].as_str().unwrap_or("") {
+        "initialize" => json!({
+            "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or("2025-06-18"),
+            "capabilities": { "tools": { "listChanged": false } },
+            "serverInfo": { "name": "writer", "version": crate::release::VERSION },
+        }),
+        "ping" => json!({}),
+        "tools/list" => json!({ "tools": crate::steps::tools() }),
+        "tools/call" => {
+            let name = request["params"]["name"].as_str().unwrap_or("");
+            let args = request["params"]["arguments"].clone();
+            match crate::steps::call(token, name, if args.is_null() { &Value::Null } else { &args }) {
+                Some((text, refused)) => json!({ "content": [{ "type": "text", "text": text }], "isError": refused }),
+                None => return id.is_some().then(|| failure(-32001, "This build has ended.")),
+            }
+        }
+        _ if id.is_none() => return None,
+        other => return Some(failure(-32601, &format!("Writer has no method {other}."))),
+    };
+    id.map(|id| json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+}
+
 /// A query parameter's value, %-escapes and `+` undone.
 fn decode_query(value: &str) -> String {
     let bytes = value.as_bytes();
@@ -463,9 +523,11 @@ fn write_json(stream: &mut TcpStream, status: u16, value: &impl Serialize) -> Re
 fn write_bytes(stream: &mut TcpStream, status: u16, headers: &[(&str, &str)], body: &[u8]) -> Result<(), String> {
     let reason = match status {
         200 => "OK",
+        202 => "Accepted",
         206 => "Partial Content",
         400 => "Bad Request",
         404 => "Not Found",
+        405 => "Method Not Allowed",
         413 => "Payload Too Large",
         416 => "Range Not Satisfiable",
         _ => "Error",

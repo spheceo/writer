@@ -35,6 +35,9 @@ trap 'rm -rf "$work"; if [[ -n "${keychain:-}" ]]; then security list-keychains 
 echo "==> ffmpeg and ffprobe ($target)"
 [[ -x "$root/src-tauri/binaries/ffmpeg-$target" && -x "$root/src-tauri/binaries/ffprobe-$target" ]] || "$root/scripts/fetch-ffmpeg.sh" "$target"
 
+echo "==> writer-agent ($target)"
+"$root/scripts/build-agent.sh" "$target"
+
 echo "==> Writer.app ($target, ${WRITER_BUILD:-dev})"
 (cd "$root" && bunx @tauri-apps/cli@2 build --target "$target" --bundles app --config src-tauri/tauri.bundle.conf.json)
 built="${CARGO_TARGET_DIR:-$root/src-tauri/target}/$target/release/bundle/macos/Writer.app"
@@ -59,10 +62,16 @@ if [[ -n "${MACOS_CERTIFICATE:-}" ]]; then
   [[ -n "$identity" ]] || { echo "no Developer ID Application identity in MACOS_CERTIFICATE" >&2; exit 1; }
   runtime=(--options runtime --timestamp)
 fi
-# Inside out: the bundled programs (ffmpeg, ffprobe beside Writer), then the app (its executable and seal).
+# Inside out: the bundled programs (ffmpeg, ffprobe and writer-agent beside
+# Writer), then the app (its executable and seal). writer-agent is a Bun
+# program: under the hardened runtime its JavaScript engine needs the JIT.
 for program in "$app"/Contents/MacOS/*(.); do
   [[ "${program:t}" == Writer ]] && continue
-  codesign --force "${runtime[@]}" -s "$identity" "$program"
+  if [[ "${program:t}" == writer-agent ]]; then
+    codesign --force "${runtime[@]}" -s "$identity" --entitlements "$here/writer-agent.entitlements" "$program"
+  else
+    codesign --force "${runtime[@]}" -s "$identity" "$program"
+  fi
 done
 codesign --force "${runtime[@]}" -s "$identity" --entitlements "$here/writer.entitlements" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
