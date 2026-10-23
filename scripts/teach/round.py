@@ -3,7 +3,10 @@
 reviewed blind) by the dev app's debug route, saved nowhere in Writer, kept
 under the loop's folder for score.py. Run with `just dev` up.
 
-  python3 scripts/teach/round.py <loop dir> <round> name=<script id>:<build|review> ...
+  python3 scripts/teach/round.py <loop dir> <round> name=<script id>:<build|review|apply>[:<draft.json>[:<request.txt>]] ...
+
+`review` and `apply` start from the given draft (a result.json's or a bare
+draft) instead of the saved one; `apply` carries out the request's text.
 
 Writes <loop>/rounds/<round>/<name>/result.json and script.txt.
 """
@@ -14,13 +17,23 @@ LOOP, ROUND = Path(sys.argv[1]).expanduser(), sys.argv[2]
 JOBS = [(arg.split("=", 1)[0], *arg.split("=", 1)[1].split(":")) for arg in sys.argv[3:]]
 
 
-def run(name, script, mode):
+def draft_and_request(draft_file, request_file):
+    out = {}
+    if draft_file:
+        value = json.loads(Path(draft_file).expanduser().read_text())
+        out["draft"] = value.get("draft", value)
+    if request_file:
+        out["request"] = Path(request_file).expanduser().read_text()
+    return out
+
+
+def run(name, script, mode, draft_file=None, request_file=None):
     out = LOOP / "rounds" / ROUND / name
     out.mkdir(parents=True, exist_ok=True)
     began = time.time()
     request = urllib.request.Request(
         "http://127.0.0.1:1421/api/debug/teach",
-        data=json.dumps({"id": script, "mode": mode}).encode(),
+        data=json.dumps({"id": script, "mode": mode, **draft_and_request(draft_file, request_file)}).encode(),
         headers={"content-type": "application/json"},
         method="POST",
     )
