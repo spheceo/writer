@@ -156,6 +156,13 @@ fn route(
             let kind = serde_json::from_value(value["kind"].clone()).ok();
             json_result(stream, crate::ab_build_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["engine"].as_str().unwrap_or("cli"), kind))
         }
+        // Debug builds only: a commentary written from scratch, or the written
+        // one reviewed blind, saved nowhere (scripts/teach, the teaching loop).
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "teach"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::teach_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["mode"].as_str().unwrap_or("build")))
+        }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
         #[cfg(debug_assertions)]

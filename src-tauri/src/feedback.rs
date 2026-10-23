@@ -889,7 +889,7 @@ fn feedback_text(items: &[&Item]) -> String {
     items.iter().map(|item| item_text(item)).collect::<Vec<_>>().join("\n\n")
 }
 
-fn script_text(draft: &Draft) -> String {
+pub(crate) fn script_text(draft: &Draft) -> String {
     blocks(draft).iter().map(|block| format!("[{}] {}", block.place, block.text)).collect::<Vec<_>>().join("\n")
 }
 

@@ -1059,6 +1059,36 @@ fn reveal_logs() -> Result<(), String> {
     reveal_logs_now()
 }
 
+/// Debug builds only: a round of the teaching loop (scripts/teach). `build`
+/// writes the commentary from its sources as a new build would; `review`
+/// hands the written one back as the team does, without their notes. Saves
+/// nothing; answers the draft, as text too, and what it took.
+#[cfg(debug_assertions)]
+pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value, String> {
+    const REVIEW: &str = "The team read this script and sent it back with a round of notes. You don't get the notes: review the whole script the way the team would, find everything they would flag, and fix it across the script, the house way (the guide). Keep what they wouldn't flag as it is. Send the complete script. In the report, a short list of what you found and what you changed.";
+    let dir = store::script_dir(data, id)?;
+    let script = store::read(&dir)?;
+    let lessons = feedback::lessons_text(data);
+    let began = std::time::Instant::now();
+    let built = match mode {
+        "build" => commentary::build(&dir, &script, "", &lessons)?,
+        "review" => {
+            let base = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("That script isn't written yet.")?;
+            commentary::write(&dir, &script, &commentary::Writing { base: Some(&base), lessons: &lessons, extra: "", request: REVIEW, pace: false })?
+        }
+        _ => return Err("Ask for mode build or review.".into()),
+    };
+    Ok(serde_json::json!({
+        "id": id,
+        "mode": mode,
+        "draft": built.draft,
+        "text": feedback::script_text(&built.draft),
+        "report": built.report,
+        "costUsd": built.cost_usd,
+        "seconds": began.elapsed().as_secs(),
+    }))
+}
+
 /// Debug builds only: builds a script with one engine and saves nothing, for
 /// comparing them. The speakers and research are made once and kept, so every
 /// build of the script reads the same evidence.
