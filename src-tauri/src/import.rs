@@ -260,6 +260,15 @@ pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[Strin
 }
 
 fn start(app: &AppHandle, data: &Path, mut script: Script, article: Option<crate::research::Research>) -> Result<ScriptDetail, String> {
+    // Only kinds of script this person may write (can.rs), starting as the first format they may.
+    script.kind = if script.compilation {
+        crate::can::first_compilation_kind()?
+    } else if script.source_kind == "compilation" {
+        crate::can::require(crate::can::COURTROOM)?;
+        crate::formats::Kind::Courtroom
+    } else {
+        crate::can::first_single_kind()?
+    };
     let _busy = Busy::start(script.id.clone())?;
     let dir = store::script_dir(data, &script.id)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;

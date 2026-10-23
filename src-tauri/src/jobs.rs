@@ -141,10 +141,26 @@ pub enum Work {
     Restore,
 }
 
+/// What the signed-in person may do to this script (can.rs): see it, write
+/// it as the format asked for, fix its review notes, teach from it.
+fn allowed(app: &AppHandle, id: &str, work: &Work) -> Result<(), String> {
+    use tauri::Manager;
+    let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let script = crate::store::read(&crate::store::script_dir(&data, id)?)?;
+    crate::can::require_script(&script)?;
+    match work {
+        Work::Build { kind: Some(kind), .. } => crate::can::require_kind(&script, *kind),
+        Work::Review { .. } => crate::can::require(crate::can::SHARE),
+        Work::Learn(_) => crate::can::require(crate::can::LESSONS),
+        _ => Ok(()),
+    }
+}
+
 pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, String> {
     if crate::import::importing(&id) {
         return Err("This import is still running.".into());
     }
+    allowed(&app, &id, &work)?;
     let job = {
         let mut jobs = jobs().lock().map_err(|_| "Busy.".to_string())?;
         if jobs.get(&id).is_some_and(|job| job.running) {

@@ -1,5 +1,6 @@
 mod casefiles;
 mod account;
+mod can;
 mod activity;
 mod archive;
 mod blocks;
@@ -56,6 +57,9 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 fn list_scripts(app: AppHandle) -> Result<Vec<model::Summary>, String> {
     let mut rows = store::list(&data_dir(&app)?)?;
+    // Scripts of kinds this person can't write are hidden from them.
+    let grants = can::grants();
+    rows.retain(|row| grants.may_write(can::summary_work(row)));
     for row in &mut rows {
         row.building = jobs::running(&row.id);
     }
@@ -64,6 +68,7 @@ fn list_scripts(app: AppHandle) -> Result<Vec<model::Summary>, String> {
 
 #[tauri::command]
 fn get_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     let dir = store::script_dir(&data, &id)?;
     Ok(store::detail(store::read(&dir)?, &dir))
@@ -104,6 +109,7 @@ async fn import_drive(app: AppHandle, url: String, article: Option<String>, titl
 /// Answers a paused import (or retries a failed one) and carries it on.
 #[tauri::command]
 async fn resume_import(app: AppHandle, id: String, choice: import::Choice) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
         import::resume(&app, &data, &id, choice)
@@ -146,6 +152,7 @@ async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>, ca
 
 #[tauri::command]
 fn get_research(app: AppHandle, id: String) -> Result<Option<research::Research>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     Ok(research_shown(&store::script_dir(&data_dir(&app)?, &id)?))
 }
 
@@ -160,6 +167,7 @@ pub fn research_shown(dir: &Path) -> Option<research::Research> {
 /// Looks for the case's news again. Reads the script, then searches.
 #[tauri::command]
 async fn research_again(app: AppHandle, id: String) -> Result<research::Research, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || research_now(&data_dir(&app)?, &id))
         .await
         .map_err(|error| error.to_string())?
@@ -176,6 +184,7 @@ pub fn research_now(data: &Path, id: &str) -> Result<research::Research, String>
 
 #[tauri::command]
 async fn create_commentary(app: AppHandle, title: String, links: Vec<String>) -> Result<ScriptDetail, String> {
+    can::require(can::COMMENTARY)?;
     // Off the window's thread: reading the links takes a moment.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
@@ -187,6 +196,7 @@ async fn create_commentary(app: AppHandle, title: String, links: Vec<String>) ->
 
 #[tauri::command]
 async fn add_source(app: AppHandle, id: String, adding: commentary::Adding, role: commentary::Role) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || add_source_now(&data_dir(&app)?, &id, adding, role))
         .await
         .map_err(|error| error.to_string())?
@@ -208,16 +218,19 @@ pub fn set_pacing_now(data: &Path, id: &str, pacing: commentary::Pacing) -> Resu
 
 #[tauri::command]
 fn set_pacing(app: AppHandle, id: String, pacing: commentary::Pacing) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     set_pacing_now(&data_dir(&app)?, &id, pacing)
 }
 
 #[tauri::command]
 fn update_source(app: AppHandle, id: String, source: String, role: Option<commentary::Role>, title: Option<String>) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     commentary::update(&data_dir(&app)?, &id, &source, role, title)
 }
 
 #[tauri::command]
 fn remove_source(app: AppHandle, id: String, source: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     if jobs::running(&id) {
         return Err("Claude is writing this script. Remove sources once it's done.".into());
     }
@@ -226,11 +239,13 @@ fn remove_source(app: AppHandle, id: String, source: String) -> Result<ScriptDet
 
 #[tauri::command]
 fn source_text(app: AppHandle, id: String, source: String) -> Result<String, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     commentary::read_text(&store::script_dir(&data_dir(&app)?, &id)?, &source)
 }
 
 #[tauri::command]
 fn save_draft(app: AppHandle, id: String, revision: u32, draft: commentary::Draft) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     if jobs::running(&id) {
         return Err("Claude is writing this script.".into());
     }
@@ -248,6 +263,7 @@ fn exporting() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
 /// relay makes the Doc and opens it to anyone with its link. A full export is
 /// remembered as the script's Doc; a draft ("(DRAFT) …") is not.
 pub fn export_doc_now(data: &Path, id: &str, draft: bool, docx: &str) -> Result<serde_json::Value, String> {
+    can::require(can::SHARE)?;
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
     if docx.is_empty() || docx.len() > 11_000_000 {
@@ -280,6 +296,7 @@ pub fn export_doc_now(data: &Path, id: &str, draft: bool, docx: &str) -> Result<
 
 #[tauri::command]
 async fn export_doc(app: AppHandle, id: String, draft: bool, docx: String) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || export_doc_now(&data_dir(&app)?, &id, draft, &docx))
         .await
         .map_err(|error| error.to_string())?
@@ -293,6 +310,7 @@ pub fn list_docs_now(data: &Path, id: &str) -> Result<serde_json::Value, String>
 
 #[tauri::command]
 async fn list_docs(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || list_docs_now(&data_dir(&app)?, &id))
         .await
         .map_err(|error| error.to_string())?
@@ -319,6 +337,7 @@ pub fn doc_comments_now(data: &Path, id: &str, doc: Option<&str>) -> Result<serd
 
 #[tauri::command]
 async fn doc_comments(app: AppHandle, id: String, doc: Option<String>) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || doc_comments_now(&data_dir(&app)?, &id, doc.as_deref()))
         .await
         .map_err(|error| error.to_string())?
@@ -326,6 +345,7 @@ async fn doc_comments(app: AppHandle, id: String, doc: Option<String>) -> Result
 
 #[tauri::command]
 fn rename_script(app: AppHandle, id: String, title: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 180 || title.chars().any(char::is_control) {
         return Err("Give it a title of up to 180 characters.".into());
@@ -343,6 +363,7 @@ fn rename_script(app: AppHandle, id: String, title: String) -> Result<ScriptDeta
 
 #[tauri::command]
 async fn retry_transcribe(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
@@ -354,6 +375,7 @@ async fn retry_transcribe(app: AppHandle, id: String) -> Result<ScriptDetail, St
 
 #[tauri::command]
 fn save_clips(app: AppHandle, id: String, revision: u32, clips: Vec<Clip>) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     if import::importing(&id) {
         return Err("This import is still running.".into());
     }
@@ -376,6 +398,7 @@ fn save_clips(app: AppHandle, id: String, revision: u32, clips: Vec<Clip>) -> Re
 
 #[tauri::command]
 fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     if import::importing(&id) {
         return Err("This import is still running.".into());
     }
@@ -576,6 +599,7 @@ async fn check_videos(app: AppHandle, lines: Vec<String>) -> Result<Vec<import::
 
 #[tauri::command]
 fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::Kind>) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     store::script_dir(&data_dir(&app)?, &id)?;
     jobs::start(app, id, jobs::Work::Build { note, kind })
 }
@@ -678,6 +702,7 @@ pub fn revise_commentary(data: &Path, dir: &Path, script: &model::Script, reques
 
 #[tauri::command]
 fn start_revision(app: AppHandle, id: String, request: String, focus: Option<revise::Focus>) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     store::script_dir(&data_dir(&app)?, &id)?;
     jobs::start(app, id, jobs::Work::Revise { request, focus: focus.unwrap_or_default() })
 }
@@ -696,6 +721,7 @@ pub fn start_reuse_import_now(app: AppHandle, data: &Path, id: String, urls: Vec
 
 #[tauri::command]
 fn start_reuse_import(app: AppHandle, id: String, urls: Option<Vec<String>>) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     start_reuse_import_now(app, &data, id, urls.unwrap_or_default())
 }
@@ -713,6 +739,7 @@ pub fn start_find_clips_now(app: AppHandle, data: &Path, id: String) -> Result<j
 
 #[tauri::command]
 fn start_find_clips(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     start_find_clips_now(app, &data, id)
 }
@@ -724,11 +751,13 @@ pub fn finds_now(data: &Path, id: &str) -> Result<Option<scout::Finds>, String> 
 
 #[tauri::command]
 fn get_finds(app: AppHandle, id: String) -> Result<Option<scout::Finds>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     finds_now(&data_dir(&app)?, &id)
 }
 
 /// Pulls the comments and highlights on the script's Doc, starting the feedback over.
 pub fn pull_feedback_now(data: &Path, id: &str, link: Option<&str>) -> Result<feedback::Feedback, String> {
+    can::require(can::LESSONS)?;
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
     }
@@ -737,21 +766,25 @@ pub fn pull_feedback_now(data: &Path, id: &str, link: Option<&str>) -> Result<fe
 
 #[tauri::command]
 async fn pull_feedback(app: AppHandle, id: String, link: Option<String>) -> Result<feedback::Feedback, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || pull_feedback_now(&data_dir(&app)?, &id, link.as_deref()))
         .await
         .map_err(|error| error.to_string())?
 }
 
 pub fn feedback_now(data: &Path, id: &str) -> Result<Option<feedback::Feedback>, String> {
+    can::require(can::LESSONS)?;
     Ok(feedback::load(&store::script_dir(data, id)?))
 }
 
 #[tauri::command]
 fn get_feedback(app: AppHandle, id: String) -> Result<Option<feedback::Feedback>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     feedback_now(&data_dir(&app)?, &id)
 }
 
 pub fn set_feedback_item_now(data: &Path, id: &str, item: &str, skip: Option<bool>, note: Option<String>) -> Result<feedback::Feedback, String> {
+    can::require(can::LESSONS)?;
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
     }
@@ -760,11 +793,13 @@ pub fn set_feedback_item_now(data: &Path, id: &str, item: &str, skip: Option<boo
 
 #[tauri::command]
 fn set_feedback_item(app: AppHandle, id: String, item: String, skip: Option<bool>, note: Option<String>) -> Result<feedback::Feedback, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     set_feedback_item_now(&data_dir(&app)?, &id, &item, skip, note)
 }
 
 /// Saves the producer's lesson and says what in it still points at the script.
 pub fn set_lesson_now(data: &Path, id: &str, lesson: &str) -> Result<serde_json::Value, String> {
+    can::require(can::LESSONS)?;
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
     }
@@ -775,6 +810,7 @@ pub fn set_lesson_now(data: &Path, id: &str, lesson: &str) -> Result<serde_json:
 
 #[tauri::command]
 fn set_lesson(app: AppHandle, id: String, lesson: String) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     set_lesson_now(&data_dir(&app)?, &id, &lesson)
 }
 
@@ -785,11 +821,13 @@ pub fn start_feedback_now(app: AppHandle, data: &Path, id: String, step: feedbac
 
 #[tauri::command]
 fn start_feedback(app: AppHandle, id: String, step: feedback::Step) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     start_feedback_now(app, &data, id, step)
 }
 
 pub fn keep_lesson_now(data: &Path, id: &str) -> Result<Vec<feedback::Lesson>, String> {
+    can::require(can::LESSONS)?;
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
     }
@@ -798,26 +836,31 @@ pub fn keep_lesson_now(data: &Path, id: &str) -> Result<Vec<feedback::Lesson>, S
 
 #[tauri::command]
 fn keep_lesson(app: AppHandle, id: String) -> Result<Vec<feedback::Lesson>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     keep_lesson_now(&data_dir(&app)?, &id)
 }
 
 #[tauri::command]
 fn get_lessons(app: AppHandle) -> Result<Vec<feedback::Lesson>, String> {
+    can::require(can::LESSONS)?;
     Ok(feedback::lessons(&data_dir(&app)?))
 }
 
 #[tauri::command]
 fn forget_lesson(app: AppHandle, lesson: String) -> Result<Vec<feedback::Lesson>, String> {
+    can::require(can::LESSONS)?;
     feedback::forget(&data_dir(&app)?, &lesson)
 }
 
 /// Shares the script on a Repack review link, or its next version on the same link.
 pub fn share_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
+    can::require(can::SHARE)?;
     reviews::share(data, id)
 }
 
 #[tauri::command]
 async fn share_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || share_now(&data_dir(&app)?, &id))
         .await
         .map_err(|error| error.to_string())?
@@ -836,11 +879,13 @@ pub fn review_notes_now(data: &Path, id: &str) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 fn review_notes(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     review_notes_now(&data_dir(&app)?, &id)
 }
 
 /// Fixes a script's open notes now, rather than waiting for the quiet.
 pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require(can::SHARE)?;
     if let Some(approved) = reviews::approval(data, &id) {
         return Err(format!("v{} is approved, so its notes aren't fixed. Take the approval back to fix them.", approved.version));
     }
@@ -854,12 +899,14 @@ pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::Bu
 
 #[tauri::command]
 fn fix_notes(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     fix_notes_now(app, &data, id)
 }
 
 /// Approves the script's latest shared version, or (`approve` false) takes the approval back.
 pub fn approve_review_now(data: &Path, id: &str, approve: bool) -> Result<serde_json::Value, String> {
+    can::require(can::SHARE)?;
     if approve {
         reviews::approve(data, id)?;
     } else {
@@ -870,6 +917,7 @@ pub fn approve_review_now(data: &Path, id: &str, approve: bool) -> Result<serde_
 
 #[tauri::command]
 async fn approve_review(app: AppHandle, id: String, approve: bool) -> Result<serde_json::Value, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     tauri::async_runtime::spawn_blocking(move || approve_review_now(&data_dir(&app)?, &id, approve))
         .await
         .map_err(|error| error.to_string())?
@@ -882,6 +930,7 @@ pub fn restore_now(app: AppHandle, data: &Path, id: &str) -> Result<jobs::BuildS
 
 #[tauri::command]
 fn restore_script(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     restore_now(app, &data, &id)
 }
@@ -974,6 +1023,7 @@ fn reveal_logs() -> Result<(), String> {
 
 #[tauri::command]
 fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
+    can::require(can::SHARE)?;
     let data = data_dir(&app)?;
     settings::set_auto_fix(&data, on)?;
     Ok(reviews::counts(&data))
@@ -981,6 +1031,7 @@ fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
 
 #[tauri::command]
 fn get_chat(app: AppHandle, id: String) -> Result<Vec<chat::Turn>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     Ok(chat::read(&store::script_dir(&data_dir(&app)?, &id)?))
 }
 
@@ -993,6 +1044,7 @@ pub fn clear_chat_now(data: &Path, id: &str) -> Result<(), String> {
 
 #[tauri::command]
 fn clear_chat(app: AppHandle, id: String) -> Result<(), String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     clear_chat_now(&data_dir(&app)?, &id)
 }
 
@@ -1008,6 +1060,7 @@ pub fn decline_proposal_now(data: &Path, id: &str, proposal: &str) -> Result<Scr
 
 #[tauri::command]
 fn decline_proposal(app: AppHandle, id: String, proposal: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     decline_proposal_now(&data_dir(&app)?, &id, &proposal)
 }
 
@@ -1040,6 +1093,7 @@ pub fn correct_word_now(data: &Path, id: &str, revision: u32, word: &str, text: 
 
 #[tauri::command]
 fn correct_word(app: AppHandle, id: String, revision: u32, word: String, text: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     correct_word_now(&data_dir(&app)?, &id, revision, &word, &text)
 }
 
@@ -1065,6 +1119,7 @@ pub fn set_heading_now(data: &Path, id: &str, revision: u32, heading: &str) -> R
 
 #[tauri::command]
 fn set_heading(app: AppHandle, id: String, revision: u32, heading: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     set_heading_now(&data_dir(&app)?, &id, revision, &heading)
 }
 
@@ -1074,6 +1129,7 @@ pub fn list_versions_now(data: &Path, id: &str) -> Result<Vec<versions::Version>
 
 #[tauri::command]
 fn list_versions(app: AppHandle, id: String) -> Result<Vec<versions::Version>, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     list_versions_now(&data_dir(&app)?, &id)
 }
 
@@ -1083,6 +1139,7 @@ pub fn get_version_now(data: &Path, id: &str, version: &str) -> Result<versions:
 
 #[tauri::command]
 fn get_version(app: AppHandle, id: String, version: String) -> Result<versions::Snapshot, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     get_version_now(&data_dir(&app)?, &id, &version)
 }
 
@@ -1113,6 +1170,7 @@ pub fn restore_version_now(data: &Path, id: &str, revision: u32, version: &str) 
 
 #[tauri::command]
 fn restore_version(app: AppHandle, id: String, revision: u32, version: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
     restore_version_now(&data_dir(&app)?, &id, revision, &version)
 }
 

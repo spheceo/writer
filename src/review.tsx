@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, setAutoFix, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
+import { CAN, useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
 
 /**
@@ -226,6 +227,8 @@ export function ReviewDialog({
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [autoFix, setAuto] = useState<boolean | null>(null);
+  // Sharing, approving and fixing need review.share; reading the notes doesn't.
+  const mayShare = useGrants().has(CAN.share);
   useEffect(() => {
     if (!open) return;
     setProblem(null);
@@ -300,19 +303,22 @@ export function ReviewDialog({
         <>
           {problem && <span className="bad">{problem}</span>}
           <span className="spacer" />
-          {link && !approved && (
+          {!mayShare && <span className="faint">Sharing, approving and fixing need “Share for review”: ask an admin.</span>}
+          {mayShare && link && !approved && (
             <button type="button" className="ghost" disabled={busy || approving} title="The script is done: the link takes no more notes, and the other versions' files are deleted (their notes stay)" onClick={() => void approve(true)}>
               {approving ? "Approving…" : `Approve v${link.version}`}
             </button>
           )}
-          {link && waiting > 0 && !approved && (
+          {mayShare && link && waiting > 0 && !approved && (
             <button type="button" className="ghost" disabled={busy} onClick={() => void fix()}>
               Fix {waiting} {waiting === 1 ? "note" : "notes"} now
             </button>
           )}
-          <button type="button" className={link && !behind ? "ghost" : "primary"} disabled={sharing || busy} onClick={() => void share()}>
-            {sharing ? "Sharing…" : link ? `Share again as v${link.version + 1}` : "Share"}
-          </button>
+          {mayShare && (
+            <button type="button" className={link && !behind ? "ghost" : "primary"} disabled={sharing || busy} onClick={() => void share()}>
+              {sharing ? "Sharing…" : link ? `Share again as v${link.version + 1}` : "Share"}
+            </button>
+          )}
         </>
       }
     >
@@ -338,12 +344,14 @@ export function ReviewDialog({
             <b>Approved v{approved.version}</b> · by {approved.by} · {when(approved.at)}
             <span className="faint"> · The link takes no more notes, and nothing is fixed by itself. Sharing again starts v{(link?.version ?? approved.version) + 1}, unapproved.</span>
           </span>
-          <button type="button" className="link-button" disabled={approving} onClick={() => void approve(false)}>
-            Take back
-          </button>
+          {mayShare && (
+            <button type="button" className="link-button" disabled={approving} onClick={() => void approve(false)}>
+              Take back
+            </button>
+          )}
         </p>
       )}
-      {link && autoFix !== null && !approved && (
+      {mayShare && link && autoFix !== null && !approved && (
         <label className="toggle review-auto">
           <input type="checkbox" checked={autoFix} onChange={(event) => void setAutoFix(event.target.checked).then((counts) => setAuto(counts.autoFix), (cause) => setProblem(message(cause)))} />
           Claude fixes new notes by itself, two minutes after a reviewer's last one, while Writer is open

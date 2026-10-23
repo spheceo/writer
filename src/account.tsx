@@ -1,26 +1,34 @@
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { type AccountStatus, accountStatus, cancelSignIn, message, signIn, signOut } from "./api";
 import { Dialog } from "./ui";
 
-/** Who's signed in, asked again every few seconds while a sign-in waits on the browser. */
+/** Who's signed in, shared by every part of the page: asked again every few
+ * seconds while the page is in view (a sign-in waiting on the browser, a
+ * renewal that changed someone's grants), every 30 s when it isn't. */
+let current: AccountStatus | null = null;
+const listeners = new Set<() => void>();
+let polling = false;
+function publish(next: AccountStatus) {
+  current = next;
+  for (const listener of listeners) listener();
+}
+function poll() {
+  void accountStatus()
+    .then(publish, () => {})
+    .finally(() => window.setTimeout(poll, document.hidden ? 30_000 : 3_000));
+}
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  if (!polling) {
+    polling = true;
+    poll();
+  }
+  return () => listeners.delete(listener);
+}
+
 export function useAccount() {
-  const [status, setStatus] = useState<AccountStatus | null>(null);
-  useEffect(() => {
-    let live = true;
-    let timer = 0;
-    const ask = () =>
-      void accountStatus()
-        .then((next) => live && setStatus(next), () => {})
-        .finally(() => {
-          if (live) timer = window.setTimeout(ask, document.hidden ? 30_000 : 3_000);
-        });
-    ask();
-    return () => {
-      live = false;
-      window.clearTimeout(timer);
-    };
-  }, []);
-  return [status, setStatus] as const;
+  const status = useSyncExternalStore(subscribe, () => current);
+  return [status, publish] as const;
 }
 
 const PERMISSIONS: Record<string, string> = {

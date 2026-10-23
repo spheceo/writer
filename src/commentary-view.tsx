@@ -16,6 +16,7 @@ import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
 import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { CAN, useGrants } from "./can";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
 const PACINGS: { value: Pacing; label: string; hint: string }[] = [
@@ -140,6 +141,8 @@ export function CommentaryEditor({
   const bands = useMemo(() => bandsOf(review.notes), [review.notes]);
   const openNotes = review.notes.filter((note) => !note.parentId && note.status !== "done").length;
   const [tab, setTab] = useState<"claude" | "sources" | "clips" | "feedback">(() => (script.commentary?.draft ? "claude" : "sources"));
+  // Teaching Writer from feedback needs review.lessons: without it there's no Feedback tab.
+  const mayTeach = useGrants().has(CAN.lessons);
   const [finds, setFinds] = useState<Finds | null>(null);
   // What the running job is: a build, or a search for clips.
   const [finding, setFinding] = useState(false);
@@ -498,9 +501,11 @@ export function CommentaryEditor({
               <button type="button" role="tab" aria-selected={tab === "clips"} onClick={() => setTab("clips")}>
                 Clips {finds && <small>{finds.clips.length}</small>}
               </button>
-              <button type="button" role="tab" aria-selected={tab === "feedback"} onClick={() => setTab("feedback")}>
-                Feedback {feedback && <small>{feedback.items.length}</small>}
-              </button>
+              {mayTeach && (
+                <button type="button" role="tab" aria-selected={tab === "feedback"} onClick={() => setTab("feedback")}>
+                  Feedback {feedback && <small>{feedback.items.length}</small>}
+                </button>
+              )}
             </div>
             {tab === "sources" && (
               <button type="button" className="tool" disabled={busy} onClick={() => setAdding(true)}>
@@ -509,7 +514,7 @@ export function CommentaryEditor({
               </button>
             )}
           </div>
-          {tab === "feedback" ? (
+          {tab === "feedback" && mayTeach ? (
             <>
               <FeedbackPanel
                 status={

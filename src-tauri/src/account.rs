@@ -21,7 +21,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
@@ -55,7 +55,7 @@ fn accounts() -> String {
     ACCOUNTS.into()
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Person {
     pub sub: String,
@@ -84,9 +84,12 @@ struct State {
     renewed: Option<Instant>,
     /// The sign-in page a waiting sign-in opened (no secret in it: PKCE keeps the verifier here).
     url: Option<String>,
+    /// Who was signed in last, and what they may do (`account-person.json`):
+    /// what Writer goes by before the first renewal, or offline.
+    known: Option<Person>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None, url: None });
+static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None, url: None, known: None });
 /// One renewal at a time: a refresh token works once, and reusing it ends the sign-in.
 static RENEWING: Mutex<()> = Mutex::new(());
 static DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -108,7 +111,7 @@ pub fn status() -> Status {
     let state = lock();
     Status {
         signed_in: state.kept,
-        person: state.session.as_ref().map(|session| session.person.clone()),
+        person: state.session.as_ref().map(|session| session.person.clone()).or_else(|| state.kept.then(|| state.known.clone()).flatten()),
         signing_in: state.signing_in,
         sign_in_url: state.signing_in.then(|| state.url.clone()).flatten(),
         error: state.error.clone(),
@@ -130,7 +133,10 @@ pub fn start(app: AppHandle, data: PathBuf) {
     let _ = DATA.set(data);
     let _ = APP.set(app);
     if load_refresh().is_some() {
-        lock().kept = true;
+        let known = known_file().and_then(|path| std::fs::read(path).ok()).and_then(|bytes| serde_json::from_slice::<Person>(&bytes).ok());
+        let mut state = lock();
+        state.kept = true;
+        state.known = known;
     }
     std::thread::spawn(|| loop {
         let due = {
@@ -265,7 +271,11 @@ fn take(answer: &Value) -> Result<String, String> {
         person.name = text("name").unwrap_or(person.name);
         person.image = text("image").or(person.image);
     }
+    if let Some(path) = known_file() {
+        let _ = write_private(&path, &serde_json::to_string(&person).unwrap_or_default());
+    }
     let mut state = lock();
+    state.known = Some(person.clone());
     state.session = Some(Session { access: access.clone(), until: Instant::now() + Duration::from_secs(seconds), person });
     state.kept = true;
     state.error = None;
@@ -275,7 +285,11 @@ fn take(answer: &Value) -> Result<String, String> {
 }
 
 fn signed_out(error: Option<String>) {
+    if let Some(path) = known_file() {
+        let _ = std::fs::remove_file(path);
+    }
     let mut state = lock();
+    state.known = None;
     state.session = None;
     state.kept = false;
     state.error = error;
@@ -631,6 +645,11 @@ fn revoke(refresh: &str) -> Result<(), Duration> {
 }
 
 // ---- Where the refresh token is kept ----
+
+/// Who was signed in last (no secret: their name, email and grants).
+fn known_file() -> Option<PathBuf> {
+    DATA.get().map(|data| data.join("account-person.json"))
+}
 
 fn dev_file() -> Option<PathBuf> {
     DATA.get().map(|data| data.join("account-dev.json"))

@@ -3,6 +3,7 @@ import { docComments, exportDoc, getScript, listDocs, message } from "./api";
 import { COMMENT_AUTHOR, docContent } from "./doc-export";
 import { scriptDocx } from "./docx";
 import type { DocComment, DocFile, Script } from "./types";
+import { CAN, useGrants } from "./can";
 import { Dialog } from "./ui";
 
 /** Bytes as base64, a chunk at a time so a large file doesn't overflow the stack. */
@@ -51,6 +52,8 @@ export function DocsDialog({
   onUseComments?: (note: string) => void;
 }) {
   const doc = script.docExport;
+  // Exporting to Docs is part of sharing (review.share); reading a Doc's comments isn't.
+  const mayShare = useGrants().has(CAN.share);
   const behind = !!doc && doc.revision !== script.revision;
   const [exporting, setExporting] = useState<"script" | "draft" | null>(null);
   const [made, setMade] = useState<DocFile | null>(null);
@@ -129,17 +132,23 @@ export function DocsDialog({
           <button type="button" className="ghost" onClick={onClose}>
             Close
           </button>
-          <button
-            type="button"
-            disabled={!exportable || !!exporting}
-            title="The same Doc, named “(DRAFT)” before the title"
-            onClick={() => void make("draft")}
-          >
-            {exporting === "draft" ? "Exporting…" : "Export draft"}
-          </button>
-          <button type="button" className="primary" disabled={!exportable || !!exporting} onClick={() => void make("script")}>
-            {exporting === "script" ? "Exporting…" : doc ? "Export again" : "Export"}
-          </button>
+          {mayShare ? (
+            <>
+              <button
+                type="button"
+                disabled={!exportable || !!exporting}
+                title="The same Doc, named “(DRAFT)” before the title"
+                onClick={() => void make("draft")}
+              >
+                {exporting === "draft" ? "Exporting…" : "Export draft"}
+              </button>
+              <button type="button" className="primary" disabled={!exportable || !!exporting} onClick={() => void make("script")}>
+                {exporting === "script" ? "Exporting…" : doc ? "Export again" : "Export"}
+              </button>
+            </>
+          ) : (
+            <span className="faint">Exporting needs “Share for review”: ask an admin.</span>
+          )}
         </>
       }
     >

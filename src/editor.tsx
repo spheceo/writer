@@ -3,6 +3,7 @@ import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState }
 import { Asked, ChatLog, Composer, Said, Working } from "./agent";
 import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, inTauri, message, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
+import { useGrants } from "./can";
 import { DocsDialog } from "./docs-dialog";
 import { VersionsDialog } from "./versions-dialog";
 import { scriptText } from "./doc-export";
@@ -162,6 +163,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
+  // The formats this person may write this script as (can.ts): a compilation's
+  // (never FOIA) or a single case's.
+  const grants = useGrants();
+  const kinds = KINDS.filter((item) => (script.compilation ? grants.compilationKinds : grants.singleKinds).includes(item.value));
   const split = useSplit();
 
   // One playhead per player, made together, so a reload of the code keeps them paired.
@@ -839,7 +844,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 <>
                   <span>Rebuild from scratch? Every clip and paragraph is replaced (undo brings them back).</span>
                   <select className="kind-select" value={kind} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
-                    {KINDS.map((item) => (
+                    {kinds.map((item) => (
                       <option key={item.value} value={item.value}>{item.label}</option>
                     ))}
                   </select>
@@ -883,7 +888,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             extra={
               !cueCount ? (
                 <select className="kind-select" value={kind} disabled={busy} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
-                  {KINDS.map((item) => (
+                  {kinds.map((item) => (
                     <option key={item.value} value={item.value}>{item.label}</option>
                   ))}
                 </select>

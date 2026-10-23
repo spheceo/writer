@@ -323,6 +323,7 @@ pub fn add(data: &Path, id: &str, adding: Adding, role: Role, settings: &Setting
             }
             let other_dir = store::script_dir(data, &other)?;
             let source = store::read(&other_dir)?;
+            crate::can::require_script(&source)?;
             if source.words.is_empty() {
                 return Err("That script has no transcript yet.".into());
             }

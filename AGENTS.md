@@ -5,6 +5,7 @@ Writer is a Tauri app: Rust in `src-tauri/` does the work, React in `src/` is th
 - `just check`: typecheck, JS tests and Rust tests. Run it before committing.
 - `just dev`: the app with hot reload. Editing anything under `src-tauri/` (guides included) rebuilds and restarts it, killing imports and builds under way: never edit there while a job runs.
 - Every key lives on writer-relay (`relay/`). People sign in at accounts.spheceo.com (`src-tauri/src/account.rs`), and the relay answers only their access token, per permission (`relay/src/auth.ts`). The old team token (`CLIENT_TOKEN` / `WRITER_RELAY_TOKEN`) was retired on 2026-10-23 and is in old public DMGs: never bring it back or build any token into the app.
+- What someone may do is the capability ids in their token (`relay/src/manifest.ts` publishes them; ids are forever, rename labels only). Writer enforces them in `src-tauri/src/can.rs` (the real gate: commands, imports, jobs, HTTP routes) and `src/can.ts` (what's shown). A new feature that writes or shares a script goes through `can::` too.
 - The relay's secrets are in Infisical (Repack's project, `dev`, `/writer-relay`), pushed with `just relay-secrets`. Never print one, pass one as an argument, or write one to disk. Leave Repack's `/convex`, `/media`, `/footage` and `/web` folders alone.
 
 ## Releases and self-update

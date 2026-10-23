@@ -103,6 +103,14 @@ fn route(
     range: Option<&str>,
 ) -> Result<(), String> {
     let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    // A script of a kind this person can't write isn't there for them (can.rs).
+    if let ["api", "scripts", id, ..] = segments.as_slice() {
+        if !["file", "youtube", "compilation", "drive", "commentary"].contains(id) {
+            if let Err(error) = crate::can::require_id(&data_dir(&app)?, id) {
+                return write_json(stream, 403, &json!({ "error": error }));
+            }
+        }
+    }
     match (method, segments.as_slice()) {
         ("GET", ["api", "scripts"]) => json_result(stream, list_scripts(app)),
         ("GET", ["api", "account"]) => write_json(stream, 200, &crate::account::status()),
@@ -195,7 +203,7 @@ fn route(
             let title = value["title"].as_str().unwrap_or("").to_string();
             let links: Vec<String> = value["links"].as_array().into_iter().flatten().filter_map(|link| link.as_str().map(str::to_string)).collect();
             let data = data_dir(&app)?;
-            json_result(stream, crate::commentary::create(&data, &title, &links, &crate::settings::load(&data)))
+            json_result(stream, crate::can::require(crate::can::COMMENTARY).and_then(|_| crate::commentary::create(&data, &title, &links, &crate::settings::load(&data))))
         }
         ("POST", ["api", "scripts", id, "sources"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
@@ -301,15 +309,21 @@ fn route(
             json_result(stream, crate::start_feedback_now(app, &data, (*id).to_string(), step))
         }
         ("POST", ["api", "scripts", id, "feedback", "keep"]) => json_result(stream, crate::keep_lesson_now(&data_dir(&app)?, id)),
-        ("GET", ["api", "lessons"]) => json_result(stream, Ok::<_, String>(crate::feedback::lessons(&data_dir(&app)?))),
-        ("DELETE", ["api", "lessons", lesson]) => json_result(stream, crate::feedback::forget(&data_dir(&app)?, lesson)),
+        ("GET", ["api", "lessons"]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::can::require(crate::can::LESSONS).map(|_| crate::feedback::lessons(&data)))
+        }
+        ("DELETE", ["api", "lessons", lesson]) => {
+            let data = data_dir(&app)?;
+            json_result(stream, crate::can::require(crate::can::LESSONS).and_then(|_| crate::feedback::forget(&data, lesson)))
+        }
         ("GET", ["api", "scripts", id, "finds"]) => json_result(stream, crate::finds_now(&data_dir(&app)?, id)),
         ("GET", ["api", "scripts", id, "finds", "frames", name]) => send_frames(app, stream, id, name),
         ("POST", ["api", "scripts", id, "share"]) => json_result(stream, crate::share_now(&data_dir(&app)?, id)),
         ("PUT", ["api", "reviews", "auto-fix"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let data = data_dir(&app)?;
-            json_result(stream, crate::settings::set_auto_fix(&data, value["on"].as_bool().unwrap_or(true)).map(|_| crate::reviews::counts(&data)))
+            json_result(stream, crate::can::require(crate::can::SHARE).and_then(|_| crate::settings::set_auto_fix(&data, value["on"].as_bool().unwrap_or(true))).map(|_| crate::reviews::counts(&data)))
         }
         // Shares the recordings and words with Edit now, without marking the script sent.
         ("POST", ["api", "scripts", id, "edit-share"]) => json_result(stream, crate::handoff::share(&data_dir(&app)?, id, true)),

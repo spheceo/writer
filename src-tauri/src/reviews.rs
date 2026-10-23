@@ -587,6 +587,10 @@ fn start_fixes(app: &AppHandle, data: &Path) {
     if !settings::load(data).auto_fix {
         return;
     }
+    let grants = crate::can::grants();
+    if !grants.has(crate::can::SHARE) {
+        return;
+    }
     let known = load(data);
     let mut by_script: BTreeMap<String, Vec<&Note>> = BTreeMap::new();
     for note in known.notes.values() {
@@ -602,7 +606,7 @@ fn start_fixes(app: &AppHandle, data: &Path) {
         if now_ms() - last < QUIET_MS || jobs::running(&script) || import::importing(&script) {
             continue;
         }
-        let ready = store::script_dir(data, &script).and_then(|dir| store::read(&dir)).is_ok_and(|found| found.status == "ready");
+        let ready = store::script_dir(data, &script).and_then(|dir| store::read(&dir)).is_ok_and(|found| found.status == "ready" && crate::can::sees(&grants, &found));
         if !ready {
             continue;
         }

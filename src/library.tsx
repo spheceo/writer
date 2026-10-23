@@ -17,6 +17,7 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
 import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
@@ -690,6 +691,16 @@ function ImportDialog({
   onFailed: (reason: string) => void;
   onOpenNow: (script: Script) => void;
 }) {
+  // Only the kinds of script this person may start (can.ts; the app refuses the rest too).
+  const grants = useGrants();
+  const single = grants.singleKinds.length > 0;
+  const many = grants.compilationKinds.length > 0;
+  const courtroom = grants.has(CAN.courtroom);
+  const sources: Source[] = [
+    ...(single ? (["youtube", "drive", "file"] as const) : []),
+    ...(many || courtroom ? (["compilation"] as const) : []),
+    ...(grants.has(CAN.commentary) ? (["commentary"] as const) : []),
+  ];
   const [source, setSource] = useState<Source>("youtube");
   const [value, setValue] = useState("");
   const [title, setTitle] = useState("");
@@ -698,6 +709,15 @@ function ImportDialog({
   const [checked, setChecked] = useState<VideoCheck[] | null>(null);
   // One Courtroom case whose hearing runs across the videos, rather than a case each.
   const [oneCase, setOneCase] = useState(false);
+  // A source this person can't use isn't offered: move to the first they can.
+  useEffect(() => {
+    if (sources.length && !sources.includes(source)) setSource(sources[0]);
+  }, [sources.join(), source]);
+  // Courtroom without compilations: several videos can only be one case.
+  useEffect(() => {
+    if (courtroom && !many) setOneCase(true);
+    if (!courtroom) setOneCase(false);
+  }, [courtroom, many]);
   const [checking, setChecking] = useState(false);
   // Repack's Trello lists, open in place of the fields while a card is picked.
   const [trello, setTrello] = useState<TrelloList | null>(null);
@@ -914,17 +934,18 @@ function ImportDialog({
             setTrello(null);
           }}
           options={[
-            { value: "youtube", label: <><Icon name="youtube" size={14} />YouTube</> },
-            { value: "drive", label: <><Icon name="drive" size={14} />Google Drive</> },
-            { value: "file", label: <><Icon name="file" size={14} />This Mac</> },
-            { value: "compilation", label: <><Icon name="stack" size={14} />Compilation</> },
-            { value: "commentary", label: <><Icon name="file" size={14} />Commentary</> },
-          ]}
+            { value: "youtube" as Source, label: <><Icon name="youtube" size={14} />YouTube</> },
+            { value: "drive" as Source, label: <><Icon name="drive" size={14} />Google Drive</> },
+            { value: "file" as Source, label: <><Icon name="file" size={14} />This Mac</> },
+            { value: "compilation" as Source, label: <><Icon name="stack" size={14} />{many ? "Compilation" : "Several videos"}</> },
+            { value: "commentary" as Source, label: <><Icon name="file" size={14} />Commentary</> },
+          ].filter((option) => sources.includes(option.value))}
         />
+        {!sources.length && <p className="bad">Your account can't start scripts in Writer yet. Ask an admin at accounts.spheceo.com.</p>}
         <div className="trello-bar">
           {trello ? (
             <>
-              {(["raw", "comp"] as const).map((list) => (
+              {(["raw", "comp"] as const).filter((list) => (list === "raw" ? single : many)).map((list) => (
                 <button key={list} type="button" className={trello === list ? "sm on" : "sm ghost"} onClick={() => void openTrello(list)}>
                   {list === "raw" ? "Raw Channels" : "Compilations"}
                 </button>
@@ -937,7 +958,7 @@ function ImportDialog({
               <button type="button" className="link-button faint" onClick={() => setTrello(null)}>Close</button>
             </>
           ) : (
-            <button type="button" className="link-button" onClick={() => void openTrello(source === "compilation" ? "comp" : "raw")}>
+            (single || many) && <button type="button" className="link-button" onClick={() => void openTrello((source === "compilation" && many) || !single ? "comp" : "raw")}>
               <Icon name="stack" size={13} /> Import from Trello
             </button>
           )}
@@ -1007,9 +1028,11 @@ function ImportDialog({
                   ))}
                 </div>
               )}
-              <label className="faint toggle" title="Repack's Courtroom: one case's hearing in several videos, joined in order as one case; a link's t marks where the case starts">
-                <input type="checkbox" checked={oneCase} onChange={(event) => setOneCase(event.target.checked)} /> One Courtroom case across these videos
-              </label>
+              {courtroom && (
+                <label className="faint toggle" title="Repack's Courtroom: one case's hearing in several videos, joined in order as one case; a link's t marks where the case starts">
+                  <input type="checkbox" checked={oneCase} disabled={!many} onChange={(event) => setOneCase(event.target.checked)} /> One Courtroom case across these videos
+                </label>
+              )}
               <p className="hint">
                 {checked ? (
                   <>
