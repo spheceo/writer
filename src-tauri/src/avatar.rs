@@ -23,7 +23,9 @@ fn file(data: &Path, sub: &str, picture: &str) -> PathBuf {
 /// photo to have (not https, not an image, too large, or unreachable): the
 /// page then shows the person's initials.
 pub fn local(data: &Path, sub: &str, picture: &str) -> Option<PathBuf> {
-    if !picture.starts_with("https://") || picture.len() > 2_000 || picture.chars().any(char::is_control) {
+    // People sign in with Google: their photo is on Google's image host, nowhere else.
+    let host = picture.strip_prefix("https://").and_then(|rest| rest.split(['/', '?', '#']).next()).unwrap_or("");
+    if !host.ends_with(".googleusercontent.com") || host.contains(['@', ':']) || picture.len() > 2_000 || picture.chars().any(char::is_control) {
         return None;
     }
     let path = file(data, sub, picture);

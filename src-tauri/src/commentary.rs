@@ -216,7 +216,12 @@ fn sources_dir(dir: &Path) -> PathBuf {
     dir.join("sources")
 }
 
+/// A source's text file. Its id is Writer's own (S1, S2…): anything else,
+/// a path with "../" in it say, names a file nowhere.
 fn text_path(dir: &Path, id: &str) -> PathBuf {
+    if id.is_empty() || id.len() > 16 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return sources_dir(dir).join("invalid-source-id.txt");
+    }
     sources_dir(dir).join(format!("{id}.txt"))
 }
 

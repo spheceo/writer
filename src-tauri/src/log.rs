@@ -186,6 +186,19 @@ pub fn redact(text: &str) -> String {
             out.push_str(word);
         }
     }
+    // A login in a URL (a proxy's user:password@host).
+    let mut from = 0;
+    while let Some(found) = out[from..].find("://") {
+        let start = from + found + 3;
+        let host_end = out[start..].find(|c: char| c == '/' || c.is_whitespace() || c == '"' || c == '\'').map_or(out.len(), |end| start + end);
+        match out[start..host_end].rfind('@') {
+            Some(at) if at > 0 => {
+                out.replace_range(start..start + at, "[secret]");
+                from = start + "[secret]".len() + 1;
+            }
+            _ => from = start,
+        }
+    }
     let lower = out.to_lowercase();
     if let Some(at) = lower.find("bearer ") {
         let end = out[at + 7..].find(' ').map_or(out.len(), |rest| at + 7 + rest);
@@ -238,6 +251,13 @@ pub fn named(id: &str, title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_url_logins() {
+        assert_eq!(redact("proxy http://user-1:pa55@gw.example.com:823 refused"), "proxy http://[secret]@gw.example.com:823 refused");
+        assert_eq!(redact("see https://example.com/a@b"), "see https://example.com/a@b");
+        assert_eq!(redact("'https://u:p@h/x' and 'socks5://a:b@c'"), "'https://[secret]@h/x' and 'socks5://[secret]@c'");
+    }
 
     #[test]
     fn keeps_secrets_out() {
