@@ -124,18 +124,6 @@ jobs:
       - name: Upload to the release
         if: env.RELEASE == 'true'
         run: gh release upload "$TAG" --clobber out/*
-      # Installed Writers update from the cloud, not GitHub (the repo is private): the zip goes
-      # to R2 through writer-relay, and the publish job lists it (scripts/publish-update.sh).
-      - name: Upload the update to the cloud
-        if: env.RELEASE == 'true'
-        env:
-          WRITER_RELAY_TOKEN: ${{ secrets.WRITER_RELAY_TOKEN }}
-        run: scripts/publish-update.sh upload "$TAG" out/Writer-${{ matrix.target }}.zip asset-${{ matrix.target }}.json
-      - uses: actions/upload-artifact@v7
-        if: env.RELEASE == 'true'
-        with:
-          name: asset-${{ matrix.target }}
-          path: asset-${{ matrix.target }}.json
       - name: Keep as a test build
         if: env.RELEASE != 'true'
         uses: actions/upload-artifact@v7
@@ -148,12 +136,7 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: asset-*
-          merge-multiple: true
-          path: assets
+      # Installed Writers read GitHub's releases (src-tauri/src/update.rs): a draft is invisible to them.
       # A nightly stays a pre-release: Stable installs read `releases/latest`, which skips it.
       - name: Publish the release
         run: |
@@ -162,8 +145,3 @@ jobs:
           else
             gh release edit "$TAG" --draft=false --latest
           fi
-      # Now installs see it: listed in the cloud's release index, which apps check every hour.
-      - name: List it for installed Writers
-        env:
-          WRITER_RELAY_TOKEN: ${{ secrets.WRITER_RELAY_TOKEN }}
-        run: scripts/publish-update.sh index "$TAG" assets/*.json

@@ -1,8 +1,5 @@
 //! Writer updating itself, as Edit does, from the builds the release
-//! workflow publishes. The repo is private, so the app never reads GitHub:
-//! the workflow puts each published build's update zip and an index of them
-//! (`writer/releases/index.json`) in the cloud through writer-relay, and
-//! Writer reads them through the relay too. No GitHub token is anywhere.
+//! workflow publishes as GitHub Releases (the repo is public: no token).
 //!
 //! The channel (`update.json` beside the scripts) picks what's offered:
 //! Nightly, the default, offers whatever was published last; Stable only the
@@ -20,9 +17,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{cloud, release};
+use crate::release;
 
-const INDEX: &str = "writer/releases/index.json";
+const RELEASES: &str = "https://api.github.com/repos/spheceo/writer/releases";
 const EVERY: Duration = Duration::from_secs(3_600);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -37,7 +34,8 @@ pub enum Channel {
 #[serde(rename_all = "camelCase")]
 pub struct Offer {
     pub tag: String,
-    pub key: String,
+    /// The update zip on the GitHub release.
+    pub url: String,
     pub size: u64,
     pub sha256: String,
 }
@@ -122,32 +120,69 @@ pub fn newer(version: &str, current: &str) -> bool {
     matches!((parse(version), parse(current)), (Some(a), Some(b)) if a > b)
 }
 
-/// The build to offer from the index on `channel`, if one is ahead of this one.
-pub fn pick(index: &Value, channel: Channel, version: &str, nightly: Option<u64>, target: &str) -> Option<Offer> {
-    let builds = index["releases"].as_array()?;
-    let has = |build: &&Value| build["assets"][target]["key"].is_string();
-    let chosen = match channel {
-        // Stable: the newest release by its version.
-        Channel::Stable => builds.iter().filter(has).filter(|build| build["prerelease"] != true).max_by(|a, b| {
-            let version = |build: &Value| build["tag"].as_str().map(|tag| tag.trim_start_matches('v').split('.').filter_map(|part| part.parse::<u64>().ok()).collect::<Vec<_>>()).unwrap_or_default();
-            version(a).cmp(&version(b))
-        }),
-        // Nightly: whatever was published last, release or nightly.
-        Channel::Nightly => builds.iter().filter(has).max_by(|a, b| a["publishedAt"].as_str().unwrap_or("").cmp(b["publishedAt"].as_str().unwrap_or(""))),
-    }?;
-    let tag = chosen["tag"].as_str()?;
-    if !ahead(tag, version, nightly) {
-        return None;
-    }
-    let asset = &chosen["assets"][target];
-    Some(Offer { tag: tag.to_string(), key: asset["key"].as_str()?.to_string(), size: asset["size"].as_u64().unwrap_or(0), sha256: asset["sha256"].as_str()?.to_string() })
+/// The update zip's name for this Mac ("Writer-aarch64-apple-darwin.zip").
+fn asset_name(target: &str) -> String {
+    format!("Writer-{target}.zip")
 }
 
-/// Asks what's on offer now.
+/// The build to offer from GitHub's releases on `channel`, if one is ahead
+/// of this one: Nightly, whatever was published last (release or nightly);
+/// Stable, the newest release (`latest`, which skips pre-releases).
+pub fn pick(releases: &[Value], channel: Channel, version: &str, nightly: Option<u64>, target: &str) -> Option<(String, Value)> {
+    let name = asset_name(target);
+    let asset_of = |release: &Value| release["assets"].as_array().and_then(|assets| assets.iter().find(|asset| asset["name"] == name.as_str()).cloned());
+    let chosen = releases
+        .iter()
+        .filter(|release| release["draft"] != true && (channel == Channel::Nightly || release["prerelease"] != true))
+        .filter(|release| asset_of(release).is_some())
+        // ISO 8601 times in UTC compare as text.
+        .max_by(|a, b| a["published_at"].as_str().unwrap_or("").cmp(b["published_at"].as_str().unwrap_or("")))?;
+    let tag = chosen["tag_name"].as_str()?;
+    ahead(tag, version, nightly).then(|| (tag.to_string(), asset_of(chosen).unwrap_or(Value::Null)))
+}
+
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(60)).user_agent("Writer").build()
+}
+
+fn get_json(url: &str) -> Result<Option<Value>, String> {
+    match agent().get(url).set("accept", "application/vnd.github+json").call() {
+        Ok(response) => response.into_json().map(Some).map_err(|error| format!("GitHub answered with something Writer can't read ({error})")),
+        Err(ureq::Error::Status(404, _)) => Ok(None),
+        Err(ureq::Error::Status(code, _)) => Err(format!("GitHub answered {code}")),
+        Err(error) => Err(format!("couldn't reach GitHub ({error})")),
+    }
+}
+
+/// Asks GitHub what's on offer now.
 pub fn check(data: &Path) -> Result<Option<Offer>, String> {
-    let index = cloud::get_bytes(data, INDEX)?.map(|bytes| serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null)).unwrap_or(Value::Null);
+    let channel = channel(data);
+    let releases: Vec<Value> = match channel {
+        Channel::Stable => get_json(&format!("{RELEASES}/latest"))?.into_iter().collect(),
+        Channel::Nightly => get_json(&format!("{RELEASES}?per_page=30"))?.and_then(|list| list.as_array().cloned()).unwrap_or_default(),
+    };
     let nightly = release::tag().and_then(|tag| tag.strip_prefix("nightly-")).and_then(|number| number.parse().ok());
-    let offer = pick(&index, channel(data), release::VERSION, nightly, target());
+    let offer = match pick(&releases, channel, release::VERSION, nightly, target()) {
+        Some((tag, asset)) => {
+            let url = asset["browser_download_url"].as_str().ok_or("an update without a download link")?.to_string();
+            // GitHub hashes uploads itself; the .sha256 beside the zip is the fallback.
+            let sha256 = match asset["digest"].as_str().and_then(|digest| digest.strip_prefix("sha256:")) {
+                Some(digest) => digest.to_string(),
+                None => agent()
+                    .get(&format!("{url}.sha256"))
+                    .call()
+                    .map_err(|error| format!("{tag} has no checksum ({error})"))?
+                    .into_string()
+                    .map_err(|error| error.to_string())?
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            };
+            Some(Offer { tag, url, size: asset["size"].as_u64().unwrap_or(0), sha256 })
+        }
+        None => None,
+    };
     if let Ok(mut state) = STATE.lock() {
         if state.offer.as_ref().map(|known| &known.tag) != offer.as_ref().map(|found| &found.tag) {
             if let Some(found) = &offer {
@@ -158,6 +193,33 @@ pub fn check(data: &Path) -> Result<Option<Offer>, String> {
         state.checked_at = Some(crate::model::now_ms());
     }
     Ok(offer)
+}
+
+/// Downloads the update zip, its progress in the panel of what's under way.
+fn download(offer: &Offer, path: &Path) -> Result<(), String> {
+    let response = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(120))
+        .user_agent("Writer")
+        .build()
+        .get(&offer.url)
+        .call()
+        .map_err(|error| format!("couldn't download {} ({error})", offer.tag))?;
+    let mut reader = response.into_reader();
+    let mut file = fs::File::create(path).map_err(|error| error.to_string())?;
+    let mut buffer = vec![0u8; 1 << 20];
+    let mut done = 0u64;
+    loop {
+        let read = std::io::Read::read(&mut reader, &mut buffer).map_err(|error| format!("the download of {} stopped ({error})", offer.tag))?;
+        if read == 0 {
+            break;
+        }
+        std::io::Write::write_all(&mut file, &buffer[..read]).map_err(|error| error.to_string())?;
+        done += read as u64;
+        crate::activity::set("update", None, "Updating Writer", &offer.tag, &format!("{} of {}", crate::log::size(done), crate::log::size(offer.size)), done, offer.size, "bytes");
+    }
+    crate::activity::end("update");
+    Ok(())
 }
 
 /// Checks on start and every hour, for as long as Writer runs (release builds only).
@@ -194,7 +256,7 @@ pub fn install(app: &tauri::AppHandle, data: &Path) -> Result<(), String> {
         set_phase("downloading", None);
         let dir = bundle.parent().ok_or("Writer.app has no folder.")?;
         let zip = data.join(format!("update-{}.zip", offer.tag));
-        cloud::get_file(data, "update", &offer.key, offer.size, &zip)?;
+        download(&offer, &zip).inspect_err(|_| crate::activity::end("update"))?;
         let sum: String = Sha256::digest(fs::read(&zip).map_err(|error| error.to_string())?).iter().map(|byte| format!("{byte:02x}")).collect();
         if sum != offer.sha256 {
             let _ = fs::remove_file(&zip);
@@ -263,26 +325,32 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn index() -> Value {
-        let asset = |tag: &str| json!({ "aarch64-apple-darwin": { "key": format!("writer/releases/{tag}/Writer-aarch64-apple-darwin.zip"), "size": 10, "sha256": "ab" } });
-        json!({ "releases": [
-            { "tag": "nightly-1", "prerelease": true, "publishedAt": "2026-10-23T08:00:00Z", "assets": asset("nightly-1") },
-            { "tag": "v0.0.0", "prerelease": false, "publishedAt": "2026-10-23T09:00:00Z", "assets": asset("v0.0.0") },
-            { "tag": "nightly-2", "prerelease": true, "publishedAt": "2026-10-23T10:00:00Z", "assets": asset("nightly-2") }
-        ]})
+    fn releases() -> Vec<Value> {
+        let build = |tag: &str, prerelease: bool, at: &str| {
+            json!({ "tag_name": tag, "draft": false, "prerelease": prerelease, "published_at": at, "assets": [
+                { "name": "Writer-aarch64-apple-darwin.zip", "browser_download_url": format!("https://github.com/spheceo/writer/releases/download/{tag}/Writer-aarch64-apple-darwin.zip"), "size": 10, "digest": "sha256:ab" }
+            ]})
+        };
+        vec![
+            build("nightly-2", true, "2026-10-23T10:00:00Z"),
+            build("v0.0.0", false, "2026-10-23T09:00:00Z"),
+            build("nightly-1", true, "2026-10-23T08:00:00Z"),
+            json!({ "tag_name": "nightly-3", "draft": true, "prerelease": true, "published_at": "2026-10-23T11:00:00Z", "assets": [] }),
+        ]
     }
 
     #[test]
     fn nightly_offers_whatever_came_out_last_and_stable_only_releases() {
         let target = "aarch64-apple-darwin";
-        assert_eq!(pick(&index(), Channel::Nightly, "0.0.0", Some(1), target).map(|offer| offer.tag), Some("nightly-2".into()));
-        // On v0.0.0 (no nightly number), the newer nightly is offered.
-        assert_eq!(pick(&index(), Channel::Nightly, "0.0.0", None, target).map(|offer| offer.tag), Some("nightly-2".into()));
+        let tag = |found: Option<(String, Value)>| found.map(|(tag, _)| tag);
+        assert_eq!(tag(pick(&releases(), Channel::Nightly, "0.0.0", Some(1), target)), Some("nightly-2".into()));
+        // On v0.0.0 (no nightly number), the newer nightly is offered; a draft never is.
+        assert_eq!(tag(pick(&releases(), Channel::Nightly, "0.0.0", None, target)), Some("nightly-2".into()));
         // Stable on nightly-1 (built at 0.0.0): v0.0.0 isn't newer, so nothing.
-        assert!(pick(&index(), Channel::Stable, "0.0.0", Some(1), target).is_none());
-        assert_eq!(pick(&index(), Channel::Stable, "0.0.0", None, target).map(|offer| offer.tag), None);
-        // Nothing for an Intel Mac in this index.
-        assert!(pick(&index(), Channel::Nightly, "0.0.0", Some(1), "x86_64-apple-darwin").is_none());
+        assert!(pick(&releases(), Channel::Stable, "0.0.0", Some(1), target).is_none());
+        assert_eq!(tag(pick(&releases(), Channel::Stable, "-1.0.0", None, target)), None);
+        // Nothing for an Intel Mac among these.
+        assert!(pick(&releases(), Channel::Nightly, "0.0.0", Some(1), "x86_64-apple-darwin").is_none());
     }
 
     #[test]
