@@ -110,7 +110,7 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 
 To try it all on one Mac, `relay/test/accounts-stub.ts` stands in for the accounts site (its own keys; `STUB_PERMS`, `STUB_TTL`, `STUB_DENY`), with `wrangler dev --var ACCOUNTS_URL:http://127.0.0.1:8788` and a dev Writer started with `WRITER_ACCOUNTS_URL=http://127.0.0.1:8788` (debug builds only) and its relay URL set to the local worker.
 
-**Its secrets** live in Infisical, Repack's project, `dev`, folder `/writer-relay`: references to the canonical values at the root (`CONVEX_URL` is `NEXT_PUBLIC_CONVEX_URL`, the Docs client is the Drive client). `just relay-secrets` puts them on the Worker with `wrangler secret put`, through pipes, printing none (`--dry-run` lists them; name keys to put only those). Then:
+**Its secrets** live in Infisical, Repack's project, `dev`, folder `/writer-relay`: references to the canonical values at the root (`CONVEX_URL` is `NEXT_PUBLIC_CONVEX_URL`, the Docs client is the Drive client). The ElevenLabs key is the exception: `ELEVENLABS_API_KEY` lives only in the Worker (set once with `wrangler secret put`), and the script refuses to touch it. `just relay-secrets` puts them on the Worker with `wrangler secret put`, through pipes, printing none (`--dry-run` lists them; name keys to put only those). Then:
 
 ```sh
 cd relay && bunx wrangler deploy

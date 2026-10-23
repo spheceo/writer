@@ -9,6 +9,9 @@
  *   bun scripts/push-relay-secrets.ts --dry-run   # only says which it would put
  *   bun scripts/push-relay-secrets.ts PROXY_URL   # just these
  *
+ * ELEVENLABS_API_KEY isn't here: the relay's own key lives only in the Worker
+ * (set by hand), and this script refuses to touch it.
+ *
  * Signed in to Infisical with `infisical login` (its keyring), and to
  * Cloudflare with `bunx wrangler login`.
  */
@@ -18,7 +21,6 @@ const PROJECT = "cdf4a0c5-eca4-4415-af3a-40871af285f3";
 const FOLDER = "/writer-relay";
 /** What the relay reads (relay/src/index.ts, cloud.ts, auth.ts); nothing else is put. */
 const EXPECTED = [
-  "ELEVENLABS_API_KEY",
   "AI_GATEWAY_API_KEY",
   "GOOGLE_DRIVE_CLIENT_ID",
   "GOOGLE_DRIVE_CLIENT_SECRET",
@@ -40,6 +42,9 @@ const EXPECTED = [
 const args = process.argv.slice(2);
 const dry = args.includes("--dry-run");
 const only = args.filter((arg) => !arg.startsWith("--"));
+/** Kept in the Worker alone: never put from here, whatever Infisical holds. */
+const WORKER_ONLY = ["ELEVENLABS_API_KEY"];
+for (const name of only) if (WORKER_ONLY.includes(name)) throw new Error(`${name} lives only in the Worker; this script never puts it.`);
 for (const name of only) if (!EXPECTED.includes(name)) throw new Error(`${name} isn't one of the relay's secrets.`);
 
 const exported = Bun.spawn(["infisical", "export", `--projectId=${PROJECT}`, "--env=dev", `--path=${FOLDER}`, "--format=json", "--silent"], { stdout: "pipe", stderr: "pipe" });
@@ -48,6 +53,7 @@ if (code !== 0) throw new Error(`Infisical refused (exit ${code}). Sign in with 
 const values = new Map((JSON.parse(text) as { key: string; value: string }[]).map((item) => [item.key, item.value]));
 
 const unexpected = [...values.keys()].filter((key) => !EXPECTED.includes(key));
+if (unexpected.some((key) => WORKER_ONLY.includes(key))) throw new Error(`${FOLDER} holds ${WORKER_ONLY.join(", ")}, which lives only in the Worker. Remove it from Infisical.`);
 if (unexpected.length) throw new Error(`${FOLDER} has keys the relay doesn't read: ${unexpected.join(", ")}. Remove them or add them here.`);
 const wanted = only.length ? only : EXPECTED;
 const missing = wanted.filter((key) => !values.get(key));
