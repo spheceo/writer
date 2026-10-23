@@ -82,9 +82,23 @@ pub struct Note {
     /// `here` or `everywhere`: the ask across the whole script.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
-    /// The exact words to put in place of the anchored ones, applied as written.
+    /// The exact words to put in place of the anchored ones, applied as written
+    /// (the composer's "suggest words", before suggestions had their own kind).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    /// A suggestion (intent `suggestion`): the anchored words' replacement,
+    /// "" to delete them; with `start == end` and no quote, words to insert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    /// An insertion's place, `{before, after}`: the words either side of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
+    /// One edit spanning blocks: its notes share this, and go together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// A suggestion's end: `accepted` or `rejected`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// On a footage clip: `cut`, `extend` or `restore` (with the anchor's `side`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
@@ -105,6 +119,11 @@ impl Note {
     /// A reviewer's note, not a reply.
     pub fn is_root(&self) -> bool {
         self.parent_id.is_none()
+    }
+
+    /// A suggested edit: words to put in, take out or replace, as written.
+    pub fn is_suggestion(&self) -> bool {
+        self.intent.as_deref() == Some("suggestion") || self.replacement.is_some()
     }
 
     pub fn is_open(&self) -> bool {
@@ -138,6 +157,10 @@ impl Note {
             intent: text("intent").filter(|intent| !intent.trim().is_empty()),
             scope: text("scope"),
             suggestion: text("suggestion"),
+            replacement: text("replacement"),
+            context: value["context"].is_object().then(|| value["context"].clone()),
+            group: text("group").filter(|group| !group.is_empty()),
+            outcome: text("outcome"),
             action: text("action").filter(|action| !action.trim().is_empty()),
             confirmed: value["confirmed"].is_object(),
             not_fixed_at: value["notFixed"]["at"].as_f64().map(|at| at as i64),
@@ -249,6 +272,13 @@ pub fn approval(data: &Path, script_id: &str) -> Option<Approval> {
 
 pub fn resolve(data: &Path, note_id: &str, version: u32, ranges: &[Range], summary: &str) -> Result<(), String> {
     cloud::call(data, "mutation", "reviews:resolve", json!({ "noteId": note_id, "version": version, "changedRanges": ranges, "fixSummary": summary }))?;
+    Ok(())
+}
+
+/// A suggestion resolved, `accepted` (applied) or `rejected` (the summary says why).
+pub fn resolve_suggestion(data: &Path, note_id: &str, version: u32, ranges: &[Range], summary: &str, accepted: bool) -> Result<(), String> {
+    let outcome = if accepted { "accepted" } else { "rejected" };
+    cloud::call(data, "mutation", "reviews:resolve", json!({ "noteId": note_id, "version": version, "changedRanges": ranges, "fixSummary": summary, "outcome": outcome }))?;
     Ok(())
 }
 

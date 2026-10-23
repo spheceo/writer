@@ -79,7 +79,17 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
         return Ok(("Those notes were already taken, on another Mac or by an earlier run.".into(), 0.0));
     }
     let (mut fixed, mut cost, mut lines) = (0, 0.0, Vec::new());
+    let mut handled: Vec<String> = Vec::new();
     for (index, note) in notes.iter().enumerate() {
+        // One edit spanning blocks goes as one, when its first note comes up.
+        if handled.contains(&note.id) {
+            continue;
+        }
+        let members: Vec<&Note> = match &note.group {
+            Some(group) => notes.iter().filter(|other| other.group.as_ref() == Some(group)).collect(),
+            None => vec![note],
+        };
+        handled.extend(members.iter().map(|member| member.id.clone()));
         // Approved meanwhile (here or on Repack's page): the rest are let go, unfixed.
         if let Some(approved) = reviews::approval(&data, id) {
             let rest: Vec<String> = notes[index..].iter().map(|note| note.id.clone()).collect();
@@ -91,7 +101,7 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
         let before = store::read(&dir)?;
         let next = before.review.as_ref().map_or(1, |link| link.version + 1);
         let began = std::time::Instant::now();
-        let outcome = fix(app, id, &before, note, &reviews::replies(&data, &note.id));
+        let outcome = if members.len() > 1 { fix_group(app, id, &before, &members) } else { fix(app, id, &before, note, &reviews::replies(&data, &note.id)) };
         let name = crate::log::named(id, &before.title);
         let ask: String = note.text.chars().take(80).collect();
         let intent = note.intent.as_deref().unwrap_or("note");
@@ -105,6 +115,36 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
         let mut ranges = blocks::changed(&blocks::of(&before), &blocks::of(&after));
         let notes: Vec<blocks::Range> = noted(&before, &after).into_iter().filter(|range| !ranges.iter().any(|kept| kept.block_id == range.block_id)).collect();
         ranges.extend(notes);
+        // A suggestion ends accepted or rejected, every note of its edit together.
+        if note.is_suggestion() {
+            match outcome {
+                Ok((Outcome::Changed(summary), spent)) if differs(&before, &after) => {
+                    cost += spent;
+                    for member in &members {
+                        reviews::resolve_suggestion(&data, &member.id, next, &ranges, &summary, true)?;
+                        reviews::mark_fixed(&data, &member.id, next, ranges.clone(), &summary);
+                    }
+                    fixed += members.len();
+                    lines.push(format!("Took {}'s suggestion: {summary}", note.author));
+                }
+                Ok((Outcome::Changed(said) | Outcome::Unchanged(said) | Outcome::Answered(said), spent)) => {
+                    cost += spent;
+                    let why: String = said.chars().take(1_900).collect();
+                    for member in &members {
+                        reviews::resolve_suggestion(&data, &member.id, next, &[], &why, false)?;
+                        reviews::mark_fixed(&data, &member.id, next, Vec::new(), &why);
+                    }
+                    lines.push(format!("Didn't take {}'s suggestion: {said}", note.author));
+                }
+                Err(error) => {
+                    let ids: Vec<String> = members.iter().map(|member| member.id.clone()).collect();
+                    let _ = reviews::release(&data, &ids);
+                    let _ = reviews::reply(&data, &note.id, &format!("Writer couldn't carry this suggestion out: {error}"));
+                    lines.push(format!("Couldn't take {}'s suggestion: {error}", note.author));
+                }
+            }
+            continue;
+        }
         match outcome {
             Ok((Outcome::Changed(summary), spent)) if differs(&before, &after) => {
                 cost += spent;
@@ -178,7 +218,7 @@ fn fix(app: &AppHandle, id: &str, script: &Script, note: &Note, replies: &[Note]
     // Exactly as the reviewer put it, with no model in between.
     let direct = if intent == Intent::Editor {
         editor_note(script, note)
-    } else if note.suggestion.as_deref().is_some_and(|text| !text.trim().is_empty()) {
+    } else if wanted(note).is_some() {
         suggested(script, note)
     } else if note.action.is_some() {
         acted(&dir, script, note)?
@@ -216,6 +256,46 @@ fn fix(app: &AppHandle, id: &str, script: &Script, note: &Note, replies: &[Note]
     Ok((Outcome::Changed(answer), cost))
 }
 
+/// One suggested edit over several blocks: carried out exactly, every part
+/// or none; else by Claude as one request.
+fn fix_group(app: &AppHandle, id: &str, script: &Script, members: &[&Note]) -> Result<(Outcome, f64), String> {
+    let data = crate::data_dir(app)?;
+    let dir = store::script_dir(&data, id)?;
+    let author = members.first().map_or("Reviewer", |note| note.author.as_str());
+    let said = format!("Suggested edit from {author}, in {} places", members.len());
+    let mut out = script.clone();
+    let mut done = Vec::new();
+    for note in members {
+        match suggested(&out, note) {
+            Some((next, line)) => {
+                out = next;
+                done.push(line);
+            }
+            None => {
+                done.clear();
+                break;
+            }
+        }
+    }
+    if done.len() == members.len() {
+        let summary = done.join(" ");
+        save(&dir, script, out, &said, &summary)?;
+        return Ok((Outcome::Changed(summary), 0.0));
+    }
+    let mut request = format!("A reviewer suggested one edit that spans {} places. Carry out every part of it, as written:", members.len());
+    for note in members {
+        request.push_str(&format!("\n\n{}{}", self::request(script, note, &[]), rules(Intent::Wording, note)));
+    }
+    let (answer, cost) = if script.commentary.is_none() {
+        let focus = crate::revise::Focus { selected: members.iter().filter_map(|note| note.anchor["blockId"].as_str().map(str::to_string)).collect(), ..Default::default() };
+        crate::revise_with(app, id, &request, &said, &focus, true)?
+    } else {
+        crate::revise_commentary(&data, &dir, script, &request, &said)?
+    };
+    let after = store::read(&dir)?;
+    Ok((if differs(script, &after) { Outcome::Changed(answer) } else { Outcome::Unchanged(answer) }, cost))
+}
+
 /// What a note's intent lets Claude change, said to it.
 fn rules(intent: Intent, note: &Note) -> String {
     let mut out = String::new();
@@ -228,8 +308,16 @@ fn rules(intent: Intent, note: &Note) -> String {
         Intent::Editor => "\nThis note is for the video editor: add a note for the editor (starting edit:) with the reviewer's words as written, on the clip or paragraph it is about. Change nothing else.",
         Intent::Fyi | Intent::Other => "",
     });
-    if let Some(suggestion) = note.suggestion.as_deref().filter(|text| !text.trim().is_empty()) {
-        out.push_str(&format!("\nThe reviewer suggests these exact words in place of the anchored ones: \"{}\". Use them as written, adjusting only what grammar around them needs.", suggestion.trim()));
+    if let Some(with) = wanted(note) {
+        let quote = note.anchor["quote"].as_str().unwrap_or("").trim();
+        out.push_str(&if with.trim().is_empty() {
+            format!("\nThe reviewer suggests deleting the anchored words, \"{quote}\". Take them out, adjusting only what grammar around them needs.")
+        } else if quote.is_empty() {
+            let around = |key: &str| note.context.as_ref().and_then(|context| context[key].as_str()).unwrap_or("").to_string();
+            format!("\nThe reviewer suggests inserting these exact words, between \"{}\" and \"{}\": \"{}\". Use them as written, adjusting only what grammar around them needs.", around("before"), around("after"), with.trim())
+        } else {
+            format!("\nThe reviewer suggests these exact words in place of the anchored ones: \"{}\". Use them as written, adjusting only what grammar around them needs.", with.trim())
+        });
     }
     if everywhere(note) {
         out.push_str("\nThe reviewer asks for this everywhere: carry it out wherever the same thing occurs in the script, not only where the note is anchored.");
@@ -340,8 +428,15 @@ pub(crate) fn replace_at(text: &str, start: usize, end: usize, quote: &str, with
 /// on a footage clip, as a respelling of the words it covers, word for word.
 /// Everywhere: in place of every occurrence of the quoted words in the narration.
 fn suggested(script: &Script, note: &Note) -> Option<(Script, String)> {
-    let with = note.suggestion.as_deref()?.trim().to_string();
+    let with = wanted(note)?;
     let (block, start, end, quote) = anchor_span(note)?;
+    if quote.is_empty() && start == end {
+        return inserted(script, note, &block, start, &with);
+    }
+    if with.trim().is_empty() {
+        return deleted(script, &block, start, end, &quote);
+    }
+    let with = with.trim().to_string();
     let mut out = script.clone();
     if everywhere(note) && !quote.is_empty() {
         let mut count = 0;
@@ -406,6 +501,80 @@ fn suggested(script: &Script, note: &Note) -> Option<(Script, String)> {
         }
     }
     Some((out, format!("Respelled \"{quote}\" as \"{with}\".")))
+}
+
+/// What a suggestion puts in: a suggestion note's replacement ("" deletes),
+/// else the composer's suggested words, when there are some.
+fn wanted(note: &Note) -> Option<String> {
+    match &note.replacement {
+        Some(replacement) => Some(replacement.clone()),
+        None => note.suggestion.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string),
+    }
+}
+
+/// A gap left by words taken out, closed: no doubled space, none before punctuation.
+fn close_gap(text: &str) -> String {
+    let mut out = text.split(' ').filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    for mark in [" .", " ,", " ;", " :", " !", " ?", " …"] {
+        out = out.replace(mark, &mark[1..]);
+    }
+    out.trim().to_string()
+}
+
+/// The narration a suggestion may edit, as a mutable string: a commentary
+/// paragraph's piece (with the offset it starts at), a heading, a cut-in.
+fn narration_at<'a>(out: &'a mut Script, block: &str, start: usize, end: usize) -> Option<(&'a mut String, usize)> {
+    if let Some(draft) = out.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()) {
+        if let Some(first) = block.strip_suffix(":heading") {
+            let section = draft.sections.iter_mut().find(|section| section.paragraphs.first().is_some_and(|paragraph| paragraph.id == first))?;
+            return Some((&mut section.heading, 0));
+        }
+        let paragraph = draft.sections.iter_mut().flat_map(|section| section.paragraphs.iter_mut()).find(|paragraph| paragraph.id == block)?;
+        let spans = blocks::piece_spans(paragraph);
+        let index = spans.iter().position(|&(from, to)| start >= from && end <= to)?;
+        let from = spans[index].0;
+        let crate::commentary::Piece::Say { text } = &mut paragraph.pieces[index] else { return None };
+        return Some((text, from));
+    }
+    let index = out.clips.iter().position(|clip| clip.id == block && clip.is_cut_in())?;
+    let text = out.clips[index].narration.get_or_insert_with(String::new);
+    Some((text, 0))
+}
+
+/// A suggestion that takes the anchored words out.
+fn deleted(script: &Script, block: &str, start: usize, end: usize, quote: &str) -> Option<(Script, String)> {
+    let mut out = script.clone();
+    let (text, from) = narration_at(&mut out, block, start, end)?;
+    let cut = replace_at(text, start.checked_sub(from)?, end.checked_sub(from)?, quote, "")?;
+    *text = close_gap(&cut);
+    Some((out, format!("Took out \"{quote}\", as suggested.")))
+}
+
+/// A suggestion that puts words in where there were none: at the anchor
+/// while the words either side are still there, else where they meet now.
+fn inserted(script: &Script, note: &Note, block: &str, at: usize, with: &str) -> Option<(Script, String)> {
+    let with = with.trim();
+    if with.is_empty() {
+        return None;
+    }
+    let around = |key: &str| note.context.as_ref().and_then(|context| context[key].as_str()).unwrap_or("").to_string();
+    let (before, after) = (around("before"), around("after"));
+    let mut out = script.clone();
+    let (text, from) = narration_at(&mut out, block, at, at)?;
+    let offset = at.checked_sub(from)?;
+    let fits = |text: &str, byte: usize| text[..byte].trim_end().ends_with(before.trim_end()) && text[byte..].trim_start().starts_with(after.trim_start());
+    let byte = match byte_at(text, offset).filter(|&byte| fits(text, byte)) {
+        Some(byte) => byte,
+        None if !(before.trim().is_empty() && after.trim().is_empty()) => {
+            let joined = format!("{before}{after}");
+            text.find(&joined).map(|found| found + before.len()).or_else(|| text.find(before.trim_end()).filter(|_| !before.trim().is_empty()).map(|found| found + before.trim_end().len()))?
+        }
+        None => return None,
+    };
+    let (head, tail) = text.split_at(byte);
+    let spaced = |left: &str, right: &str| if left.is_empty() || right.is_empty() || left.ends_with(' ') || right.starts_with([' ', '.', ',', ';', ':', '!', '?', '…']) { "" } else { " " };
+    *text = format!("{head}{}{with}{}{tail}", spaced(head, with), spaced(with, tail));
+    Some((out, format!("Put in \"{with}\", as suggested.")))
 }
 
 /// A footage action carried out exactly: `cut` takes the anchored words out;
@@ -541,6 +710,26 @@ mod tests {
         let all = suggested(&script(), &note(json!({ "anchor": { "blockId": "n1", "start": 3, "end": 9, "quote": "swears" }, "suggestion": "testified", "scope": "everywhere" }))).unwrap();
         assert_eq!(all.0.clips[3].narration.as_deref(), Some("He testified it again."));
         assert!(all.1.contains("2 places"));
+    }
+
+    #[test]
+    fn suggestion_notes_replace_delete_and_insert() {
+        // "swears " is 3..10 in "He swears he was home all night.".
+        let replaced = suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 3, "end": 9, "quote": "swears" }, "replacement": "insists" }))).unwrap();
+        assert_eq!(replaced.0.clips[1].narration.as_deref(), Some("He insists he was home all night."));
+        let gone = suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 21, "end": 31, "quote": " all night" }, "replacement": "" }))).unwrap();
+        assert_eq!(gone.0.clips[1].narration.as_deref(), Some("He swears he was home."));
+        let gap = suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 10, "end": 13, "quote": "he " }, "replacement": "" }))).unwrap();
+        assert_eq!(gap.0.clips[1].narration.as_deref(), Some("He swears was home all night."));
+        // At its offset while the words either side match, else where they meet.
+        let put = suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 21, "end": 21, "quote": "" }, "replacement": "alone", "context": { "before": "was home", "after": " all night." } }))).unwrap();
+        assert_eq!(put.0.clips[1].narration.as_deref(), Some("He swears he was home alone all night."));
+        let moved = suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 2, "end": 2, "quote": "" }, "replacement": "alone", "context": { "before": "was home", "after": " all" } }))).unwrap();
+        assert_eq!(moved.0.clips[1].narration.as_deref(), Some("He swears he was home alone all night."));
+        // An insertion whose place is gone is Claude's to do.
+        assert!(suggested(&script(), &note(json!({ "intent": "suggestion", "anchor": { "blockId": "n1", "start": 2, "end": 2, "quote": "" }, "replacement": "alone", "context": { "before": "in court", "after": " today" } }))).is_none());
+        assert!(note(json!({ "intent": "suggestion", "replacement": "" })).is_suggestion());
+        assert!(!note(json!({ "suggestion": "x" })).is_suggestion());
     }
 
     #[test]
