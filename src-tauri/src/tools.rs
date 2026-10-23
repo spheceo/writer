@@ -20,12 +20,16 @@ pub fn init(data: &Path) {
 /// build): the single-file build unpacks itself on every run, which took
 /// about 20 s a launch.
 fn managed(program: &str) -> Option<PathBuf> {
-    let bin = DATA.get()?.join("bin");
-    Some(match program {
-        "yt-dlp" => yt_dlp_dir(&bin).join("yt-dlp_macos"),
-        _ => bin.join(program),
-    })
+    // Only yt-dlp: nothing else is ever taken from a folder Writer writes to.
+    if program != "yt-dlp" {
+        return None;
+    }
+    Some(yt_dlp_dir(&DATA.get()?.join("bin")).join("yt-dlp_macos"))
 }
+
+/// macOS's own tools, which the updater and sign-in trust: only ever from
+/// /usr/bin, never a same-named program earlier on a user-writable PATH.
+const SYSTEM: [&str; 6] = ["codesign", "ditto", "open", "xattr", "osascript", "spctl"];
 
 fn yt_dlp_dir(bin: &Path) -> PathBuf {
     bin.join("yt-dlp-dist")
@@ -55,6 +59,9 @@ fn installed(program: &str) -> Vec<PathBuf> {
 
 /// Where a program is, and how it got there.
 pub fn locate(program: &str) -> Option<(PathBuf, &'static str)> {
+    if SYSTEM.contains(&program) {
+        return Some((PathBuf::from("/usr/bin").join(program), "part of macOS"));
+    }
     if let Some(path) = managed(program).filter(|path| path.is_file()) {
         return Some((path, "kept up to date by Writer"));
     }

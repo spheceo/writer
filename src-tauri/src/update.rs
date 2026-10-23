@@ -295,10 +295,11 @@ fn install_app(zip: &Path, bundle: &Path, dir: &Path) -> Result<(), String> {
             return Err("the update has no Writer.app".to_string());
         }
         crate::proc::run("codesign", &["--verify", "--deep", "--strict", &fresh.to_string_lossy()], Duration::from_secs(120)).map_err(|error| format!("the update's signature is broken: {error}"))?;
-        if let Some(team) = team_of(bundle) {
-            if team_of(&fresh).as_deref() != Some(team.as_str()) {
-                return Err(format!("the update isn't signed by {team}, who signed this Writer"));
-            }
+        // Both signed by the same Developer ID team, or no update: an ad hoc
+        // signature proves nothing about who made the zip.
+        let team = team_of(bundle).ok_or("this Writer isn't signed with a Developer ID, so it can't check an update; install the new Writer from its disk image")?;
+        if team_of(&fresh).as_deref() != Some(team.as_str()) {
+            return Err(format!("the update isn't signed by {team}, who signed this Writer"));
         }
         let old = dir.join(format!(".Writer-old-{}.app", std::process::id()));
         fs::rename(bundle, &old).map_err(unwritable)?;
@@ -315,7 +316,7 @@ fn install_app(zip: &Path, bundle: &Path, dir: &Path) -> Result<(), String> {
 
 /// The team that signed an app (Developer ID), or none when it's signed ad hoc.
 fn team_of(app: &Path) -> Option<String> {
-    let out = std::process::Command::new("codesign").args(["-dv", &app.to_string_lossy()]).output().ok()?;
+    let out = std::process::Command::new("/usr/bin/codesign").args(["-dv", &app.to_string_lossy()]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stderr);
     text.lines().find_map(|line| line.strip_prefix("TeamIdentifier=")).map(str::trim).filter(|team| *team != "not set").map(str::to_string)
 }
