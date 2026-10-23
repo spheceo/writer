@@ -37,6 +37,10 @@ const KEYCHAIN_ACCOUNT: &str = "refresh-token";
 const EARLY: Duration = Duration::from_secs(600);
 /// How long a sign-in waits for the browser.
 const WAIT: Duration = Duration::from_secs(600);
+/// After a renewal the relay still refuses, no forced renewal for this long.
+const FORCED_GAP: Duration = Duration::from_secs(60);
+/// No answer from accounts: wait this long before trying again.
+const OFFLINE_WAIT: Duration = Duration::from_secs(30);
 
 /// Where people sign in. A debug build may point elsewhere, for testing.
 fn accounts() -> String {
@@ -74,9 +78,12 @@ struct State {
     kept: bool,
     signing_in: bool,
     error: Option<String>,
+    /// No renewal before this: accounts asked Writer to wait (429), or didn't answer.
+    hold: Option<Instant>,
+    renewed: Option<Instant>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None });
+static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None });
 /// One renewal at a time: a refresh token works once, and reusing it ends the sign-in.
 static RENEWING: Mutex<()> = Mutex::new(());
 static DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -95,7 +102,7 @@ pub struct Status {
 }
 
 pub fn status() -> Status {
-    let state = STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = lock();
     Status {
         signed_in: state.kept,
         person: state.session.as_ref().map(|session| session.person.clone()),
@@ -167,9 +174,15 @@ fn access_token() -> Option<String> {
     renew().ok()
 }
 
-/// The relay refused the access token (401): ask for a new one next time.
+/// The relay refused the access token (401): ask for a new one next time,
+/// unless one was just got (a relay that refuses every token mustn't turn
+/// each call into a renewal).
 pub fn refused() {
-    if let Some(session) = lock().session.as_mut() {
+    let mut state = lock();
+    if state.renewed.is_some_and(|at| at.elapsed() < FORCED_GAP) {
+        return;
+    }
+    if let Some(session) = state.session.as_mut() {
         session.until = Instant::now();
     }
 }
@@ -188,13 +201,21 @@ pub fn turned_away(code: u16, said: &str) -> String {
     "Writer's service needs you to sign in. Open Setup and sign in.".into()
 }
 
-/// Trades the kept refresh token for a new pair. A refused one signs out.
+/// Trades the kept refresh token for a new pair. Only `invalid_grant` signs
+/// out; told to wait (429) or not answered, Writer keeps the refresh token
+/// and holds off before asking again.
 fn renew() -> Result<String, String> {
     let _one = RENEWING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Someone else may have just renewed it.
-    if let Some(session) = &lock().session {
-        if session.until > Instant::now() + EARLY {
-            return Ok(session.access.clone());
+    {
+        let state = lock();
+        // Someone else may have just renewed it.
+        if let Some(session) = &state.session {
+            if session.until > Instant::now() + EARLY {
+                return Ok(session.access.clone());
+            }
+        }
+        if state.hold.is_some_and(|until| until > Instant::now()) {
+            return Err("waiting before renewing the sign-in".into());
         }
     }
     let Some(refresh) = load_refresh() else {
@@ -204,6 +225,10 @@ fn renew() -> Result<String, String> {
     match token_request(json!({ "grant_type": "refresh_token", "refresh_token": refresh, "client_id": CLIENT_ID })) {
         Ok(answer) => {
             let access = take(&answer)?;
+            let mut state = lock();
+            state.hold = None;
+            state.renewed = Some(Instant::now());
+            drop(state);
             log::info("account", "renewed the sign-in");
             Ok(access)
         }
@@ -213,8 +238,9 @@ fn renew() -> Result<String, String> {
             signed_out(Some("Your sign-in ended. Sign in again.".into()));
             Err(why)
         }
-        Err(Failure::Offline(why)) => {
-            log::warn("account", format!("couldn't renew the sign-in: {why}"));
+        Err(Failure::Offline(why, wait)) => {
+            log::warn("account", format!("couldn't renew the sign-in ({why}); trying again in {} s", wait.as_secs()));
+            lock().hold = Some(Instant::now() + wait);
             Err(why)
         }
     }
@@ -267,11 +293,29 @@ fn claims(token: &str) -> Person {
     }
 }
 
+#[derive(Debug)]
 enum Failure {
-    /// The accounts site said no (an OAuth error): the grant is dead.
+    /// `invalid_grant`: the code or refresh token is dead.
     Refused(String),
-    /// No answer, or the site broke: try again later.
-    Offline(String),
+    /// Anything else (no answer, 429, the site broke): try again after this long.
+    Offline(String, Duration),
+}
+
+/// What an error answer from accounts means. Only `invalid_grant` ends a
+/// sign-in; 429 says how long to wait (Retry-After, a minute if it doesn't).
+fn classify(code: u16, retry_after: Option<&str>, body: &Value) -> Failure {
+    let error = body["error"].as_str().unwrap_or("");
+    let detail = body["error_description"].as_str().map(|text| format!(": {text}")).unwrap_or_default();
+    let said = format!("{code} {}{detail}", if error.is_empty() { "error" } else { error });
+    if error == "invalid_grant" {
+        return Failure::Refused(said);
+    }
+    let wait = if code == 429 {
+        Duration::from_secs(retry_after.and_then(|value| value.trim().parse::<u64>().ok()).unwrap_or(60).clamp(1, 600))
+    } else {
+        OFFLINE_WAIT
+    };
+    Failure::Offline(said, wait)
 }
 
 fn agent() -> ureq::Agent {
@@ -280,15 +324,13 @@ fn agent() -> ureq::Agent {
 
 fn token_request(body: Value) -> Result<Value, Failure> {
     match agent().post(&format!("{}/app/token", accounts())).set("content-type", "application/json").send_json(body) {
-        Ok(response) => response.into_json().map_err(|_| Failure::Offline("accounts.spheceo.com answered with something Writer can't read".into())),
-        Err(ureq::Error::Status(code @ (400 | 401 | 403), response)) => {
-            let value: Value = response.into_json().unwrap_or(Value::Null);
-            let error = value["error"].as_str().unwrap_or("refused");
-            let detail = value["error_description"].as_str().map(|text| format!(": {text}")).unwrap_or_default();
-            Err(Failure::Refused(format!("{code} {error}{detail}")))
+        Ok(response) => response.into_json().map_err(|_| Failure::Offline("accounts.spheceo.com answered with something Writer can't read".into(), OFFLINE_WAIT)),
+        Err(ureq::Error::Status(code, response)) => {
+            let retry_after = response.header("retry-after").map(str::to_string);
+            let body: Value = response.into_json().unwrap_or(Value::Null);
+            Err(classify(code, retry_after.as_deref(), &body))
         }
-        Err(ureq::Error::Status(code, _)) => Err(Failure::Offline(format!("accounts.spheceo.com answered {code}"))),
-        Err(ureq::Error::Transport(transport)) => Err(Failure::Offline(transport.to_string())),
+        Err(ureq::Error::Transport(transport)) => Err(Failure::Offline(transport.to_string(), OFFLINE_WAIT)),
     }
 }
 
@@ -322,7 +364,8 @@ pub fn sign_in() -> Result<(), String> {
             token_request(json!({ "grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": redirect, "client_id": CLIENT_ID }))
                 .map_err(|failure| match failure {
                     Failure::Refused(why) => format!("accounts.spheceo.com refused the sign-in ({why})."),
-                    Failure::Offline(why) => format!("Couldn't reach accounts.spheceo.com ({why})."),
+                    Failure::Offline(why, wait) if why.starts_with("429") => format!("accounts.spheceo.com is busy; try again in {} s.", wait.as_secs()),
+                    Failure::Offline(why, _) => format!("Couldn't reach accounts.spheceo.com ({why})."),
                 })
                 .and_then(|answer| take(&answer))
         });
@@ -444,14 +487,38 @@ pub fn sign_out() {
     let _one = RENEWING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(refresh) = load_refresh() {
         // The site forgets it; done even if it can't be reached, Writer forgets it too.
-        let revoked = agent().post(&format!("{}/app/revoke", accounts())).set("content-type", "application/json").send_json(json!({ "token": refresh, "client_id": CLIENT_ID }));
-        if let Err(error) = revoked {
-            log::warn("account", format!("couldn't tell accounts.spheceo.com about the sign-out: {error}"));
+        if let Err(wait) = revoke(&refresh) {
+            // Told to wait (429) or not answered: once more, later, in the background.
+            std::thread::spawn(move || {
+                std::thread::sleep(wait);
+                if revoke(&refresh).is_err() {
+                    log::warn("account", "accounts.spheceo.com still didn't take the sign-out; that sign-in lapses after 30 days unused");
+                }
+            });
         }
     }
     delete_refresh();
     log::info("account", "signed out");
     signed_out(None);
+}
+
+/// Tells accounts to forget a refresh token; on failure, how long to wait before trying again.
+fn revoke(refresh: &str) -> Result<(), Duration> {
+    match agent().post(&format!("{}/app/revoke", accounts())).set("content-type", "application/json").send_json(json!({ "token": refresh, "client_id": CLIENT_ID })) {
+        Ok(_) => Ok(()),
+        Err(ureq::Error::Status(code, response)) => {
+            let retry_after = response.header("retry-after").map(str::to_string);
+            log::warn("account", format!("accounts.spheceo.com answered {code} to the sign-out"));
+            match classify(code, retry_after.as_deref(), &Value::Null) {
+                Failure::Offline(_, wait) if code == 429 || code >= 500 => Err(wait),
+                _ => Ok(()),
+            }
+        }
+        Err(ureq::Error::Transport(transport)) => {
+            log::warn("account", format!("couldn't tell accounts.spheceo.com about the sign-out: {transport}"));
+            Err(OFFLINE_WAIT)
+        }
+    }
 }
 
 // ---- Where the refresh token is kept ----
@@ -576,6 +643,19 @@ mod tests {
         assert_eq!(params[0], ("code".into(), "abc/1".into()));
         assert_eq!(params[1], ("state".into(), "x y".into()));
         assert_eq!(params[2].1, "Ask an admin%");
+    }
+
+    #[test]
+    fn only_invalid_grant_ends_a_sign_in() {
+        assert!(matches!(classify(400, None, &json!({ "error": "invalid_grant" })), Failure::Refused(_)));
+        match classify(429, Some("7"), &json!({ "error": "temporarily_unavailable" })) {
+            Failure::Offline(said, wait) => assert_eq!((said.starts_with("429"), wait.as_secs()), (true, 7)),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(classify(429, None, &Value::Null), Failure::Offline(_, wait) if wait.as_secs() == 60));
+        assert!(matches!(classify(429, Some("soon"), &Value::Null), Failure::Offline(_, wait) if wait.as_secs() == 60));
+        assert!(matches!(classify(400, None, &json!({ "error": "invalid_request" })), Failure::Offline(_, wait) if wait == OFFLINE_WAIT));
+        assert!(matches!(classify(503, None, &Value::Null), Failure::Offline(..)));
     }
 
     #[test]

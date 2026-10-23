@@ -9,6 +9,7 @@
  *   STUB_PORT=8788 STUB_PERMS=use,ai STUB_TTL=3600 bun relay/test/accounts-stub.ts
  *   STUB_DENY=1 answers every sign-in with access_denied.
  *   GET /stub/mint?aud=writer&perms=use,cloud → an access token, for curl tests.
+ *   GET /stub/limit?on=1 → /app/token and /app/revoke answer 429 (Retry-After: 60) until ?on=0.
  *
  * It never prints a token.
  */
@@ -28,6 +29,7 @@ const refreshes = new Map<string, Refresh>();
 const deadChains = new Set<string>();
 const random = () => Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
 const say = (text: string) => console.log(`[accounts-stub] ${text}`);
+let limited = false;
 
 async function access(aud: string, granted = perms) {
   return new SignJWT({ email: "someone@gmail.com", name: "Someone", perms: granted, admin: false })
@@ -56,6 +58,15 @@ Bun.serve({
     if (url.pathname === "/.well-known/jwks.json") return Response.json({ keys: [jwk] });
     if (url.pathname === "/stub/mint") {
       return new Response(await access(url.searchParams.get("aud") ?? "writer", (url.searchParams.get("perms") ?? "").split(",").filter(Boolean)));
+    }
+    if (url.pathname === "/stub/limit") {
+      limited = url.searchParams.get("on") === "1";
+      say(`rate limit ${limited ? "on" : "off"}`);
+      return new Response(limited ? "on" : "off");
+    }
+    if (limited && (url.pathname === "/app/token" || url.pathname === "/app/revoke")) {
+      say(`429 for ${url.pathname}`);
+      return Response.json({ error: "temporarily_unavailable", error_description: "Too many requests; try again in a minute." }, { status: 429, headers: { "retry-after": "60" } });
     }
     if (url.pathname === "/app/authorize") {
       const q = url.searchParams;
