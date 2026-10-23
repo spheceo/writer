@@ -163,20 +163,23 @@ input[type="checkbox"] { accent-color: var(--play); margin: 0; }
   --hover: #1c1c1c;
   --line: #242424;
   --line-strong: #363636;
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  overflow: auto;
-  padding: 48px max(40px, calc((100% - 1200px) / 2)) 64px;
   background: #0b0b0b;
   font-size: 14px;
 }
+.library-body { flex: 1; min-height: 0; overflow: auto; padding: 32px max(40px, calc((100% - 1200px) / 2)) 64px; }
+/* The kit's app header: mark and name, the page's controls, the avatar at the far right; room for the traffic lights. */
+.app-header { display: flex; flex-shrink: 0; align-items: center; gap: 12px; height: 52px; padding: 0 14px 0 84px; border-bottom: 1px solid var(--line); }
+.app-header .brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; user-select: none; }
+.app-header .brand img { display: block; flex-shrink: 0; }
+.app-header .spacer { flex: 1; align-self: stretch; }
 .heading-actions { display: flex; align-items: center; gap: 6px; }
 .heading-actions .primary { margin-left: 6px; }
 .claude-status { height: 30px; gap: 7px; padding: 0 10px; border-color: transparent; background: none; color: var(--muted); font-size: 12px; }
 .claude-status:hover:not(:disabled) { background: var(--hover); border-color: transparent; color: var(--text); }
 .library .notice { margin: 0 0 16px; }
-.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
-.page-heading h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; line-height: 34px; }
-.page-heading p { margin-top: 2px; font-size: 14px; color: var(--muted); }
 .table { display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--radius); border-spacing: 0; }
 .table thead, .table tbody { display: contents; }
 .table-row {

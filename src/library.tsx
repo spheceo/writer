@@ -173,11 +173,12 @@ export function Library({
 
   return (
     <div className="library">
-      <div className="page-heading" data-tauri-drag-region>
-        <div data-tauri-drag-region>
-          <h1>Scripts</h1>
-          <p>Write from footage or sources, with Claude alongside you.</p>
-        </div>
+      <header className="app-header" data-tauri-drag-region>
+        <span className="brand" data-tauri-drag-region>
+          <img src={mark} alt="" width={22} height={22} />
+          Writer
+        </span>
+        <span className="spacer" data-tauri-drag-region />
         <div className="heading-actions">
           {!empty && (
             <label className="list-search">
@@ -213,7 +214,8 @@ export function Library({
           </button>
           <AccountMenu onSettings={onSettings} onLogs={onLogs} />
         </div>
-      </div>
+      </header>
+      <div className="library-body">
       {loadError && <div className="notice">{loadError}</div>}
       {empty ? (
         <div className="welcome">
@@ -341,6 +343,7 @@ export function Library({
           </tbody>
         </table>
       )}
+      </div>
 
       <ImportDialog
         open={creating}
