@@ -698,9 +698,29 @@ fn ensure_yt_dlp() -> Result<(), String> {
 /// the relay's proxy on a fresh exit, as Repack does. `on` hears how far the
 /// download is (0 to 100) and, now and then, what is happening instead.
 fn youtube_to(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
+    youtube_paced(data, url, dest, settings, Pace::Import, on)
+}
+
+/// How a download may go: an import's may use the proxy; the backfill's
+/// (older originals redone in Edit's format) only this Mac's own address,
+/// and it doesn't count toward a busy hour.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Pace {
+    Import,
+    Backfill,
+}
+
+pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Settings, pace: Pace, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
+    // In Edit's originals already (another Mac or Edit downloaded it): from the cloud, free, no YouTube at all.
+    if let Some(video) = crate::handoff::youtube_id(url) {
+        if crate::archive::from_registry(data, "", &format!("youtube:{video}"), dest).is_ok() && readable(dest) {
+            crate::log::info("import", format!("YouTube video {video}: taken from Edit's originals, not downloaded"));
+            return Ok(());
+        }
+    }
     ensure_yt_dlp()?;
-    let relay_proxy = || crate::net::Relay::new(settings).and_then(|relay| relay.proxy()).ok().flatten();
-    let mut proxy = if busy_on_youtube(data) { relay_proxy() } else { None };
+    let relay_proxy = || if pace == Pace::Backfill { None } else { crate::net::Relay::new(settings).and_then(|relay| relay.proxy()).ok().flatten() };
+    let mut proxy = if pace == Pace::Import && busy_on_youtube(data) { relay_proxy() } else { None };
     let folder = dest.parent().unwrap_or(data);
     on(0, None);
     let mut tried_again = false;
@@ -718,8 +738,9 @@ fn youtube_to(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn
             Trouble::Blocked | Trouble::Connection if !tried_again && pulled(dest) == 0 => {
                 tried_again = true;
                 // Blocked on this Mac's address: the proxy, when there is one.
-                // Already on the proxy: a fresh exit, made by proxy_file.
-                if !proxied {
+                // Already on the proxy: a fresh exit, made by proxy_file. A
+                // dropped connection is usually this Mac's: tried again as it was.
+                if !proxied && matches!(youtube::trouble(&error), Trouble::Blocked) {
                     proxy = relay_proxy();
                 }
                 if proxy.is_none() {
@@ -747,6 +768,10 @@ fn youtube_to(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn
 /// One video, from YouTube or a Drive file link, to `dest`: a compilation's,
 /// or a reused case's brought in later. One already downloaded is kept.
 pub(crate) fn fetch_video(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
+    fetch_video_paced(data, url, dest, settings, Pace::Import, on)
+}
+
+pub(crate) fn fetch_video_paced(data: &Path, url: &str, dest: &Path, settings: &Settings, pace: Pace, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
     if readable(dest) {
         return Ok(());
     }
@@ -757,7 +782,7 @@ pub(crate) fn fetch_video(data: &Path, url: &str, dest: &Path, settings: &Settin
         let size = recording.size.max(1);
         return drive::download(&token, recording, dest, &|bytes| on((bytes.min(size) * 100 / size) as u8, None));
     }
-    youtube_to(data, url, dest, settings, on)
+    youtube_paced(data, url, dest, settings, pace, on)
 }
 
 /// Bytes of a YouTube download already on disk, finished or not.

@@ -152,6 +152,8 @@ fn probe_trouble(error: &str) -> (String, bool) {
 
 /// The video Edit downloads (its youtube.ts FORMAT): H.264 up to 1080p over HTTPS with M4A sound.
 pub const FORMAT: &str = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b";
+/// The same through the paid proxy, at 720p: about half the bytes.
+pub const FORMAT_PROXIED: &str = "bv*[vcodec^=avc1][height<=720][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720]/b";
 
 pub fn download(
     url: &str,
@@ -175,7 +177,7 @@ pub fn download(
         // Edit's format, so both apps download the same file: it is shared
         // under the video's ID (edit/originals/youtube/<id>/).
         "-f",
-        FORMAT,
+        if proxy_file.is_some() { FORMAT_PROXIED } else { FORMAT },
         "--merge-output-format",
         "mp4",
         "-o",

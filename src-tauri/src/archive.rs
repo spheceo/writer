@@ -270,7 +270,7 @@ fn restore_footage(data: &Path, id: &str) -> Result<Vec<String>, String> {
 }
 
 /// A recording from Edit's originals, when they're there (Edit restored it, or it never left).
-fn from_registry(data: &Path, id: &str, source: &str, target: &Path) -> Result<(), String> {
+pub(crate) fn from_registry(data: &Path, id: &str, source: &str, target: &Path) -> Result<(), String> {
     let record = cloud::call(data, "query", "edit:getMedia", json!({ "source": source }))?;
     let key = record["originalKey"].as_str().filter(|_| record["originalReady"] == true).ok_or("not in the registry")?;
     let size = record["size"].as_f64().unwrap_or(0.0) as u64;
@@ -404,7 +404,8 @@ fn backfill(data: &Path, id: &str, next_youtube: &Mutex<Instant>) -> Result<Stri
         let fresh = dir.join("original-edit.mp4");
         let settings = settings::load(data);
         // One YouTube won't give again (age-restricted, gone) keeps Writer's older download.
-        if let Err(error) = import::fetch_video(data, &script.source_url, &fresh, &settings, &|_, _| {}) {
+        // From Edit's originals when another Mac (or Edit) already has it; else YouTube on this Mac's own address only.
+        if let Err(error) = import::fetch_video_paced(data, &script.source_url, &fresh, &settings, import::Pace::Backfill, &|_, _| {}) {
             let _ = fs::remove_file(&fresh);
             let kept = handoff::share(data, id, false)?;
             return Ok(format!("kept the older download ({error}); {kept}"));
