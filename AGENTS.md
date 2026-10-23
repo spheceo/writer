@@ -1,0 +1,16 @@
+# Writer: notes for agents
+
+Writer is a Tauri app: Rust in `src-tauri/` does the work, React in `src/` is the UI. README.md describes every part; read it first.
+
+- `just check`: typecheck, JS tests and Rust tests. Run it before committing.
+- `just dev`: the app with hot reload. Editing anything under `src-tauri/` (guides included) rebuilds and restarts it, killing imports and builds under way: never edit there while a job runs.
+- Every key lives on writer-relay (`relay/`); the app only holds the relay's client token. Never put another key, token or secret in the app.
+
+## Releases and self-update
+
+Builds are named by their tag everywhere ("Writer v0.0.0", "Writer nightly-1": the Setup window, the log, the update pill, release titles). Versions go up a patch at a time (v0.0.0 is the first, then v0.0.1, …), never minor or major. **Never move to a new version (`just publish`) unless the user says so**, each time: an agent ships nightlies, not versions.
+
+- `just nightly` (everything committed on `main`): tags main's head `nightly-<N>` (the next number) and pushes. The release workflow builds it and publishes it as a GitHub pre-release, so `releases/latest` (Stable) never sees it.
+- `just publish` (everything committed on `main`): runs the checks, releases the current version if it was never tagged, otherwise bumps the patch in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` and `package.json` (committed as "Release vX.Y.Z"), and pushes it with its `vX.Y.Z` tag.
+- `.github/workflows/release.yml` builds Writer.app for Apple Silicon and Intel (`scripts/package-app.sh`), the update zip `Writer-<target>.zip` (+ `.sha256`) and the disk image `Writer-<Apple-Silicon|Intel>.dmg`, and publishes the draft release once both are up. Run by hand, it makes a test build (workflow artifacts, no release).
+- Signing: with the repo secrets `MACOS_CERTIFICATE` (Developer ID Application .p12, base64) and `MACOS_CERTIFICATE_PASSWORD`, everything in Writer.app is signed with the Developer ID under the hardened runtime (`scripts/writer.entitlements`); with `NOTARY_KEY` (App Store Connect API .p8, base64), `NOTARY_KEY_ID` and `NOTARY_ISSUER`, the disk image is notarised and the ticket stapled to it and the app. Without them it's all ad hoc. `WRITER_RELAY_TOKEN` is built in, so a downloaded Writer is on the relay from its first start.
