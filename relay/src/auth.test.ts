@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { allowed, forgetKeys, identify, permissionFor } from "./auth";
+import { allowed, forgetKeys, identify, OUT_OF_DATE, permissionFor } from "./auth";
 
 // A stand-in accounts site: its JWKS, with keys that can be swapped.
 const keyA = await generateKeyPair("RS256");
@@ -16,7 +16,7 @@ const server = Bun.serve({
   },
 });
 const issuer = `http://127.0.0.1:${server.port}`;
-const env = { ACCOUNTS_URL: issuer, CLIENT_TOKEN: "old-team-token" };
+const env = { ACCOUNTS_URL: issuer };
 afterAll(() => server.stop(true));
 beforeEach(() => forgetKeys(0));
 
@@ -45,19 +45,15 @@ test("maps every route to its permission", () => {
   expect(permissionFor("/v1/cloud/convex")).toBe("cloud");
 });
 
-test("the old team token still passes, with everything", async () => {
-  const who = await identify(asking("old-team-token"), env);
-  expect("caller" in who && who.caller.kind).toBe("legacy");
-  expect("caller" in who && allowed(who.caller, "cloud")).toBe(true);
-  expect("refused" in (await identify(asking("old-team-tokeN"), env))).toBe(true);
+test("refuses the retired team token and no token, telling old builds to update", async () => {
+  const old = await identify(asking("old-team-token"), env);
+  expect("refused" in old && old.refused).toBe(OUT_OF_DATE);
   expect("refused" in (await identify(asking(), env))).toBe(true);
-  // Without CLIENT_TOKEN on the relay, nothing but a person's token passes.
-  expect("refused" in (await identify(asking("old-team-token"), { ACCOUNTS_URL: issuer }))).toBe(true);
 });
 
 test("a person's token passes, with only their permissions", async () => {
   const who = await identify(asking(await token({ perms: ["use", "ai"] })), env);
-  if (!("caller" in who) || who.caller.kind !== "person") throw new Error(JSON.stringify(who));
+  if (!("caller" in who)) throw new Error(JSON.stringify(who));
   expect(who.caller.sub).toBe("person123");
   expect(allowed(who.caller, "use")).toBe(true);
   expect(allowed(who.caller, "ai")).toBe(true);

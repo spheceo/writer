@@ -45,11 +45,10 @@ declare const FixedLengthStream: {
  * Every route but /health needs a signed-in person's access token, with the
  * route's permission (auth.ts): transcription `use`, the watcher `ai`, Drive
  * and Docs `drive`, Trello `trello`, the proxy `proxy`, the cloud `cloud`.
- * The old team-wide CLIENT_TOKEN still passes, for the transition.
+ * Nothing else passes: older Writers' team token was retired on 2026-10-23.
  *
- * Spend is bounded three ways: a burst limit per person (per IP for the old
- * token), a daily byte quota per person (or IP), and a daily byte cap across
- * everyone (atomic reservations). Audio streams
+ * Spend is bounded three ways: a burst limit per person, a daily byte quota
+ * per person, and a daily byte cap across everyone (atomic reservations). Audio streams
  * straight through to ElevenLabs and the answer streams straight back, so the
  * Worker never buffers either. Byte quotas are a stand-in for duration; they
  * are not a guaranteed money cap for arbitrary uploaded audio.
@@ -153,7 +152,7 @@ export default {
     }
     if (size > Number(env.MAX_UPLOAD_BYTES)) return json(413, { error: "That recording is too long for one request." });
 
-    const limit = limitKey(caller, request);
+    const limit = limitKey(caller);
     if (!(await env.BURST.limit({ key: limit })).success) {
       return json(429, { error: "Too many transcriptions at once; try again in a minute." });
     }
@@ -256,7 +255,7 @@ async function watch(request: Request, env: Env, caller: Caller): Promise<Respon
   const size = Number(request.headers.get("content-length"));
   if (!Number.isSafeInteger(size) || size <= 0) return json(411, { error: "Content-Length is required." });
   if (size > MAX_WATCH_BYTES) return json(413, { error: "That clip is too large to watch in one request." });
-  if (!(await env.WATCH_BURST.limit({ key: limitKey(caller, request) })).success) {
+  if (!(await env.WATCH_BURST.limit({ key: limitKey(caller) })).success) {
     return json(429, { error: "Too many clips at once; try again in a minute." });
   }
   const body = (await request.json().catch(() => null)) as {

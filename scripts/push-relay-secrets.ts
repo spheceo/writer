@@ -1,9 +1,9 @@
 /**
  * Puts writer-relay's secrets on the Worker from Infisical: Repack's project,
  * `dev`, folder `/writer-relay` (references to the canonical values at the
- * root, but for CLIENT_TOKEN, the old team token, kept there). Each value goes
- * from Infisical to `wrangler secret put` through pipes, in memory: nothing is
- * printed, written to disk or passed as an argument.
+ * root). Each value goes from Infisical to `wrangler secret put` through
+ * pipes, in memory: nothing is printed, written to disk or passed as an
+ * argument.
  *
  *   bun scripts/push-relay-secrets.ts             # every secret
  *   bun scripts/push-relay-secrets.ts --dry-run   # only says which it would put
@@ -18,7 +18,6 @@ const PROJECT = "cdf4a0c5-eca4-4415-af3a-40871af285f3";
 const FOLDER = "/writer-relay";
 /** What the relay reads (relay/src/index.ts, cloud.ts, auth.ts); nothing else is put. */
 const EXPECTED = [
-  "CLIENT_TOKEN",
   "ELEVENLABS_API_KEY",
   "AI_GATEWAY_API_KEY",
   "GOOGLE_DRIVE_CLIENT_ID",

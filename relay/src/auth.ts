@@ -6,23 +6,18 @@ import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from "jose";
  * here against the accounts site's public keys, its issuer, `aud: "writer"`
  * and expiry (60 s of skew), then the route's permission from its `perms`.
  *
- * While older Writers are still about, the team-wide `CLIENT_TOKEN` built
- * into them is accepted too, compared in constant time, with every
- * permission. It goes once everyone is on a build that signs in.
+ * Nothing else passes. The team-wide token older Writers had built in was
+ * retired on 2026-10-23; they're told to update and sign in.
  */
 
 export interface AuthEnv {
-  /** The old team-wide token, accepted for the transition only. */
-  CLIENT_TOKEN?: string;
   /** The accounts site: the tokens' issuer, and where its JWKS is. */
   ACCOUNTS_URL?: string;
 }
 
 export type Permission = "use" | "ai" | "drive" | "trello" | "proxy" | "cloud";
 
-export type Caller =
-  | { kind: "person"; sub: string; email: string; perms: Set<string>; admin: boolean }
-  | { kind: "legacy" };
+export type Caller = { sub: string; email: string; perms: Set<string>; admin: boolean };
 
 const ISSUER = "https://accounts.spheceo.com";
 const AUDIENCE = "writer";
@@ -38,7 +33,7 @@ export function permissionFor(pathname: string): Permission {
 }
 
 export function allowed(caller: Caller, permission: Permission): boolean {
-  return caller.kind === "legacy" || caller.admin || caller.perms.has(permission);
+  return caller.admin || caller.perms.has(permission);
 }
 
 /** The keys, per isolate: jose caches them ten minutes and refetches once on an unknown `kid`. */
@@ -62,13 +57,16 @@ export function forgetKeys(ms = 30_000) {
 
 export type Identified = { caller: Caller } | { refused: string };
 
+/** What an older Writer, still sending the retired team token, is told. */
+export const OUT_OF_DATE = "This copy of Writer is out of date. Update Writer (the update button, or the latest download at github.com/spheceo/writer/releases), then sign in.";
+
 /** The caller, or why they're refused (no token, a bad one, an expired one). */
 export async function identify(request: Request, env: AuthEnv): Promise<Identified> {
   const header = request.headers.get("authorization") ?? "";
   if (!/^Bearer \S+$/.test(header)) return { refused: "Sign in to Writer." };
   const token = header.slice(7);
-  if (env.CLIENT_TOKEN && (await sameText(token, env.CLIENT_TOKEN))) return { caller: { kind: "legacy" } };
-  if (token.split(".").length !== 3) return { refused: "This copy of Writer's token isn't accepted. Sign in to Writer." };
+  // Not a JWT: an older Writer's retired team token.
+  if (token.split(".").length !== 3) return { refused: OUT_OF_DATE };
   const issuer = (env.ACCOUNTS_URL || ISSUER).replace(/\/+$/, "");
   try {
     const { payload } = await jwtVerify(token, keySet(issuer), {
@@ -81,7 +79,6 @@ export async function identify(request: Request, env: AuthEnv): Promise<Identifi
     const perms = Array.isArray(payload.perms) ? payload.perms.filter((perm): perm is string => typeof perm === "string") : [];
     return {
       caller: {
-        kind: "person",
         sub: String(payload.sub),
         email: typeof payload.email === "string" ? payload.email : "",
         perms: new Set(perms),
@@ -98,19 +95,10 @@ export async function identify(request: Request, env: AuthEnv): Promise<Identifi
 
 /** Who to name in the log: the person's id and their email's first part, never the token. */
 export function named(caller: Caller): string {
-  return caller.kind === "legacy" ? "old team token" : `${caller.email.split("@")[0] || "?"} (${caller.sub})`;
+  return `${caller.email.split("@")[0] || "?"} (${caller.sub})`;
 }
 
-/** A key for per-person limits: the person, or for the old token, the connection. */
-export function limitKey(caller: Caller, request: Request): string {
-  return caller.kind === "person" ? `person:${caller.sub}` : (request.headers.get("cf-connecting-ip") ?? "unknown");
-}
-
-/** Equal, in constant time: both sides hashed first, so their lengths don't show. */
-async function sameText(a: string, b: string): Promise<boolean> {
-  const encode = (text: string) => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  const [x, y] = (await Promise.all([encode(a), encode(b)])).map((digest) => new Uint8Array(digest));
-  let difference = 0;
-  for (let i = 0; i < x.length; i++) difference |= x[i] ^ y[i];
-  return difference === 0;
+/** A key for per-person limits. */
+export function limitKey(caller: Caller): string {
+  return `person:${caller.sub}`;
 }
