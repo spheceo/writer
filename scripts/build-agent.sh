@@ -22,7 +22,9 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/src-tauri/binaries"
 mkdir -p "$out"
 (cd "$root/sidecar" && bun install --frozen-lockfile --silent)
+# No .env or bunfig.toml is ever read where it runs: nothing from outside changes what it does.
 bun build "$root/sidecar/src/main.ts" --compile --minify --target "$bun_target" \
+  --no-compile-autoload-dotenv --no-compile-autoload-bunfig \
   --external @anthropic-ai/claude-agent-sdk-darwin-arm64 --external @anthropic-ai/claude-agent-sdk-darwin-x64 \
   --outfile "$out/writer-agent-$triple"
 echo "==> $out/writer-agent-$triple ($(du -h "$out/writer-agent-$triple" | cut -f1))"
