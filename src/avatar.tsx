@@ -14,7 +14,7 @@ function photoOf(creator: Creator) {
 export function initials(creator: Creator) {
   const words = creator.name.trim().split(/\s+/).filter(Boolean);
   if (words.length) return (words[0][0] + (words.length > 1 ? words[words.length - 1][0] : "")).toUpperCase();
-  return (creator.email[0] ?? "?").toUpperCase();
+  return (creator.email?.[0] ?? "?").toUpperCase();
 }
 
 /** Who started a script: their Google photo, or their initials; nothing for a script with no creator. */
@@ -32,7 +32,7 @@ export function Avatar({ creator, size = 20 }: { creator?: Creator | null; size?
     };
   }, [creator?.sub, creator?.picture]);
   if (!creator) return null;
-  const label = `Started by ${creator.name || creator.email}`;
+  const label = `Started by ${creator.name || creator.email || "someone"}`;
   return (
     <span className="avatar" title={label} aria-label={label} style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}>
       {src && !broken ? <img src={src} alt="" referrerPolicy="no-referrer" onError={() => setBroken(true)} /> : initials(creator)}

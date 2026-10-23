@@ -863,6 +863,10 @@ mod tests {
         let out: Value = serde_json::from_slice(&with_creator(body.clone(), &cloud)).unwrap();
         assert_eq!(out["createdBy"]["sub"], "p1");
         assert_eq!(out["id"], "a");
+        // As the cloud's list shows it (Repack's shownCreator): no email, picture null.
+        let shown = serde_json::json!({ "sub": "p2", "name": "Two", "picture": null });
+        let out: Value = serde_json::from_slice(&with_creator(body.clone(), &shown)).unwrap();
+        assert_eq!(out["createdBy"]["sub"], "p2");
         // No creator in the cloud (an older script): the body as it was.
         assert_eq!(with_creator(body.clone(), &Value::Null), body);
     }

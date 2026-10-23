@@ -56,6 +56,8 @@ pub const CUT_IN_MS: u64 = 3_000;
 pub struct Creator {
     pub sub: String,
     pub name: String,
+    /// Kept here, but the cloud's lists leave it out (Repack's `shownCreator`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub email: String,
     /// Their Google photo's address.
     #[serde(default, skip_serializing_if = "Option::is_none")]

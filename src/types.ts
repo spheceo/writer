@@ -62,7 +62,7 @@ export type Choice =
 export type Check = { name: string; ok: boolean; detail: string };
 
 /** Who started a script (none on scripts from before sign-in). */
-export type Creator = { sub: string; name: string; email: string; picture?: string };
+export type Creator = { sub: string; name: string; email?: string; picture?: string | null };
 
 export type Script = {
   id: string;
