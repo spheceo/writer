@@ -324,7 +324,14 @@ fn classify(code: u16, retry_after: Option<&str>, body: &Value) -> Failure {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout(Duration::from_secs(30)).user_agent("Writer").build()
+    ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout(Duration::from_secs(30)).user_agent(&user_agent()).build()
+}
+
+/// What admins see as "where" on a person's page: "Writer/nightly-3 (macOS)",
+/// "Writer/v0.0.1 (macOS)", or for a dev build "Writer/0.0.0-dev (macOS)".
+fn user_agent() -> String {
+    let build = release::tag().map(str::to_string).unwrap_or_else(|| format!("{}-dev", release::VERSION));
+    format!("Writer/{build} (macOS)")
 }
 
 fn token_request(body: Value) -> Result<Value, Failure> {
@@ -655,6 +662,12 @@ mod tests {
         assert_eq!(params[0], ("code".into(), "abc/1".into()));
         assert_eq!(params[1], ("state".into(), "x y".into()));
         assert_eq!(params[2].1, "Ask an admin%");
+    }
+
+    #[test]
+    fn says_which_writer_is_signing_in() {
+        let agent = user_agent();
+        assert!(agent.starts_with("Writer/") && agent.ends_with(" (macOS)"), "{agent}");
     }
 
     #[test]
