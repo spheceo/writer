@@ -26,6 +26,7 @@ for c in comments:
 anchors = {key: "" for key in meta}
 inside = {key: False for key in meta}
 open_ranges, paragraphs, suggestions = set(), [], []
+order = {}
 state = {"current": None}
 
 
@@ -34,6 +35,7 @@ def walk(element, kind=None):
         tag = child.tag.replace(W, "")
         if tag == "commentRangeStart":
             open_ranges.add(child.get(W + "id"))
+            order.setdefault(child.get(W + "id"), len(order))
         elif tag == "commentRangeEnd":
             open_ranges.discard(child.get(W + "id"))
         elif tag in ("ins", "del"):
@@ -69,7 +71,8 @@ walk(body)
 for suggestion in suggestions:
     suggestion["before"], suggestion["after"] = suggestion["before"].strip(), suggestion["after"].strip()
 items = []
-for key, comment in meta.items():
+# In the Doc's order (where each comment's words start), not comments.xml's.
+for key, comment in sorted(meta.items(), key=lambda pair: order.get(pair[0], len(order))):
     if comment["author"] in skip:
         continue
     items.append({"kind": "comment", "author": comment["author"], "quote": anchors[key].strip(), "onSuggestedText": inside[key], "text": comment["text"]})
