@@ -24,7 +24,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{log, release};
 
@@ -36,6 +36,8 @@ const KEYCHAIN_ACCOUNT: &str = "refresh-token";
 const EARLY: Duration = Duration::from_secs(600);
 /// How long a sign-in waits for the browser.
 const WAIT: Duration = Duration::from_secs(600);
+/// After the sign-in, how long the page's "Open Writer" button still works.
+const LINGER: Duration = Duration::from_secs(120);
 /// After a renewal the relay still refuses, no forced renewal for this long.
 const FORCED_GAP: Duration = Duration::from_secs(60);
 /// No answer from accounts: wait this long before trying again.
@@ -378,7 +380,17 @@ pub fn sign_in() -> Result<(), String> {
         crate::proc::run("open", &[&url], Duration::from_secs(10)).map_err(|error| finish_err(format!("Writer couldn't open the browser: {error}")))?;
     }
     std::thread::spawn(move || {
-        let result = wait_for_code(&listener, &state).and_then(|code| {
+        let visit = match wait_for_code(&listener, &state) {
+            Ok(visit) => visit,
+            Err(why) if why.is_empty() => return,
+            Err(why) => {
+                log::warn("account", format!("sign-in failed: {why}"));
+                let _ = finish_err(why);
+                return;
+            }
+        };
+        // The code is traded before the browser is answered, so its page says how it really went.
+        let result = visit.code.and_then(|code| {
             token_request(json!({ "grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": redirect, "client_id": CLIENT_ID }))
                 .map_err(|failure| match failure {
                     Failure::Refused(why) => format!("accounts.spheceo.com refused the sign-in ({why})."),
@@ -387,21 +399,60 @@ pub fn sign_in() -> Result<(), String> {
                 })
                 .and_then(|answer| take(&answer))
         });
-        match result {
+        answer_browser(visit.stream, result.as_ref().map(|_| ()).map_err(String::as_str));
+        // Back to Writer, where the person was before the browser opened.
+        focus_writer();
+        match &result {
             Ok(_) => {
                 let who = status().person.map(|person| person.email.split('@').next().unwrap_or("").to_string()).unwrap_or_default();
                 log::info("account", format!("signed in as {who}"));
                 lock().signing_in = false;
                 changed();
             }
-            Err(why) if why.is_empty() => {}
             Err(why) => {
                 log::warn("account", format!("sign-in failed: {why}"));
-                let _ = finish_err(why);
+                let _ = finish_err(why.clone());
             }
         }
+        linger(&listener);
     });
     Ok(())
+}
+
+/// Brings Writer's window to the front: unminimised, shown, focused (and on
+/// macOS the app activated).
+fn focus_writer() {
+    let Some(app) = APP.get() else { return };
+    let window = app.get_webview_window("main").or_else(|| app.webview_windows().into_values().next());
+    if let Some(window) = window {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+/// Keeps the listener a little longer, for the page's "Open Writer" button
+/// (`POST /focus`); anything else gets a 404.
+fn linger(listener: &TcpListener) {
+    let began = Instant::now();
+    while began.elapsed() < LINGER {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let _ = stream.set_nonblocking(false);
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut line = String::new();
+                let _ = BufReader::new(&stream).read_line(&mut line);
+                if line.starts_with("POST /focus ") {
+                    focus_writer();
+                    let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n");
+                } else {
+                    let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(200)),
+            Err(_) => return,
+        }
+    }
 }
 
 fn finish_err(why: String) -> String {
@@ -436,9 +487,16 @@ pub fn authorize_url(redirect: &str, state: &str, challenge: &str) -> String {
     format!("{}/app/authorize?{query}", accounts())
 }
 
-/// The code the browser brings back to `/callback`, its `state` checked. An
-/// empty error means the wait was cancelled (or replaced by a new sign-in).
-fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String, String> {
+/// The browser's visit to `/callback`: its connection, answered once the
+/// code is traded (`answer_browser`), and the code it brought, `state` checked.
+struct Visit {
+    stream: TcpStream,
+    code: Result<String, String>,
+}
+
+/// Waits for the browser to come back to `/callback`. An empty error means
+/// the wait was cancelled (or replaced by a new sign-in).
+fn wait_for_code(listener: &TcpListener, state: &str) -> Result<Visit, String> {
     listener.set_nonblocking(true).map_err(|error| error.to_string())?;
     let began = Instant::now();
     loop {
@@ -450,8 +508,8 @@ fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String, String> 
         }
         match listener.accept() {
             Ok((stream, _)) => {
-                if let Some(answer) = callback(stream, state) {
-                    return answer;
+                if let Some(visit) = callback(stream, state) {
+                    return Ok(visit);
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_millis(200)),
@@ -461,7 +519,7 @@ fn wait_for_code(listener: &TcpListener, state: &str) -> Result<String, String> 
 }
 
 /// One request to the listener: `None` for anything but `/callback` (a favicon, say).
-fn callback(mut stream: TcpStream, state: &str) -> Option<Result<String, String>> {
+fn callback(mut stream: TcpStream, state: &str) -> Option<Visit> {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
     let mut line = String::new();
@@ -474,7 +532,7 @@ fn callback(mut stream: TcpStream, state: &str) -> Option<Result<String, String>
     }
     let params = parse_query(query);
     let get = |key: &str| params.iter().find(|(name, _)| name == key).map(|(_, value)| value.as_str());
-    let answer = if get("state") != Some(state) {
+    let code = if get("state") != Some(state) {
         Err("The sign-in came back without Writer's check (state). Try again.".to_string())
     } else if let Some(error) = get("error") {
         Err(match (error, get("error_description")) {
@@ -487,16 +545,49 @@ fn callback(mut stream: TcpStream, state: &str) -> Option<Result<String, String>
     } else {
         Err("The sign-in came back without a code. Try again.".to_string())
     };
-    let (title, text) = match &answer {
-        Ok(_) => ("Signed in to Writer", "You're signed in. You can close this tab and go back to Writer.".to_string()),
-        Err(why) => ("Writer couldn't sign you in", why.clone()),
-    };
-    let page = format!(
-        "<!doctype html><meta charset=utf-8><title>{title}</title><body style=\"font:16px -apple-system,system-ui,sans-serif;max-width:32rem;margin:20vh auto;padding:0 1rem;color:#222\"><h1 style=\"font-size:1.4rem\">{title}</h1><p>{}</p></body>",
-        html(&text)
-    );
+    Some(Visit { stream, code })
+}
+
+fn answer_browser(mut stream: TcpStream, outcome: Result<(), &str>) {
+    let page = page(outcome);
     let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{page}", page.len());
-    Some(answer)
+}
+
+/// The page the browser lands on, in Writer's look. It drops the code from
+/// the address bar, says Writer is coming back (Writer focuses itself), offers
+/// "Open Writer" in case it didn't, and tries to close the tab.
+fn page(outcome: Result<(), &str>) -> String {
+    let (title, text, class, close) = match outcome {
+        Ok(()) => ("Signed in to Writer", "Signed in, back to Writer…".to_string(), "", true),
+        Err(why) => ("Writer couldn't sign you in", why.to_string(), "bad", false),
+    };
+    let close = if close {
+        "setTimeout(()=>{window.close();say.textContent=\"You're signed in. You can close this tab.\"},1500);"
+    } else {
+        ""
+    };
+    format!(
+        r#"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>{title}</title>
+<style>
+:root{{color-scheme:dark}}
+body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#ededed;font:14px/1.55 "Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}}
+main{{width:min(360px,calc(100vw - 48px));padding:28px;border:1px solid #1b1b1b;border-radius:14px;background:#0a0a0a}}
+.mark{{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;margin-bottom:18px;background:#e2cf8f14;color:#e2cf8f;font-weight:700}}
+h1{{margin:0 0 6px;font-size:16px;font-weight:600;letter-spacing:-.01em}}
+p{{margin:0;color:#969696}}
+.bad p{{color:#f0a393}}
+button{{margin-top:22px;height:32px;padding:0 14px;border:0;border-radius:8px;background:#ededed;color:#000;font:inherit;font-weight:500;cursor:pointer}}
+button:hover{{background:#fff}}
+</style>
+<main class="{class}"><div class=mark>W</div><h1>{title}</h1><p id=say>{text}</p><button id=open type=button>Open Writer</button></main>
+<script>
+history.replaceState(null,"",location.pathname);
+const say=document.getElementById("say");
+document.getElementById("open").onclick=()=>fetch("/focus",{{method:"POST"}}).catch(()=>{{}});
+{close}
+</script>"#,
+        text = html(&text)
+    )
 }
 
 // ---- Signing out ----
@@ -706,10 +797,12 @@ mod tests {
             let page = get("/callback?code=the-code&state=right");
             (favicon, page)
         });
-        assert_eq!(wait_for_code(&listener, "right").unwrap(), "the-code");
+        let visit = wait_for_code(&listener, "right").unwrap();
+        assert_eq!(visit.code.as_deref(), Ok("the-code"));
+        answer_browser(visit.stream, Ok(()));
         let (favicon, page) = browser.join().unwrap();
         assert!(favicon.starts_with("HTTP/1.1 404"));
-        assert!(page.contains("Signed in to Writer"));
+        assert!(page.contains("Signed in, back to Writer"));
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -718,6 +811,33 @@ mod tests {
             write!(stream, "GET /callback?code=c&state=wrong HTTP/1.1\r\n\r\n").unwrap();
             let _ = std::io::Read::read_to_string(&mut stream, &mut String::new());
         });
-        assert!(wait_for_code(&listener, "right").unwrap_err().contains("state"));
+        let visit = wait_for_code(&listener, "right").unwrap();
+        assert!(visit.code.unwrap_err().contains("state"));
+    }
+
+    #[test]
+    fn the_page_hides_the_code_and_offers_writer() {
+        let ok = page(Ok(()));
+        assert!(ok.contains("history.replaceState(null,\"\",location.pathname)"));
+        assert!(ok.contains("Open Writer") && ok.contains("fetch(\"/focus\"") && ok.contains("window.close()"));
+        let bad = page(Err("Ask an <admin> & retry"));
+        assert!(bad.contains("Ask an &lt;admin&gt; &amp; retry") && bad.contains("class=\"bad\"") && !bad.contains("window.close()"));
+    }
+
+    #[test]
+    fn the_open_writer_button_reaches_the_listener() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || linger(&listener));
+        let ask = |request: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(request.as_bytes()).unwrap();
+            let mut answer = String::new();
+            let _ = std::io::Read::read_to_string(&mut stream, &mut answer);
+            answer
+        };
+        assert!(ask("POST /focus HTTP/1.1\r\nContent-Length: 0\r\n\r\n").starts_with("HTTP/1.1 204"));
+        assert!(ask("GET /callback?code=again HTTP/1.1\r\n\r\n").starts_with("HTTP/1.1 404"));
     }
 }
