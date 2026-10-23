@@ -27,6 +27,8 @@ use crate::{cloud, import, jobs, settings, store};
 const POLL: Duration = Duration::from_secs(45);
 /// A sitting's notes are fixed together: this long after the last one.
 pub const QUIET_MS: i64 = 2 * 60_000;
+/// Runs a note gets by itself; after that, only the producer fixes it, by hand.
+const MAX_ATTEMPTS: u32 = 2;
 
 /// A script's review link, kept in its script.json so every Mac has it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -393,6 +395,10 @@ struct Known {
     /// Notes this Mac has started fixing, so a run is never repeated.
     #[serde(default)]
     tried: BTreeMap<String, i64>,
+    /// How many runs each note has had here: auto-fix stops at MAX_ATTEMPTS,
+    /// so a note reopened again and again can't keep Claude busy.
+    #[serde(default)]
+    attempts: BTreeMap<String, u32>,
     /// Script ID → its approved version, as Repack's reviews:open says.
     #[serde(default)]
     approved: BTreeMap<String, Approval>,
@@ -521,6 +527,7 @@ pub fn mark_tried(data: &Path, note_ids: &[String]) {
     change(data, |known| {
         for id in note_ids {
             known.tried.insert(id.clone(), now_ms());
+            *known.attempts.entry(id.clone()).or_default() += 1;
         }
     });
 }
@@ -624,7 +631,8 @@ fn start_fixes(app: &AppHandle, data: &Path) {
     let known = load(data);
     let mut by_script: BTreeMap<String, Vec<&Note>> = BTreeMap::new();
     for note in known.notes.values() {
-        if note.is_root() && note.untaken() && !known.tried.contains_key(&note.id) {
+        let spent = known.attempts.get(&note.id).copied().unwrap_or(0) >= MAX_ATTEMPTS;
+        if note.is_root() && note.untaken() && !known.tried.contains_key(&note.id) && !spent {
             // An approved script is finished: nothing is fixed by itself.
             if let Some(script) = note.script_id.as_ref().or_else(|| known.links.get(&note.review_id)).filter(|script| !known.approved.contains_key(*script)) {
                 by_script.entry(script.clone()).or_default().push(note);
