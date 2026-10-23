@@ -289,6 +289,13 @@ fn keep_shared(dir: &Path, file: &Path, source: &str, key: &str) {
     let _ = fs::write(&path, serde_json::to_vec_pretty(&kept).unwrap_or_default());
 }
 
+/// The files of a script's folder in Edit's originals, with their keys
+/// (storage.rs verifies a recording is really there before deleting it).
+pub fn shared_entries(dir: &Path) -> Vec<(String, String)> {
+    let kept: Vec<serde_json::Value> = fs::read(dir.join("edit-shared.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    kept.iter().filter_map(|entry| Some((entry["file"].as_str()?.to_string(), entry["key"].as_str()?.to_string()))).collect()
+}
+
 /// The files of a script's folder that are in Edit's originals.
 pub fn shared_files(dir: &Path) -> Vec<String> {
     let kept: Vec<serde_json::Value> = fs::read(dir.join("edit-shared.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();

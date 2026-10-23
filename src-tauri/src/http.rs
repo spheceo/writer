@@ -232,6 +232,9 @@ fn route(
         ("POST", ["api", "logs", "reveal"]) => json_result(stream, crate::reveal_logs_now()),
         ("GET", ["api", "progress"]) => write_json(stream, 200, &crate::import::latest_progress()),
         ("GET", ["api", "cloud"]) => write_json(stream, 200, &crate::cloud::status()),
+        ("GET", ["api", "storage"]) => write_json(stream, 200, &crate::storage::report(&data_dir(&app)?)),
+        ("POST", ["api", "storage", "clear"]) => write_json(stream, 200, &crate::storage::purge_all(&data_dir(&app)?, false)),
+        ("POST", ["api", "scripts", id, "preview"]) => json_result(stream, crate::restore_preview_now(&data_dir(&app)?, id)),
         ("GET", ["api", "settings"]) => json_result(stream, get_settings(app)),
         ("PUT", ["api", "settings"]) => {
             let settings = serde_json::from_slice(body).map_err(|_| "Those settings could not be read.".to_string());
@@ -460,11 +463,16 @@ fn data_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn send_proxy(app: AppHandle, stream: &mut TcpStream, id: &str, range: Option<&str>) -> Result<(), String> {
-    let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let dir = store::script_dir(&dir, id).map_err(|_| "Unknown script.".to_string())?;
+    let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let dir = store::script_dir(&data, id).map_err(|_| "Unknown script.".to_string())?;
     let path = store::proxy_path(&dir);
     if !path.is_file() {
-        return write_json(stream, 404, &json!({ "error": "No preview yet." }));
+        // Cleared from this Mac once verified in the cloud: fetch it back
+        // as cache. Offline, say so plainly instead of "no preview".
+        match crate::storage::fetch_preview(&data, id) {
+            Ok(_) => {}
+            Err(error) => return write_json(stream, 503, &json!({ "error": format!("The preview is in the cloud and can't be fetched now: {error}") })),
+        }
     }
     send_file(stream, &path, range)
 }

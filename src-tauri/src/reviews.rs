@@ -314,6 +314,24 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     if found.is_empty() {
         return Err("There's nothing in the script to share yet.".into());
     }
+    // The review page plays the preview from the cloud, so sharing waits
+    // until that preview is verified there (an r2/head at its ledger key,
+    // cloud.rs): the ledger alone once let a share publish a preview key
+    // for an object that wasn't there. A preview already cleared from
+    // this Mac is fine, exactly because it is verified.
+    if script.commentary.is_none() {
+        match cloud::file_key(data, id, "proxy.mp4") {
+            Some((key, size)) => match cloud::head(data, &key) {
+                Ok(Some(found)) if found == size => {}
+                Ok(_) => return Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into()),
+                Err(error) => return Err(format!("Couldn't verify its preview in the cloud ({error}). Check the connection, then share again.")),
+            },
+            None if store::proxy_path(&dir).is_file() => {
+                return Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into())
+            }
+            None => {}
+        }
+    }
     let next = script.review.as_ref().map_or(1, |link| link.version + 1);
     let body = serde_json::to_vec(&script).map_err(|error| error.to_string())?;
     // The review's ID is Repack's to give, on the first publish: snapshots

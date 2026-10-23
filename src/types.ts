@@ -156,6 +156,27 @@ export type Settings = {
   engine?: "cli" | "sdk";
 };
 
+/** One script's footage on this Mac, and whether the cloud holds it. */
+export type ScriptStorage = {
+  id: string;
+  title: string;
+  totalBytes: number;
+  mediaBytes: number;
+  reclaimableBytes: number;
+  blockedReason: string | null;
+};
+
+/** Writer's local storage: footage is the cloud's, this is cache. */
+export type StorageReport = {
+  totalBytes: number;
+  mediaBytes: number;
+  reclaimableBytes: number;
+  blockedBytes: number;
+  scripts: ScriptStorage[];
+};
+
+export type StorageCleared = { freedBytes: number; cleared: string[]; blocked: ScriptStorage[] };
+
 export type ClaudeStatus = {
   installed: boolean;
   loggedIn: boolean;

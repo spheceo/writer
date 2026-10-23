@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -291,6 +291,18 @@ export type CloudStatus = {
 
 /** Where syncing to the cloud has got to. */
 export const cloudStatus = () => (inTauri() ? invoke<CloudStatus>("cloud_status") : http<CloudStatus>("/api/cloud"));
+
+/** What Writer holds on this Mac, and how much the cloud holds too. */
+export const storageReport = () =>
+  inTauri() ? invoke<StorageReport>("storage_report") : http<StorageReport>("/api/storage");
+
+/** Clears local footage verified in the cloud; still-uploading footage stays. */
+export const clearStorage = () =>
+  inTauri() ? invoke<StorageCleared>("clear_storage") : http<StorageCleared>("/api/storage/clear", { method: "POST" });
+
+/** A cleared preview back from the cloud, so the script plays here again. */
+export const restorePreview = (id: string) =>
+  inTauri() ? invoke<Script>("restore_preview", { id }) : http<Script>(`/api/scripts/${id}/preview`, { method: "POST" });
 
 /** Shares the script on a Repack review link, or its next version on the same link. */
 export const shareScript = (id: string) =>

@@ -257,6 +257,30 @@ pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64)> {
     Some((kept.key.clone(), kept.size))
 }
 
+/// Verified in the cloud: the object at a script file's ledger key is
+/// there, at the size the ledger and this Mac agree on. The ledger alone
+/// is only what this Mac last believed; this is the signal share and
+/// storage deletion gate on (an `r2/head` through the relay).
+pub fn verify_file(data: &Path, id: &str, name: &str, local_size: u64) -> Result<bool, String> {
+    let Some((key, size)) = file_key(data, id, name) else { return Ok(false) };
+    if size != local_size {
+        return Ok(false);
+    }
+    Ok(head(data, &key)? == Some(local_size))
+}
+
+/// Verified at a key outside the script's own files (Edit's originals,
+/// for a joined case's recordings): the object is there at `size`.
+pub fn verify_key(data: &Path, key: &str, size: u64) -> Result<bool, String> {
+    Ok(head(data, key)? == Some(size))
+}
+
+/// What the cloud holds of a script, by file name (storage.rs: footage
+/// whose name and size are here has reached the cloud).
+pub fn synced_files(data: &Path, id: &str) -> BTreeMap<String, u64> {
+    load(data).scripts.get(id).map(|known| known.files.iter().map(|(name, kept)| (name.clone(), kept.size)).collect()).unwrap_or_default()
+}
+
 /// Who this Mac is, as commits and claims name it.
 pub fn holder_name() -> String {
     holder()
@@ -560,7 +584,17 @@ impl Cloud {
                 continue;
             }
             let known = ledger.scripts.get(&id).cloned();
-            let files = local_files(&dir, &script);
+            let mut files = local_files(&dir, &script);
+            // Footage cleared from this Mac once the cloud held it
+            // (storage.rs) is still the script's file in the cloud: a
+            // later edit must not drop it from the script's files.
+            if let Some(known) = &known {
+                for name in crate::storage::purged_names(data, &id) {
+                    if let Some(kept) = known.files.get(&name) {
+                        files.entry(name).or_insert_with(|| kept.clone());
+                    }
+                }
+            }
             if known.as_ref().is_some_and(|known| known.body == hash(&body) && same_files(&known.files, &files) && known.summary >= SUMMARY_VERSION) {
                 continue;
             }
@@ -677,6 +711,14 @@ impl Cloud {
             let present = !small_json && fs::metadata(&path).map(|meta| meta.len() == size).unwrap_or(false);
             // An archived script's footage was deleted from the cloud: only its small files come down.
             if row["archived"].is_object() && crate::archive::is_footage(name) {
+                continue;
+            }
+            // Footage cleared from this Mac once verified here
+            // (storage.rs) stays cleared: the same file at the same size
+            // is not downloaded back. A changed one (a rebuilt preview
+            // from another Mac) comes down as any changed file does.
+            if crate::archive::is_footage(name) && crate::storage::is_purged(data, &id, name) && known.as_ref().and_then(|known| known.files.get(name)).is_some_and(|kept| kept.size == size) {
+                files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: known.as_ref().and_then(|known| known.files.get(name)).map_or(0, |kept| kept.mtime) });
                 continue;
             }
             if !present {

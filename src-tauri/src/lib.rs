@@ -38,6 +38,7 @@ mod scout;
 mod revise;
 mod settings;
 mod speakers;
+mod storage;
 mod store;
 mod tidy;
 mod tools;
@@ -419,6 +420,42 @@ fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 fn cloud_status() -> cloud::Status {
     cloud::status()
+}
+
+/// What Writer holds on this Mac, and how much of it the cloud holds too.
+pub fn storage_now(data: &Path) -> storage::Report {
+    storage::report(data)
+}
+
+#[tauri::command]
+fn storage_report(app: AppHandle) -> Result<storage::Report, String> {
+    Ok(storage::report(&data_dir(&app)?))
+}
+
+/// Clears local footage that is verified in the cloud (previews included);
+/// footage still uploading stays, and the answer says which.
+pub fn clear_storage_now(data: &Path) -> storage::Cleared {
+    storage::purge_all(data, false)
+}
+
+#[tauri::command]
+async fn clear_storage(app: AppHandle) -> Result<storage::Cleared, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<storage::Cleared, String> { Ok(storage::purge_all(&data_dir(&app)?, false)) })
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// A cleared preview back from the cloud, so the script plays here again.
+pub fn restore_preview_now(data: &Path, id: &str) -> Result<model::ScriptDetail, String> {
+    can::require_id(data, id)?;
+    storage::fetch_preview(data, id)?;
+    let dir = store::script_dir(data, id)?;
+    Ok(store::detail(store::read(&dir)?, &dir))
+}
+
+#[tauri::command]
+async fn restore_preview(app: AppHandle, id: String) -> Result<model::ScriptDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || restore_preview_now(&data_dir(&app)?, &id)).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1398,6 +1435,8 @@ pub fn run() {
                 reviews::start(app.handle().clone(), dir.clone());
                 // Archives heard from Repack, restores, and the footage backfill.
                 archive::start(app.handle().clone(), dir.clone());
+                // Local footage cleared once verified in the cloud.
+                storage::start(dir.clone());
                 // Self-update, for Writer as downloaded (release builds only).
                 update::start(dir);
             }
@@ -1481,7 +1520,10 @@ pub fn run() {
             export_doc,
             list_docs,
             doc_comments,
-            cloud_status
+            cloud_status,
+            storage_report,
+            clear_storage,
+            restore_preview
         ])
         .run(tauri::generate_context!())
         .expect("error while running writer");

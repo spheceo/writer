@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Asked, ChatLog, Composer, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, inTauri, message, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, inTauri, message, restorePreview, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { useGrants } from "./can";
@@ -655,6 +655,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           expanded={expanded}
           onExpand={view === "video" ? setExpanded : undefined}
           onVideo={onVideo}
+          empty={
+            script.status === "ready" && !archived ? (
+              <span>
+                Preview is in the cloud.{" "}
+                <button type="button" className="link-button" onClick={() => void change(() => restorePreview(script.id))}>
+                  Download preview
+                </button>
+              </span>
+            ) : undefined
+          }
         />
         <section className="panel bin" aria-label="Media">
           <header className="panel-head">
