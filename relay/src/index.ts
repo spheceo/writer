@@ -73,6 +73,14 @@ export interface Env extends CloudEnv, AuthEnv {
   /** Vercel AI Gateway, for the watcher. */
   AI_GATEWAY_API_KEY?: string;
   WATCH_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  /** Per person: every cloud call (sync, reviews), and the other routes that reach a shared account. */
+  CLOUD_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  ROUTE_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  /** Repack's Trello token allows 100 requests in 10 s for everything it does. */
+  TRELLO_BURST: { limit(options: { key: string }): Promise<{ success: boolean }> };
+  /** Watcher calls a day, per person and across everyone. */
+  WATCH_DAILY_PER_PERSON: string;
+  WATCH_DAILY_TOTAL: string;
   BUDGET: {
     idFromName(name: string): unknown;
     get(id: unknown): { fetch(request: Request): Promise<Response> };
@@ -114,7 +122,17 @@ export default {
     if (!mayUse(caller)) {
       return json(403, { error: "Your account can't use Writer yet. Ask an admin at accounts.spheceo.com." });
     }
-    if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env, { sub: caller.sub, name: caller.name, email: caller.email, picture: caller.picture });
+    if (url.pathname.startsWith("/v1/cloud/")) {
+      if (!(await env.CLOUD_BURST.limit({ key: limitKey(caller) })).success) return json(429, { error: "Too many cloud requests at once; try again in a minute." });
+      return cloud(request, url, env, { sub: caller.sub, name: caller.name, email: caller.email, picture: caller.picture }, { admin: caller.admin, perms: caller.perms });
+    }
+    // The routes that spend a shared account's quota: a per-person pace.
+    if (["/v1/drive/token", "/v1/proxy", "/v1/docs/export", "/v1/docs/exports", "/v1/docs/comments"].includes(url.pathname)) {
+      if (!(await env.ROUTE_BURST.limit({ key: limitKey(caller) })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
+    }
+    if (url.pathname === "/v1/trello/cards" && !(await env.TRELLO_BURST.limit({ key: limitKey(caller) })).success) {
+      return json(429, { error: "Too many Trello requests at once; try again in a minute." });
+    }
     if (url.pathname === "/v1/drive/token") {
       if (request.method !== "GET") return json(405, { error: "GET a Drive token." });
       return driveToken(env);
@@ -245,6 +263,9 @@ const GATEWAY = "https://ai-gateway.vercel.sh/v1/chat/completions";
 const WATCH_MODEL = "google/gemini-3.8-flash";
 /** A window of 360p, 3 fps footage is a few MB; base64 adds a third. */
 const MAX_WATCH_BYTES = 24_000_000;
+/** Writer's own prompts are a few kB; a transcript window's text far under this. */
+const MAX_WATCH_SYSTEM = 20_000;
+const MAX_WATCH_TEXT = 200_000;
 
 async function watch(request: Request, env: Env, caller: Caller): Promise<Response> {
   if (!env.AI_GATEWAY_API_KEY) return json(503, { error: "The watcher is not configured on the relay yet." });
@@ -254,6 +275,15 @@ async function watch(request: Request, env: Env, caller: Caller): Promise<Respon
   if (!(await env.WATCH_BURST.limit({ key: limitKey(caller) })).success) {
     return json(429, { error: "Too many clips at once; try again in a minute." });
   }
+  // A day's watching, per person and for everyone: the key pays per call.
+  const day = new Date().toISOString().slice(0, 10);
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(limitKey(caller)));
+  const client = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const reserved = await env.BUDGET.get(env.BUDGET.idFromName(`watch:${day}`)).fetch(new Request("https://budget/reserve", {
+    method: "POST",
+    body: JSON.stringify({ client, size: 1, pool: "watch" }),
+  }));
+  if (!reserved.ok) return reserved;
   const body = (await request.json().catch(() => null)) as {
     system?: unknown;
     text?: unknown;
@@ -262,6 +292,9 @@ async function watch(request: Request, env: Env, caller: Caller): Promise<Respon
   } | null;
   if (!body || typeof body.system !== "string" || typeof body.text !== "string" || (body.clip !== undefined && typeof body.clip !== "string") || typeof body.schema !== "object" || !body.schema) {
     return json(400, { error: "Send system, text, schema and (to watch footage) clip." });
+  }
+  if (body.system.length > MAX_WATCH_SYSTEM || body.text.length > MAX_WATCH_TEXT || JSON.stringify(body.schema).length > MAX_WATCH_SYSTEM) {
+    return json(413, { error: "That watch request's instructions are too long." });
   }
   // The model is the relay's choice, so the key only ever pays for the watcher.
   const upstream = await fetch(GATEWAY, {
@@ -588,19 +621,25 @@ export class TranscriptionBudget {
     private env: Env,
   ) {}
   async fetch(request: Request): Promise<Response> {
-    const { client, size } = (await request.json()) as { client: string; size: number };
+    const { client, size, pool } = (await request.json()) as { client: string; size: number; pool?: string };
     if (!/^[a-f0-9]{64}$/.test(client) || !Number.isSafeInteger(size) || size <= 0 || size > Number(this.env.MAX_UPLOAD_BYTES)) {
       return json(400, { error: "Invalid budget reservation." });
     }
+    // Transcription counts bytes of audio; the watcher counts calls.
+    const watch = pool === "watch";
+    const [perPerson, total, what] = watch
+      ? [Number(this.env.WATCH_DAILY_PER_PERSON), Number(this.env.WATCH_DAILY_TOTAL), "watching"]
+      : [Number(this.env.DAILY_BYTES_PER_IP), Number(this.env.DAILY_BYTES_TOTAL), "transcription"];
+    if (!(perPerson > 0 && total > 0)) return json(503, { error: `The ${what} budget is misconfigured.` });
     const answer = await this.state.storage.transaction(async (storage) => {
       const ipKey = `ip:${client}`;
       const ipUsed = (await storage.get<number>(ipKey)) ?? 0;
       const allUsed = (await storage.get<number>("all")) ?? 0;
-      if (ipUsed + size > Number(this.env.DAILY_BYTES_PER_IP)) {
-        return json(429, { error: "Today's transcription allowance for you is used up; it resets at midnight UTC." });
+      if (ipUsed + size > perPerson) {
+        return json(429, { error: `Today's ${what} allowance for you is used up; it resets at midnight UTC.` });
       }
-      if (allUsed + size > Number(this.env.DAILY_BYTES_TOTAL)) {
-        return json(429, { error: "Writer's shared transcription budget for today is used up; it resets at midnight UTC." });
+      if (allUsed + size > total) {
+        return json(429, { error: `Writer's shared ${what} budget for today is used up; it resets at midnight UTC.` });
       }
       await storage.put(ipKey, ipUsed + size);
       await storage.put("all", allUsed + size);

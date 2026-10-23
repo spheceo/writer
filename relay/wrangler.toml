@@ -19,9 +19,14 @@ STAMP_CREATOR = "1"
 # in bytes of 32 kbps Opus (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
 # its words and whole for its voices, so an hour of footage is ~2.2 hours of
 # audio here. A long interview is a few hours.
-DAILY_BYTES_PER_IP = "288000000"  # per person: ~20 hours of audio, ~9 hours of footage
+DAILY_BYTES_PER_IP = "144000000"  # per person: ~10 hours of audio, ~4.5 hours of footage (half the team's, so one person can't use everyone's day)
 DAILY_BYTES_TOTAL = "288000000"   # ~20 hours, Edit's cap too (~16.6k credits a day at most)
 MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
+
+# The watcher (Gemini through the AI Gateway): calls a day. An hour of
+# footage is a few dozen windows.
+WATCH_DAILY_PER_PERSON = "3000"
+WATCH_DAILY_TOTAL = "12000"
 
 # Bursts: requests a minute per IP. Writer hears four 48 s pieces at once, as
 # Edit does, and can run imports side by side: Edit's relay takes 60 a
@@ -43,6 +48,33 @@ namespace_id = "7703"
 
 [ratelimits.simple]
 limit = 40
+period = 60
+
+# Every cloud call a minute per person: sync, reviews, the handoff to Edit.
+[[ratelimits]]
+name = "CLOUD_BURST"
+namespace_id = "7704"
+
+[ratelimits.simple]
+limit = 1200
+period = 60
+
+# Drive tokens, the proxy and Docs a minute per person.
+[[ratelimits]]
+name = "ROUTE_BURST"
+namespace_id = "7705"
+
+[ratelimits.simple]
+limit = 60
+period = 60
+
+# Trello list reads a minute per person (Repack's token: 100 per 10 s in all).
+[[ratelimits]]
+name = "TRELLO_BURST"
+namespace_id = "7706"
+
+[ratelimits.simple]
+limit = 10
 period = 60
 
 # Atomic daily reservations, including requests still in flight.

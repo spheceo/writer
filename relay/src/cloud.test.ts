@@ -39,3 +39,33 @@ test("other calls are untouched", async () => {
   expect(sent?.path).toBe("writer:listScripts");
   expect(sent?.args).not.toHaveProperty("actor");
 });
+
+const call = (path: string, args: Record<string, unknown>, kind = "mutation") =>
+  new Request("https://relay/v1/cloud/convex", { method: "POST", body: JSON.stringify({ kind, path, args }) });
+const r2 = (route: string, body: Record<string, unknown>) => new Request(`https://relay/v1/cloud/${route}`, { method: "POST", body: JSON.stringify(body) });
+const only = (...perms: string[]) => ({ admin: false, perms: new Set(["use", ...perms]) });
+
+test("only the functions Writer calls, each with what it needs", async () => {
+  const where = new URL("https://relay/v1/cloud/convex");
+  expect((await cloud(call("writer:somethingElse", {}), where, env("1"), actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(call("writer:listScripts", {}, "query"), where, env("1"), actor, only())).status).toBe(200);
+  // A commit of a kind the person can't write is refused; their own kind goes through.
+  const foia = { scriptId: "s1", summary: { sourceKind: "youtube", kind: "foia", compilation: false } };
+  expect((await cloud(call("writer:commitScript", foia), where, env("1"), actor, only("scripts.interrogation"))).status).toBe(403);
+  expect((await cloud(call("writer:commitScript", foia), where, env("1"), actor, only("scripts.foia"))).status).toBe(200);
+  // Reviews: reading is everyone's, changing them needs review.share.
+  expect((await cloud(call("reviews:changes", { cursor: 0 }, "query"), where, env("1"), actor, only())).status).toBe(200);
+  expect((await cloud(call("reviews:approve", {}), where, env("1"), actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(call("reviews:approve", {}), where, env("1"), actor, only("review.share"))).status).toBe(200);
+  expect((await cloud(call("edit:putMedia", {}), where, env("1"), actor, only())).status).toBe(403);
+});
+
+test("writes need script work, and the shared lessons the teaching capability", async () => {
+  const store = { ...env("1"), R2_ACCOUNT_ID: "a", R2_ACCESS_KEY_ID: "k", R2_SECRET_ACCESS_KEY: "s", R2_BUCKET: "b" };
+  const put = (key: string) => r2("r2/url", { key, method: "PUT" });
+  expect((await cloud(put("writer/lessons.json"), new URL("https://relay/v1/cloud/r2/url"), store, actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(put("writer/lessons.json"), new URL("https://relay/v1/cloud/r2/url"), store, actor, only("scripts.foia", "review.lessons"))).status).toBe(200);
+  expect((await cloud(put("edit/originals/youtube/x/a.mp4"), new URL("https://relay/v1/cloud/r2/url"), store, actor, only())).status).toBe(403);
+  expect((await cloud(r2("r2/url", { key: "writer/scripts/s1/body.json" }), new URL("https://relay/v1/cloud/r2/url"), store, actor, only())).status).toBe(200);
+  expect((await cloud(r2("r2/delete", { keys: ["writer/scripts/s1/body.json"] }), new URL("https://relay/v1/cloud/r2/delete"), store, actor, only())).status).toBe(403);
+});

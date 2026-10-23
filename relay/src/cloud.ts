@@ -4,8 +4,11 @@
  * module). The relay holds the R2 keys and Convex's service token; Writer only
  * ever gets short-lived presigned URLs and the answers of `writer:` functions.
  *
- * Every route is POST JSON, from someone with the `cloud` permission (index.ts
- * checks who's asking before routing here). The bucket is shared with Repack and Edit, so keys must sit under `writer/`.
+ * Every route is POST JSON, from someone who may use Writer (index.ts checks
+ * who's asking before routing here). Reading is open to them; writing needs
+ * script work (a `scripts.*` capability: a commit or delete the script's own
+ * kind), the shared lessons `review.lessons`, and reviews `review.share`.
+ * The bucket is shared with Repack and Edit, so keys must sit under `writer/`.
  *
  *   /v1/cloud/r2/url                {key, method: GET|PUT|HEAD, expires?} → {url}
  *   /v1/cloud/r2/multipart/create   {key, contentType?}                    → {uploadId}
@@ -41,27 +44,66 @@ export interface CloudEnv {
 }
 
 const HOUR = 3600;
-const MAX_EXPIRES = 7 * 24 * HOUR; // SigV4's limit
-const DEFAULT_EXPIRES: Record<string, number> = { GET: 6 * HOUR, PUT: HOUR, HEAD: HOUR };
+/** A presigned URL is checked when a transfer starts, so an hour covers any one. */
+const MAX_EXPIRES = HOUR;
+const DEFAULT_EXPIRES: Record<string, number> = { GET: HOUR, PUT: HOUR, HEAD: HOUR };
 /** Subrequests per invocation are limited (50 on the free plan). */
 const MAX_DELETE = 40;
 const MAX_PART_URLS = 1000;
 const MAX_BODY = 8 * 1024 * 1024;
 const CONVEX_KINDS = new Set(["query", "mutation", "action"]);
-/** Only Writer's module: the relay must not reach Repack's other functions. */
-const CONVEX_PATH = /^writer:[A-Za-z_][A-Za-z0-9_]*$/;
-/** Repack's reviews, always as Writer. */
-const REVIEWS_PATH = /^reviews:[A-Za-z_][A-Za-z0-9_]*$/;
-/** Edit's footage registry: a recording Writer downloads is Edit's too. */
-const EDIT_MEDIA = new Set(["edit:getMedia", "edit:putMedia"]);
-export const callable = (path: string) => CONVEX_PATH.test(path) || REVIEWS_PATH.test(path) || EDIT_MEDIA.has(path);
+/**
+ * The functions Writer calls, and what each needs beyond `use` (manifest.ts):
+ * `script` = the work the script is (its kind, from its summary), `any` = some
+ * kind of script work, an id = that capability. Nothing else is reachable.
+ */
+const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
+  "writer:listScripts": "read",
+  "writer:getScript": "read",
+  "writer:commitScript": "script",
+  "writer:deleteScript": "script",
+  "writer:clearRestore": "any",
+  "reviews:open": "read",
+  "reviews:changes": "read",
+  "reviews:publish": "review.share",
+  "reviews:approve": "review.share",
+  "reviews:unapprove": "review.share",
+  "reviews:claim": "review.share",
+  "reviews:release": "review.share",
+  "reviews:resolve": "review.share",
+  "reviews:reply": "review.share",
+  "reviews:note": "review.share",
+  "edit:getMedia": "read",
+  "edit:putMedia": "any",
+};
+const REVIEWS_PATH = /^reviews:/;
+export const callable = (path: string) => Object.hasOwn(FUNCTIONS, path);
+/** The shared lessons every commentary build reads: only someone who may teach Writer writes them. */
+const LESSONS_KEY = "writer/lessons.json";
 /** Edit's prefixes Writer may read and write, for footage and transcripts it shares. */
 const SHARED_PREFIXES = ["edit/originals/", "edit/analysis/"];
 
 /** Who started a script, from the verified sign-in: what commitScript records on its first commit. */
 export type Actor = { sub: string; name: string; email: string; picture?: string };
 
-export async function cloud(request: Request, url: URL, env: CloudEnv, actor?: Actor): Promise<Response> {
+/** What the caller was granted, from their verified token. */
+export type Grants = { admin: boolean; perms: Set<string> };
+const ALL: Grants = { admin: true, perms: new Set() };
+const has = (grants: Grants, id: string) => grants.admin || grants.perms.has(id);
+const anyWork = (grants: Grants) => grants.admin || [...grants.perms].some((perm) => perm.startsWith("scripts."));
+
+/** The work a script is, from its summary, as Writer's can.rs reads it. */
+export function workOf(summary: unknown): string | null {
+  if (!isObject(summary)) return null;
+  if (summary.sourceKind === "commentary") return "scripts.commentary";
+  const kind = typeof summary.kind === "string" ? summary.kind : "interrogation";
+  if (summary.compilation === true) return kind === "courtroom" ? "scripts.courtroom-compilation" : "scripts.interrogation-compilation";
+  return ["interrogation", "foia", "courtroom"].includes(kind) ? `scripts.${kind}` : null;
+}
+
+const refuse = (what: string) => json(403, { error: `Your account can't ${what}. Ask an admin at accounts.spheceo.com.` });
+
+export async function cloud(request: Request, url: URL, env: CloudEnv, actor?: Actor, grants: Grants = ALL): Promise<Response> {
   if (request.method !== "POST") return json(405, { error: `POST JSON to ${url.pathname}` });
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) return json(413, { error: "Request too large." });
   let body: Record<string, unknown>;
@@ -73,9 +115,16 @@ export async function cloud(request: Request, url: URL, env: CloudEnv, actor?: A
     return json(400, { error: "Send a JSON object." });
   }
   const route = url.pathname.slice("/v1/cloud/".length);
-  if (route === "convex") return convex(body, env, actor);
+  if (route === "convex") return convex(body, env, actor, grants);
   const handler = route.startsWith("r2/") && Object.hasOwn(R2_ROUTES, route.slice(3)) ? R2_ROUTES[route.slice(3)] : undefined;
   if (!handler) return json(404, { error: "not found" });
+  // Reading is everyone's; writing needs script work, and the lessons the teaching capability.
+  const writes = route === "r2/delete" || route.startsWith("r2/multipart/") || (route === "r2/url" && body.method === "PUT");
+  if (writes) {
+    const keys = route === "r2/delete" ? (Array.isArray(body.keys) ? body.keys : []) : [body.key];
+    if (keys.includes(LESSONS_KEY) && !has(grants, "review.lessons")) return refuse("change Writer's shared lessons");
+    if (!anyWork(grants)) return refuse("write scripts");
+  }
   const r2 = r2Config(env);
   if (!r2) return json(503, { error: "Cloud storage is not configured on the relay yet." });
   try {
@@ -323,13 +372,31 @@ export const unescapeXml = (text: string) => text
 // --- Convex ---------------------------------------------------------------------
 
 /** Calls a `writer:` function (or a `reviews:` one, as Writer, or Edit's footage registry) with the service token added to its args. */
-async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Actor): Promise<Response> {
+async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Actor, grants: Grants = ALL): Promise<Response> {
   const kind = body.kind;
   if (typeof kind !== "string" || !CONVEX_KINDS.has(kind)) return json(400, { error: "kind must be query, mutation or action." });
   if (typeof body.path !== "string" || !callable(body.path)) {
-    return json(403, { error: "Only writer: and reviews: functions, and Edit's edit:getMedia and edit:putMedia, can be called." });
+    return json(403, { error: "That function isn't one Writer calls." });
   }
   if (body.args !== undefined && !isObject(body.args)) return json(400, { error: "args must be an object." });
+  const needs = FUNCTIONS[body.path];
+  if (needs === "any" && !anyWork(grants)) return refuse("write scripts");
+  if (needs.includes(".") && !has(grants, needs)) return refuse(needs === "review.share" ? "share or fix reviews" : "do that");
+  if (needs === "script" && !grants.admin) {
+    const args = (body.args as Record<string, unknown> | undefined) ?? {};
+    // A commit says what it is; a delete is checked against what the script is in the cloud.
+    let summary = args.summary;
+    if (body.path === "writer:deleteScript") {
+      if (!env.CONVEX_URL || !env.CONVEX_SERVICE_TOKEN) return json(503, { error: "Convex is not configured on the relay yet." });
+      const row = await convexValue(env, "query", "writer:getScript", { scriptId: args.scriptId });
+      if (row === undefined) return json(502, { error: "Convex: couldn't look the script up." });
+      summary = isObject(row) ? row.summary : null;
+      if (row === null) summary = undefined;
+    }
+    const work = summary === undefined ? null : workOf(summary);
+    if (summary !== undefined && !(work ? has(grants, work) : anyWork(grants))) return refuse("change scripts of that kind");
+    if (summary === undefined && !anyWork(grants)) return refuse("write scripts");
+  }
   // A review is always Writer's from here, whatever the caller says.
   if (REVIEWS_PATH.test(body.path)) body.args = { ...(body.args as object | undefined), app: "writer" };
   // Who started a script comes from the verified sign-in, never from the caller (commitScript keeps it on create only).
@@ -367,6 +434,21 @@ async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Acto
     ? `${parsed.code}: ${parsed.message ?? ""}`
     : text.slice(0, 500) || `HTTP ${answer.status}`;
   return json(answer.ok ? 502 : answer.status, { error: `Convex: ${message}` });
+}
+
+/** One Convex call's value as the relay itself (undefined when it failed). */
+async function convexValue(env: CloudEnv, kind: string, path: string, args: Record<string, unknown>): Promise<unknown> {
+  try {
+    const answer = await fetch(`${env.CONVEX_URL!.replace(/\/+$/, "")}/api/${kind}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path, args: { ...args, token: env.CONVEX_SERVICE_TOKEN }, format: "json" }),
+    });
+    const parsed: unknown = await answer.json();
+    return isObject(parsed) && parsed.status === "success" ? (parsed.value ?? null) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function isObject(value: unknown): value is Record<string, unknown> {
