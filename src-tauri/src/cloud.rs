@@ -33,6 +33,12 @@ const PULL_EVERY: Duration = Duration::from_secs(30);
 /// A save is pushed once the script has been still this long.
 const SETTLE_MS: i64 = 2_000;
 const PREFIX: &str = "writer/scripts";
+/// Files bigger than this go up in parts of PART_SIZE (R2 takes 5 GiB in one PUT).
+const MULTIPART_OVER: u64 = 100_000_000;
+const PART_SIZE: u64 = 64 * 1024 * 1024;
+/// A script the cloud keeps refusing waits this long, doubling to BACKOFF_MAX, while the rest sync.
+const BACKOFF_FIRST: Duration = Duration::from_secs(30);
+const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// The lessons kept from reviews (feedback.rs), one file every Mac merges into.
 const LESSONS_KEY: &str = "writer/lessons.json";
 
@@ -64,6 +70,25 @@ pub struct Transfer {
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
 /// Ask the cloud now rather than at the next half minute.
 static PULL_NOW: Mutex<bool> = Mutex::new(true);
+/// Scripts whose push failed (not for being offline): when to try again, and how long it waited last.
+static BACKOFF: Mutex<BTreeMap<String, (Instant, Duration)>> = Mutex::new(BTreeMap::new());
+
+fn backed_off(id: &str) -> bool {
+    BACKOFF.lock().ok().and_then(|map| map.get(id).map(|(until, _)| *until > Instant::now())).unwrap_or(false)
+}
+
+fn back_off(id: &str) -> Duration {
+    let Ok(mut map) = BACKOFF.lock() else { return BACKOFF_FIRST };
+    let wait = map.get(id).map_or(BACKOFF_FIRST, |(_, last)| (*last * 2).min(BACKOFF_MAX));
+    map.insert(id.to_string(), (Instant::now() + wait, wait));
+    wait
+}
+
+fn forgive(id: &str) {
+    if let Ok(mut map) = BACKOFF.lock() {
+        map.remove(id);
+    }
+}
 
 pub fn status() -> Status {
     STATUS.lock().map(|status| status.clone().unwrap_or_default()).unwrap_or_default()
@@ -384,9 +409,13 @@ impl Cloud {
         }
     }
 
-    /// Uploads a file, its progress shown as it goes.
+    /// Uploads a file, its progress shown as it goes: in parts past
+    /// MULTIPART_OVER (one PUT to R2 takes at most 5 GiB).
     fn upload(&self, script: &str, name: &str, path: &Path, key: &str) -> Done<u64> {
         let size = fs::metadata(path).map_err(|error| Problem::said(error.to_string()))?.len();
+        if size > MULTIPART_OVER {
+            return self.upload_parts(script, name, path, key, size);
+        }
         let url = self.url(key, "PUT")?;
         let file = File::open(path).map_err(|error| Problem::said(error.to_string()))?;
         let counted = Counted { inner: file, done: 0, total: size, script: script.to_string(), name: name.to_string(), up: true };
@@ -395,6 +424,40 @@ impl Cloud {
             .set("content-length", &size.to_string())
             .send(counted)
             .map_err(|error| transfer_problem(error, name))?;
+        set(|status| status.transfer = None);
+        Ok(size)
+    }
+
+    /// A big file in parts of PART_SIZE: each a presigned PUT, then completed
+    /// (or abandoned, so R2 keeps no half of it).
+    fn upload_parts(&self, script: &str, name: &str, path: &Path, key: &str, size: u64) -> Done<u64> {
+        let created = self.relay("r2/multipart/create", json!({ "key": key }))?;
+        let upload_id = created["uploadId"].as_str().ok_or_else(|| Problem::said("The cloud gave no upload id."))?.to_string();
+        let count = size.div_ceil(PART_SIZE);
+        let outcome = (|| -> Done<()> {
+            let mut parts = Vec::new();
+            let mut file = File::open(path).map_err(|error| Problem::said(error.to_string()))?;
+            for first in (1..=count).step_by(100) {
+                let numbers: Vec<u64> = (first..=count.min(first + 99)).collect();
+                let urls = self.relay("r2/multipart/urls", json!({ "key": key, "uploadId": upload_id, "parts": numbers }))?;
+                for number in numbers {
+                    let url = urls["urls"][number.to_string()].as_str().ok_or_else(|| Problem::said("The cloud gave no part URL."))?.to_string();
+                    let length = PART_SIZE.min(size - (number - 1) * PART_SIZE);
+                    let mut chunk = vec![0u8; length as usize];
+                    file.read_exact(&mut chunk).map_err(|error| Problem::said(error.to_string()))?;
+                    let response = self.long.put(&url).set("content-length", &length.to_string()).send_bytes(&chunk).map_err(|error| transfer_problem(error, name))?;
+                    let etag = response.header("etag").unwrap_or("").to_string();
+                    parts.push(json!({ "partNumber": number, "etag": etag }));
+                    set(|status| status.transfer = Some(Transfer { script: script.to_string(), name: name.to_string(), done: (number * PART_SIZE).min(size), total: size, up: true }));
+                }
+            }
+            self.relay("r2/multipart/complete", json!({ "key": key, "uploadId": upload_id, "parts": parts }))?;
+            Ok(())
+        })();
+        if let Err(problem) = outcome {
+            let _ = self.relay("r2/multipart/abort", json!({ "key": key, "uploadId": upload_id }));
+            return Err(problem);
+        }
         set(|status| status.transfer = None);
         Ok(size)
     }
@@ -486,7 +549,7 @@ impl Cloud {
         let mut changed = Vec::new();
         for id in ids {
             // An archived script stays as the cloud has it until it's restored.
-            if !store::id_ok(&id) || busy(&id) || crate::archive::archived(data, &id) {
+            if !store::id_ok(&id) || busy(&id) || crate::archive::archived(data, &id) || backed_off(&id) {
                 continue;
             }
             let dir = root.join(&id);
@@ -504,21 +567,31 @@ impl Cloud {
             changed.push((id, dir, script, body, known, files));
         }
         let mut left = changed.len();
+        let mut refused: Option<Problem> = None;
         for (id, dir, script, body, known, files) in changed {
             set(|status| {
                 status.state = "syncing".into();
                 status.pending = left + waiting;
             });
-            match self.push(&id, &dir, &script, &body, known, files)? {
-                Pushed::Done(known) => {
+            match self.push(&id, &dir, &script, &body, known, files) {
+                Ok(Pushed::Done(known)) => {
+                    forgive(&id);
                     ledger.scripts.insert(id, known);
                     save(data, &ledger);
                 }
-                Pushed::Overtaken => {
+                Ok(Pushed::Overtaken) => {
                     waiting += 1;
                     if let Ok(mut now) = PULL_NOW.lock() {
                         *now = true;
                     }
+                }
+                Err(problem) if problem.offline => return Err(problem),
+                // Refused: this one waits, longer each time, and the rest go on.
+                Err(problem) => {
+                    let wait = back_off(&id);
+                    crate::log::warn("cloud", format!("{}: couldn't save to the cloud ({}); trying again in {} s", crate::log::named(&id, &script.title), problem.message, wait.as_secs()));
+                    waiting += 1;
+                    refused.get_or_insert(Problem::said(format!("{} couldn't be saved to the cloud: {}", script.title, problem.message)));
                 }
             }
             left -= 1;
@@ -526,7 +599,10 @@ impl Cloud {
         if pull {
             self.sync_lessons(data)?;
         }
-        Ok(waiting)
+        match refused {
+            Some(problem) => Err(problem),
+            None => Ok(waiting),
+        }
     }
 
     /// Merges the kept lessons both ways: this Mac's and the cloud's, each
@@ -552,16 +628,24 @@ impl Cloud {
     /// Brings one script from the cloud when it is newer than this Mac's.
     fn pull(&self, data: &Path, ledger: &mut Ledger, row: &Value) -> Done<()> {
         let id = row["scriptId"].as_str().unwrap_or("").to_string();
-        if !store::id_ok(&id) || busy(&id) {
+        // Being deleted here: never brought back.
+        if !store::id_ok(&id) || busy(&id) || deleting(data).contains(&id) {
             return Ok(());
         }
         let rev = row["rev"].as_u64().unwrap_or(0);
         let dir = store::scripts_root(data).join(&id);
         let known = ledger.scripts.get(&id).cloned();
         if !row["deletedAt"].is_null() {
-            // Deleted on another Mac: gone here too, unless this Mac changed it since.
-            if dir.is_dir() && !changed_here(&dir, known.as_ref()) {
-                crate::log::info("cloud", format!("{}: deleted on another Mac, so here too", crate::log::named(&id, row["title"].as_str().unwrap_or(""))));
+            // Deleted on another Mac: gone here too. Changed here since, it's
+            // kept as a copy under a new id (the deleted id can't be saved again).
+            if dir.is_dir() {
+                let name = crate::log::named(&id, row["title"].as_str().unwrap_or(""));
+                if changed_here(&dir, known.as_ref()) {
+                    keep_copy(data, &dir, "restored copy")?;
+                    crate::log::info("cloud", format!("{name}: deleted on another Mac after it changed here, so this Mac's version is kept as a restored copy"));
+                } else {
+                    crate::log::info("cloud", format!("{name}: deleted on another Mac, so here too"));
+                }
                 let _ = fs::remove_dir_all(&dir);
                 store::library_changed();
             }
@@ -572,12 +656,13 @@ impl Cloud {
             return Ok(());
         }
         let body = self.fetch(row["bodyKey"].as_str().unwrap_or(""))?;
+        let at_start = fs::read(dir.join("script.json")).map(|bytes| hash(&bytes)).ok();
         if dir.is_dir() {
             let here = fs::read(dir.join("script.json")).unwrap_or_default();
             if hash(&here) == hash(&body) {
                 // The same script, as on a first sync of a Mac that already has it.
             } else if changed_here(&dir, known.as_ref()) {
-                keep_copy(data, &dir)?;
+                keep_copy(data, &dir, "conflicted copy")?;
             }
         }
         fs::create_dir_all(&dir).map_err(|error| Problem::said(error.to_string()))?;
@@ -599,6 +684,11 @@ impl Cloud {
             }
             files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: mtime(&path) });
         }
+        // Saved here while the files came down: that version is kept as a copy, not lost.
+        if fs::read(dir.join("script.json")).map(|bytes| hash(&bytes)).ok() != at_start {
+            crate::log::warn("cloud", format!("{}: changed here while rev {rev} came down; this Mac's version is kept as a copy", crate::log::named(&id, row["title"].as_str().unwrap_or(""))));
+            keep_copy(data, &dir, "conflicted copy")?;
+        }
         // Who started it, as the cloud recorded it from their verified sign-in, wins over the body's.
         let body = with_creator(body, &row["createdBy"]);
         let tmp = dir.join("script.json.tmp");
@@ -617,9 +707,13 @@ impl Cloud {
         let mut kept = BTreeMap::new();
         let began = std::time::Instant::now();
         let (mut sent, mut sent_bytes) = (0usize, 0u64);
+        // Each push's files go under keys no committed revision uses, so a push
+        // that loses to another Mac's never overwrites the winner's files.
+        let push_id = &uuid::Uuid::new_v4().simple().to_string()[..10];
+        let mut uploaded: Vec<String> = Vec::new();
         for (name, local) in files {
             let previous = known.as_ref().and_then(|known| known.files.get(&name));
-            let key = format!("{PREFIX}/{id}/files/{name}");
+            let key = format!("{PREFIX}/{id}/files/r{}-{push_id}/{name}", base + 1);
             if previous.is_some_and(|previous| previous.size == local.size && previous.mtime == local.mtime) {
                 kept.insert(name, previous.cloned().unwrap_or_default());
                 continue;
@@ -633,11 +727,15 @@ impl Cloud {
                     if size > 50_000_000 {
                         crate::log::info("cloud", format!("{}: {name} uploaded: {}", crate::log::named(id, &script.title), crate::log::size(size)));
                     }
+                    uploaded.push(key.clone());
                     kept.insert(name, Kept { key, size, mtime: local.mtime });
                 }
                 Err(problem) if problem.offline => return Err(problem),
                 Err(_) if !path.exists() => continue,
-                Err(problem) => return Err(problem),
+                Err(problem) => {
+                    self.remove(&uploaded);
+                    return Err(problem);
+                }
             }
         }
         let digest = hash(body);
@@ -670,14 +768,19 @@ impl Cloud {
             }
             Err((code, _)) if code == "conflict" => {
                 crate::log::warn("cloud", format!("{}: another Mac saved it first (rev {base} is behind); taking theirs and keeping this Mac's as a copy", crate::log::named(id, &script.title)));
-                self.remove(&[body_key]);
+                uploaded.push(body_key);
+                self.remove(&uploaded);
                 Ok(Pushed::Overtaken)
             }
-            Err((code, data)) => Err(Problem::said(format!(
+            Err((code, data)) => {
+                uploaded.push(body_key);
+                self.remove(&uploaded);
+                Err(Problem::said(format!(
                 "The cloud refused {}: {}",
                 script.title,
                 data["message"].as_str().unwrap_or(&code)
-            ))),
+            )))
+            }
         }
     }
 }
@@ -763,13 +866,13 @@ fn changed_here(dir: &Path, known: Option<&Known>) -> bool {
 }
 
 /// This Mac's version of a script the cloud overtook, kept beside it under a new id.
-fn keep_copy(data: &Path, dir: &Path) -> Done<()> {
+fn keep_copy(data: &Path, dir: &Path, label: &str) -> Done<()> {
     let id = uuid::Uuid::new_v4().to_string();
     let copy = store::scripts_root(data).join(&id);
     copy_dir(dir, &copy).map_err(|error| Problem::said(error.to_string()))?;
     let mut script = store::read(&copy).map_err(Problem::said)?;
     script.id = id;
-    script.title = format!("{} (conflicted copy)", script.title);
+    script.title = format!("{} ({label})", script.title);
     script.updated_at = now_ms();
     store::write(&copy, &script).map_err(Problem::said)?;
     store::library_changed();

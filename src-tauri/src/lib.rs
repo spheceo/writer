@@ -409,8 +409,9 @@ fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
         return Err("Claude is still writing this script.".into());
     }
     let data = data_dir(&app)?;
-    store::remove(&data, &id)?;
+    // The cloud's delete is recorded first: a crash between the two can't bring the script back.
     cloud::deleted(&data, &id);
+    store::remove(&data, &id)?;
     store::library_changed();
     Ok(())
 }
