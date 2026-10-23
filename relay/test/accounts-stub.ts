@@ -8,6 +8,7 @@
  *
  *   STUB_PORT=8788 STUB_PERMS=use,ai STUB_TTL=3600 bun relay/test/accounts-stub.ts
  *   STUB_DENY=1 answers every sign-in with access_denied.
+ *   STUB_PICTURE=https://… puts a photo in the token's `picture` claim.
  *   GET /stub/mint?aud=writer&perms=use,cloud → an access token, for curl tests.
  *   GET /stub/limit?on=1 → /app/token and /app/revoke answer 429 (Retry-After: 60) until ?on=0.
  *
@@ -32,7 +33,7 @@ const say = (text: string) => console.log(`[accounts-stub] ${text}`);
 let limited = false;
 
 async function access(aud: string, granted = perms) {
-  return new SignJWT({ email: "someone@gmail.com", name: "Someone", perms: granted, admin: false })
+  return new SignJWT({ email: "someone@gmail.com", name: "Someone", perms: granted, admin: false, ...(process.env.STUB_PICTURE ? { picture: process.env.STUB_PICTURE } : {}) })
     .setProtectedHeader({ alg: "RS256", kid: jwk.kid })
     .setIssuer(issuer)
     .setAudience(aud)
@@ -45,7 +46,7 @@ async function access(aud: string, granted = perms) {
 async function pair(client: string, chain: string) {
   const refresh = random();
   refreshes.set(refresh, { chain, dead: false });
-  return { access_token: await access(client), token_type: "Bearer", expires_in: ttl, refresh_token: refresh, user: { email: "someone@gmail.com", name: "Someone", image: null } };
+  return { access_token: await access(client), token_type: "Bearer", expires_in: ttl, refresh_token: refresh, user: { email: "someone@gmail.com", name: "Someone", image: process.env.STUB_PICTURE ?? null } };
 }
 
 const oauthError = (error: string, status = 400) => Response.json({ error }, { status });

@@ -49,6 +49,19 @@ pub struct Note {
 
 pub const CUT_IN_MS: u64 = 3_000;
 
+/// Who started a script: the signed-in person when it was made here, or as
+/// the cloud recorded it from their verified sign-in (that one wins).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Creator {
+    pub sub: String,
+    pub name: String,
+    pub email: String,
+    /// Their Google photo's address.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
 /// A reused case in a compilation: its link, its title, and how many of the
 /// compilation's own videos come before it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -223,6 +236,9 @@ pub struct Script {
     /// Interrogation, FOIA or Courtroom, as Repack's workspaces are.
     #[serde(default)]
     pub kind: crate::formats::Kind,
+    /// Who started it (none on scripts from before sign-in).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Creator>,
     /// Several cases, one per video, joined as one compilation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub compilation: bool,
@@ -304,6 +320,8 @@ pub struct Summary {
     /// Archived from Repack's page (filled in by store::list).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<crate::archive::State>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Creator>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,6 +358,7 @@ impl Script {
             created_at: self.created_at,
             kind: self.kind,
             archive: None,
+            created_by: self.created_by.clone(),
         }
     }
 }

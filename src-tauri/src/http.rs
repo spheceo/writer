@@ -91,6 +91,15 @@ fn handle(app: AppHandle, mut stream: TcpStream) -> Result<(), String> {
         let since = query.split('&').find_map(|pair| pair.strip_prefix("since=")).and_then(|value| value.parse::<i64>().ok()).unwrap_or(0);
         return write_json(&mut stream, 200, &json!({ "lines": crate::log::since(since), "file": crate::log::file() }));
     }
+    // A script starter's photo, fetched once and kept (avatar.rs); 404 means "show initials".
+    if method == "GET" && path == "/api/avatar" {
+        let param = |key: &str| query.split('&').find_map(|pair| pair.strip_prefix(&format!("{key}="))).map(decode_query).unwrap_or_default();
+        let found = crate::avatar::local(&data_dir(&app)?, &param("sub"), &param("picture")).and_then(|file| std::fs::read(file).ok());
+        return match found {
+            Some(bytes) => write_bytes(&mut stream, 200, &[("content-type", crate::avatar::content_type(&bytes)), ("cache-control", "max-age=86400")], &bytes),
+            None => write_json(&mut stream, 404, &json!({ "error": "No photo." })),
+        };
+    }
     route(app, &mut stream, method, path, &body, range.as_deref())
 }
 
@@ -404,6 +413,28 @@ fn send_frames(app: AppHandle, stream: &mut TcpStream, id: &str, name: &str) -> 
     }
     let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
     write_bytes(stream, 200, &[("content-type", "image/jpeg")], &bytes)
+}
+
+/// A query parameter's value, %-escapes and `+` undone.
+fn decode_query(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                Ok(byte) => {
+                    out.push(byte);
+                    i += 2;
+                }
+                Err(_) => out.push(b'%'),
+            },
+            byte => out.push(byte),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn json_str(body: &[u8], key: &str) -> Result<String, String> {

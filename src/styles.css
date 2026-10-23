@@ -1295,3 +1295,7 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .update-pill { position: fixed; right: 14px; bottom: 14px; z-index: 41; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; }
 .update-pill button { box-shadow: 0 6px 18px #0008; }
 .update-channel { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; }
+
+/* Who started a script: their photo, or their initials on the neutral chip. */
+.avatar { display: inline-grid; place-items: center; flex-shrink: 0; overflow: hidden; border-radius: 50%; background: #2b2b2b; color: var(--text-2); font-weight: 600; line-height: 1; letter-spacing: .02em; user-select: none; }
+.avatar img { width: 100%; height: 100%; object-fit: cover; }

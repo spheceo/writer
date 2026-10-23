@@ -17,6 +17,7 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { Avatar } from "./avatar";
 import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
 import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
@@ -297,6 +298,7 @@ export function Library({
                         ) : script.sourceKind === "commentary" ? (
                           <span className="script-kind">Commentary</span>
                         ) : null}
+                        <Avatar creator={script.createdBy} />
                       </div>
                     </td>
                     <td className="cell">

@@ -598,6 +598,8 @@ impl Cloud {
             }
             files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: mtime(&path) });
         }
+        // Who started it, as the cloud recorded it from their verified sign-in, wins over the body's.
+        let body = with_creator(body, &row["createdBy"]);
         let tmp = dir.join("script.json.tmp");
         fs::write(&tmp, &body).and_then(|_| fs::rename(&tmp, dir.join("script.json"))).map_err(|error| Problem::said(error.to_string()))?;
         crate::log::info("cloud", format!("{}: rev {rev} came from {}", crate::log::named(&id, row["title"].as_str().unwrap_or("")), row["updatedBy"].as_str().unwrap_or("another Mac")));
@@ -737,6 +739,18 @@ fn same_files(known: &BTreeMap<String, Kept>, here: &BTreeMap<String, Kept>) -> 
         && here.iter().all(|(name, file)| known.get(name).is_some_and(|other| other.size == file.size && other.mtime == file.mtime))
 }
 
+/// A pulled body with the cloud's `createdBy` in it, when the cloud has one
+/// and the body says otherwise; the body as it was if not.
+fn with_creator(body: Vec<u8>, created_by: &Value) -> Vec<u8> {
+    let Ok(creator) = serde_json::from_value::<crate::model::Creator>(created_by.clone()) else { return body };
+    let Ok(mut value) = serde_json::from_slice::<Value>(&body) else { return body };
+    if serde_json::from_value::<crate::model::Creator>(value["createdBy"].clone()).ok().as_ref() == Some(&creator) {
+        return body;
+    }
+    value["createdBy"] = serde_json::to_value(&creator).unwrap_or(Value::Null);
+    serde_json::to_vec_pretty(&value).unwrap_or(body)
+}
+
 /// Whether this Mac has changed a script since it last synced it.
 fn changed_here(dir: &Path, known: Option<&Known>) -> bool {
     let body = fs::read(dir.join("script.json")).unwrap_or_default();
@@ -835,5 +849,21 @@ impl<R: Read> Read for Counted<R> {
             status.transfer = Some(transfer);
         });
         Ok(read)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clouds_creator_wins() {
+        let body = br#"{"id":"a","createdBy":{"sub":"me","name":"Me","email":"me@x"}}"#.to_vec();
+        let cloud = serde_json::json!({ "sub": "p1", "name": "Someone", "email": "s@x", "picture": "https://lh3.googleusercontent.com/a" });
+        let out: Value = serde_json::from_slice(&with_creator(body.clone(), &cloud)).unwrap();
+        assert_eq!(out["createdBy"]["sub"], "p1");
+        assert_eq!(out["id"], "a");
+        // No creator in the cloud (an older script): the body as it was.
+        assert_eq!(with_creator(body.clone(), &Value::Null), body);
     }
 }

@@ -371,6 +371,12 @@ export type AccountStatus = {
   signInUrl: string | null;
   error: string | null;
 };
+/** A script starter's photo, kept on this Mac: a src for <img>, or null (show initials). */
+export const avatarSrc = async (sub: string, picture: string): Promise<string | null> => {
+  if (!inTauri()) return `/api/avatar?sub=${encodeURIComponent(sub)}&picture=${encodeURIComponent(picture)}`;
+  const path = await invoke<string | null>("avatar", { sub, picture });
+  return path ? convertFileSrc(path) : null;
+};
 export const accountStatus = () => (inTauri() ? invoke<AccountStatus>("account_status") : http<AccountStatus>("/api/account"));
 export const signIn = () => (inTauri() ? invoke<AccountStatus>("sign_in") : http<AccountStatus>("/api/account/sign-in", json({})));
 export const cancelSignIn = () => (inTauri() ? invoke<AccountStatus>("cancel_sign_in") : http<AccountStatus>("/api/account/cancel", json({})));

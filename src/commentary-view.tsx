@@ -16,6 +16,7 @@ import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { CloudBadge } from "./cloud-badge";
 import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { Avatar } from "./avatar";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon, Menu, Tabs } from "./ui";
 
@@ -417,6 +418,7 @@ export function CommentaryEditor({
           <span>Scripts</span>
           <span>/</span>
           <h1>{script.title}</h1>
+          <Avatar creator={script.createdBy} size={22} />
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">

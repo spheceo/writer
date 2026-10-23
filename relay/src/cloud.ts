@@ -28,6 +28,8 @@
  */
 
 export interface CloudEnv {
+  /** "1" once Repack's writer:commitScript takes `actor` (it rejects arguments it doesn't know). */
+  STAMP_CREATOR?: string;
   R2_ACCOUNT_ID?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
@@ -56,7 +58,10 @@ export const callable = (path: string) => CONVEX_PATH.test(path) || REVIEWS_PATH
 /** Edit's prefixes Writer may read and write, for footage and transcripts it shares. */
 const SHARED_PREFIXES = ["edit/originals/", "edit/analysis/"];
 
-export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<Response> {
+/** Who started a script, from the verified sign-in: what commitScript records on its first commit. */
+export type Actor = { sub: string; name: string; email: string; picture?: string };
+
+export async function cloud(request: Request, url: URL, env: CloudEnv, actor?: Actor): Promise<Response> {
   if (request.method !== "POST") return json(405, { error: `POST JSON to ${url.pathname}` });
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) return json(413, { error: "Request too large." });
   let body: Record<string, unknown>;
@@ -68,7 +73,7 @@ export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<
     return json(400, { error: "Send a JSON object." });
   }
   const route = url.pathname.slice("/v1/cloud/".length);
-  if (route === "convex") return convex(body, env);
+  if (route === "convex") return convex(body, env, actor);
   const handler = route.startsWith("r2/") && Object.hasOwn(R2_ROUTES, route.slice(3)) ? R2_ROUTES[route.slice(3)] : undefined;
   if (!handler) return json(404, { error: "not found" });
   const r2 = r2Config(env);
@@ -80,6 +85,11 @@ export async function cloud(request: Request, url: URL, env: CloudEnv): Promise<
     if (error instanceof Upstream) return json(502, { error: error.message });
     throw error;
   }
+}
+
+/** The actor as Convex takes it: no empty picture. */
+export function stamp(actor: Actor): Actor {
+  return actor.picture ? actor : { sub: actor.sub, name: actor.name, email: actor.email };
 }
 
 /** A key Writer may touch: under `writer/`, no empty, `.` or `..` segments, no control characters. */
@@ -313,7 +323,7 @@ export const unescapeXml = (text: string) => text
 // --- Convex ---------------------------------------------------------------------
 
 /** Calls a `writer:` function (or a `reviews:` one, as Writer, or Edit's footage registry) with the service token added to its args. */
-async function convex(body: Record<string, unknown>, env: CloudEnv): Promise<Response> {
+async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Actor): Promise<Response> {
   const kind = body.kind;
   if (typeof kind !== "string" || !CONVEX_KINDS.has(kind)) return json(400, { error: "kind must be query, mutation or action." });
   if (typeof body.path !== "string" || !callable(body.path)) {
@@ -322,6 +332,11 @@ async function convex(body: Record<string, unknown>, env: CloudEnv): Promise<Res
   if (body.args !== undefined && !isObject(body.args)) return json(400, { error: "args must be an object." });
   // A review is always Writer's from here, whatever the caller says.
   if (REVIEWS_PATH.test(body.path)) body.args = { ...(body.args as object | undefined), app: "writer" };
+  // Who started a script comes from the verified sign-in, never from the caller (commitScript keeps it on create only).
+  if (body.path === "writer:commitScript") {
+    const { actor: _sent, ...args } = (body.args as Record<string, unknown> | undefined) ?? {};
+    body.args = env.STAMP_CREATOR === "1" && actor ? { ...args, actor: stamp(actor) } : args;
+  }
   if (!env.CONVEX_URL || !env.CONVEX_SERVICE_TOKEN) return json(503, { error: "Convex is not configured on the relay yet." });
   let answer: Response;
   try {

@@ -2,6 +2,7 @@ mod casefiles;
 mod account;
 mod can;
 mod activity;
+mod avatar;
 mod archive;
 mod blocks;
 mod chat;
@@ -965,6 +966,14 @@ async fn set_update_channel(app: AppHandle, channel: update::Channel) -> Result<
         .map_err(|error| error.to_string())?
 }
 
+/// A script starter's photo on disk (fetched once), or none: the page shows initials then.
+#[tauri::command]
+async fn avatar(app: AppHandle, sub: String, picture: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || Ok(avatar::local(&data_dir(&app)?, &sub, &picture).map(|path| path.to_string_lossy().into_owned())))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn account_status() -> account::Status {
     account::status()
@@ -1292,6 +1301,7 @@ pub fn run() {
             install_update,
             set_update_channel,
             account_status,
+            avatar,
             sign_in,
             cancel_sign_in,
             sign_out,

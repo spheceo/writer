@@ -267,6 +267,8 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
         no_speech: false,
         notes: Vec::new(),
         kind: Default::default(),
+        // Who started it: whoever is signed in now.
+        created_by: crate::account::creator(),
         compilation: false,
         speakers: Default::default(),
         suspects: Vec::new(),

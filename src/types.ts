@@ -61,6 +61,9 @@ export type Choice =
 
 export type Check = { name: string; ok: boolean; detail: string };
 
+/** Who started a script (none on scripts from before sign-in). */
+export type Creator = { sub: string; name: string; email: string; picture?: string };
+
 export type Script = {
   id: string;
   title: string;
@@ -81,6 +84,7 @@ export type Script = {
   notes?: string[];
   kind?: Kind;
   compilation?: boolean;
+  createdBy?: Creator;
   /** Who each voice is, "Name (Role)" or a role, by speaker ID. */
   speakers?: Record<string, string>;
   suspects?: string[];
@@ -112,6 +116,7 @@ export type Archive = { at: number; by: string; freedBytes: number; restoring: b
 
 export type Summary = {
   archive?: Archive;
+  createdBy?: Creator;
   /** Interrogation, FOIA or Courtroom. */
   kind?: Kind;
   id: string;

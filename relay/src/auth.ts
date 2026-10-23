@@ -18,7 +18,7 @@ export interface AuthEnv {
   ACCOUNTS_URL?: string;
 }
 
-export type Caller = { sub: string; email: string; perms: Set<string>; admin: boolean };
+export type Caller = { sub: string; email: string; name: string; picture?: string; perms: Set<string>; admin: boolean };
 
 const ISSUER = "https://accounts.spheceo.com";
 const AUDIENCE = "writer";
@@ -73,6 +73,8 @@ export async function identify(request: Request, env: AuthEnv): Promise<Identifi
       caller: {
         sub: String(payload.sub),
         email: typeof payload.email === "string" ? payload.email : "",
+        name: typeof payload.name === "string" ? payload.name : "",
+        picture: typeof payload.picture === "string" && payload.picture.startsWith("https://") ? payload.picture : undefined,
         perms: new Set(perms),
         admin: payload.admin === true,
       },

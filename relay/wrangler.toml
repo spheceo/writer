@@ -11,6 +11,10 @@ preview_urls = false
 # Where people sign in: the access tokens' issuer, and the home of its JWKS.
 ACCOUNTS_URL = "https://accounts.spheceo.com"
 
+# "1" once Repack's writer:commitScript takes `actor`: then a script's first
+# commit records who started it, from their verified sign-in.
+STAMP_CREATOR = "0"
+
 # Daily audio per person and across everyone,
 # in bytes of 32 kbps Opus (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
 # its words and whole for its voices, so an hour of footage is ~2.2 hours of

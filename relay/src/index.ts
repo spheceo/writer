@@ -114,7 +114,7 @@ export default {
     if (!mayUse(caller)) {
       return json(403, { error: "Your account can't use Writer yet. Ask an admin at accounts.spheceo.com." });
     }
-    if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env);
+    if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env, { sub: caller.sub, name: caller.name, email: caller.email, picture: caller.picture });
     if (url.pathname === "/v1/drive/token") {
       if (request.method !== "GET") return json(405, { error: "GET a Drive token." });
       return driveToken(env);
