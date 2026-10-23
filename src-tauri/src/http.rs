@@ -70,12 +70,30 @@ fn handle(app: AppHandle, mut stream: TcpStream) -> Result<(), String> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let mut content_length = 0usize;
     let mut range = None;
+    let (mut host, mut origin) = (String::new(), None);
     for line in lines {
         let Some((name, value)) = line.split_once(':') else { continue };
         if name.eq_ignore_ascii_case("content-length") {
             content_length = value.trim().parse().unwrap_or(0);
         } else if name.eq_ignore_ascii_case("range") {
             range = Some(value.trim().to_string());
+        } else if name.eq_ignore_ascii_case("host") {
+            host = value.trim().to_ascii_lowercase();
+        } else if name.eq_ignore_ascii_case("origin") {
+            origin = Some(value.trim().to_ascii_lowercase());
+        }
+    }
+    // Only Writer's tools for a build in steps (/mcp/<token>, its token random
+    // per build) are for anyone on this Mac. The window talks to Writer over
+    // IPC, so a release build serves nothing else; a dev build serves the API
+    // to the dev page and scripts here, never to a web page (CSRF) or a name
+    // that only resolves here (DNS rebinding).
+    if !path.starts_with("/mcp/") {
+        if !cfg!(debug_assertions) {
+            return write_json(&mut stream, 404, &json!({ "error": "Not found." }));
+        }
+        if !local_host(&host) || origin.as_deref().is_some_and(|origin| !local_origin(origin)) {
+            return write_json(&mut stream, 403, &json!({ "error": "That request isn't from Writer." }));
         }
     }
     if content_length > 12_000_000 {
@@ -101,6 +119,18 @@ fn handle(app: AppHandle, mut stream: TcpStream) -> Result<(), String> {
         };
     }
     route(app, &mut stream, method, path, &body, range.as_deref())
+}
+
+/// The API's own address, as a request names it.
+fn local_host(host: &str) -> bool {
+    host == format!("127.0.0.1:{PORT}") || host == format!("localhost:{PORT}")
+}
+
+/// A page Writer serves itself: the dev page (Vite, :1420) on this Mac.
+fn local_origin(origin: &str) -> bool {
+    let Some(rest) = origin.strip_prefix("http://") else { return false };
+    let Some((name, port)) = rest.rsplit_once(':') else { return false };
+    (port == "1420" || port == PORT.to_string()) && (name == "localhost" || name == "127.0.0.1")
 }
 
 fn route(

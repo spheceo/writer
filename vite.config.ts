@@ -17,6 +17,8 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://127.0.0.1:1421",
+        // The API answers only its own address (http.rs).
+        changeOrigin: true,
         timeout: 0,
         proxyTimeout: 0,
       },
