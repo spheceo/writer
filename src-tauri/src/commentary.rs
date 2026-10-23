@@ -1301,7 +1301,6 @@ fn clipped(text: &str) -> String {
 /// What a reviewer would flag that a count can find, one line each.
 pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pacing: Pacing) -> Vec<String> {
     let said = sentences(draft);
-    let words = draft.words().max(1);
     let mut flags = Vec::new();
     // OWN THE RESEARCH: "Never write according to [another creator], like we have done our own investigative research."
     for name in creators(sources, title) {
@@ -1326,14 +1325,14 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
     }
     // A POINT OF VIEW, NOT A LIST: "And then, and then, then, then, then. It gets so annoying for the viewer."
     let chained = said.iter().filter(|sentence| ["Then ", "And then", "After that", "Next,"].iter().any(|start| sentence.starts_with(start))).count();
-    if chained * 1_000 / words >= 3 && chained >= 6 {
+    if chained >= 6 {
         flags.push(format!("{chained} sentences start with \"Then\", \"And then\" or \"After that\": the story reads as a list of events. Give each chapter a point that serves the video's question, cut the incidents that don't, and join the rest by why they matter, not by what came next."));
     }
     if pacing == Pacing::Documentary {
         // CLIPS ARE RARE: "you dont need to add a clip at every end. It should be a rare thing for a script like this."
         let paragraphs: Vec<&Paragraph> = draft.sections.iter().flat_map(|section| &section.paragraphs).collect();
         let ending = paragraphs.iter().filter(|paragraph| matches!(paragraph.pieces.last(), Some(Piece::Clip(_)))).count();
-        if paragraphs.len() >= 10 && ending * 100 / paragraphs.len() > 40 {
+        if paragraphs.len() >= 10 && ending * 100 / paragraphs.len() > 30 {
             flags.push(format!("{ending} of {} paragraphs end on a clip. In a documentary-paced script a clip is rare and earned: keep the ones where hearing the person adds a lot, tell the rest in narration, and put footage that only illustrates a line in the note as \"Show: …\".", paragraphs.len()));
         }
     }
