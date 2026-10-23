@@ -367,6 +367,8 @@ export type AccountStatus = {
   signedIn: boolean;
   person: Person | null;
   signingIn: boolean;
+  /** While signing in: the page to open, if the browser didn't. */
+  signInUrl: string | null;
   error: string | null;
   /** No old team token to fall back on: signing in is a must. */
   required: boolean;

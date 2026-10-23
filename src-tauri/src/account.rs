@@ -81,9 +81,11 @@ struct State {
     /// No renewal before this: accounts asked Writer to wait (429), or didn't answer.
     hold: Option<Instant>,
     renewed: Option<Instant>,
+    /// The sign-in page a waiting sign-in opened (no secret in it: PKCE keeps the verifier here).
+    url: Option<String>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None });
+static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None, url: None });
 /// One renewal at a time: a refresh token works once, and reusing it ends the sign-in.
 static RENEWING: Mutex<()> = Mutex::new(());
 static DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -96,6 +98,8 @@ pub struct Status {
     pub signed_in: bool,
     pub person: Option<Person>,
     pub signing_in: bool,
+    /// While signing in: the page to open, if the browser didn't.
+    pub sign_in_url: Option<String>,
     pub error: Option<String>,
     /// Signing in is a must: this copy has no old team token to fall back on.
     pub required: bool,
@@ -107,6 +111,7 @@ pub fn status() -> Status {
         signed_in: state.kept,
         person: state.session.as_ref().map(|session| session.person.clone()),
         signing_in: state.signing_in,
+        sign_in_url: state.signing_in.then(|| state.url.clone()).flatten(),
         error: state.error.clone(),
         required: !has_old_token(),
     }
@@ -357,8 +362,15 @@ pub fn sign_in() -> Result<(), String> {
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let state = random(16)?;
     let url = authorize_url(&redirect, &state, &challenge);
-    log::info("account", format!("signing in: browser opened, waiting on port {port}"));
-    crate::proc::run("open", &[&url], Duration::from_secs(10)).map_err(|error| finish_err(format!("Writer couldn't open the browser: {error}")))?;
+    lock().url = Some(url.clone());
+    changed();
+    // A debug build can leave the browser to someone else (a test opening the page for it).
+    if cfg!(debug_assertions) && std::env::var("WRITER_NO_BROWSER").is_ok_and(|value| value == "1") {
+        log::info("account", format!("signing in: waiting on port {port}; the page wasn't opened (WRITER_NO_BROWSER)"));
+    } else {
+        log::info("account", format!("signing in: browser opened, waiting on port {port}"));
+        crate::proc::run("open", &[&url], Duration::from_secs(10)).map_err(|error| finish_err(format!("Writer couldn't open the browser: {error}")))?;
+    }
     std::thread::spawn(move || {
         let result = wait_for_code(&listener, &state).and_then(|code| {
             token_request(json!({ "grant_type": "authorization_code", "code": code, "code_verifier": verifier, "redirect_uri": redirect, "client_id": CLIENT_ID }))
