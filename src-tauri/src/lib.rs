@@ -990,6 +990,30 @@ fn sign_in() -> Result<account::Status, String> {
     Ok(account::status())
 }
 
+/// Opens one of Writer's own pages in the browser: accounts.spheceo.com, or Writer's issues on GitHub.
+#[tauri::command]
+fn open_page(url: String) -> Result<(), String> {
+    open_page_now(&url)
+}
+
+pub fn open_page_now(url: &str) -> Result<(), String> {
+    let allowed = ["https://accounts.spheceo.com", "https://github.com/spheceo/writer/issues"];
+    if !allowed.iter().any(|start| url == *start || url.starts_with(&format!("{start}/"))) {
+        return Err("Writer only opens its own pages.".into());
+    }
+    proc::run("open", &[url], std::time::Duration::from_secs(10)).map(|_| ())
+}
+
+#[tauri::command]
+async fn sign_in_with_code() -> Result<account::Status, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        account::sign_in_with_code()?;
+        Ok(account::status())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 fn cancel_sign_in() -> account::Status {
     account::cancel();
@@ -1345,6 +1369,8 @@ pub fn run() {
             account_status,
             avatar,
             sign_in,
+            sign_in_with_code,
+            open_page,
             cancel_sign_in,
             sign_out,
             get_activity,

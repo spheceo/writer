@@ -84,12 +84,13 @@ struct State {
     renewed: Option<Instant>,
     /// The sign-in page a waiting sign-in opened (no secret in it: PKCE keeps the verifier here).
     url: Option<String>,
+    code: Option<Code>,
     /// Who was signed in last, and what they may do (`account-person.json`):
     /// what Writer goes by before the first renewal, or offline.
     known: Option<Person>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None, url: None, known: None });
+static STATE: Mutex<State> = Mutex::new(State { session: None, kept: false, signing_in: false, error: None, hold: None, renewed: None, url: None, code: None, known: None });
 /// One renewal at a time: a refresh token works once, and reusing it ends the sign-in.
 static RENEWING: Mutex<()> = Mutex::new(());
 static DATA: OnceLock<PathBuf> = OnceLock::new();
@@ -104,7 +105,20 @@ pub struct Status {
     pub signing_in: bool,
     /// While signing in: the page to open, if the browser didn't.
     pub sign_in_url: Option<String>,
+    /// Signing in with a code (on another device): what to type, and where.
+    pub code: Option<Code>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Code {
+    /// "BCDF-GHJK".
+    pub user_code: String,
+    /// Where to type it: accounts.spheceo.com/device.
+    pub url: String,
+    /// The same page with the code filled in.
+    pub url_complete: Option<String>,
 }
 
 pub fn status() -> Status {
@@ -114,6 +128,7 @@ pub fn status() -> Status {
         person: state.session.as_ref().map(|session| session.person.clone()).or_else(|| state.kept.then(|| state.known.clone()).flatten()),
         signing_in: state.signing_in,
         sign_in_url: state.signing_in.then(|| state.url.clone()).flatten(),
+        code: state.signing_in.then(|| state.code.clone()).flatten(),
         error: state.error.clone(),
     }
 }
@@ -491,8 +506,105 @@ fn finish_err(why: String) -> String {
 /// Stops waiting for the browser.
 pub fn cancel() {
     CANCEL.store(true, Ordering::SeqCst);
-    lock().signing_in = false;
+    let mut state = lock();
+    state.signing_in = false;
+    state.code = None;
+    drop(state);
     changed();
+}
+
+/// Signs in with a code typed on any device (RFC 8628's device grant, as
+/// accounts offers it): for when this Mac's browser can't be used. Shows the
+/// code, then asks accounts every few seconds until the person has typed it
+/// and agreed, the code expires, or the sign-in is cancelled.
+pub fn sign_in_with_code() -> Result<(), String> {
+    {
+        let mut state = lock();
+        if state.signing_in {
+            CANCEL.store(true, Ordering::SeqCst);
+        }
+        state.signing_in = true;
+        state.error = None;
+        state.url = None;
+        state.code = None;
+    }
+    changed();
+    std::thread::sleep(Duration::from_millis(250));
+    CANCEL.store(false, Ordering::SeqCst);
+    let answer: Value = match agent().post(&format!("{}/app/device", accounts())).set("content-type", "application/json").send_json(json!({ "client_id": CLIENT_ID })) {
+        Ok(response) => response.into_json().map_err(|_| finish_err("accounts.spheceo.com answered with something Writer can't read.".into()))?,
+        Err(ureq::Error::Status(code, _)) => return Err(finish_err(format!("accounts.spheceo.com couldn't give a code ({code}). Try again."))),
+        Err(ureq::Error::Transport(transport)) => return Err(finish_err(format!("Couldn't reach accounts.spheceo.com ({transport})."))),
+    };
+    let (Some(device_code), Some(user_code)) = (answer["device_code"].as_str().map(str::to_string), answer["user_code"].as_str().map(str::to_string)) else {
+        return Err(finish_err("accounts.spheceo.com sent no code. Try again.".into()));
+    };
+    let url = answer["verification_uri"].as_str().unwrap_or("https://accounts.spheceo.com/device").to_string();
+    let url_complete = answer["verification_uri_complete"].as_str().map(str::to_string);
+    let mut interval = answer["interval"].as_u64().unwrap_or(5).clamp(1, 60);
+    let expires = Instant::now() + Duration::from_secs(answer["expires_in"].as_u64().unwrap_or(600).clamp(30, 1800));
+    lock().code = Some(Code { user_code, url, url_complete });
+    changed();
+    log::info("account", "signing in with a code: waiting for it to be entered");
+    std::thread::spawn(move || {
+        loop {
+            // Waits in small steps, so a cancel stops it at once.
+            let until = Instant::now() + Duration::from_secs(interval);
+            while Instant::now() < until {
+                if CANCEL.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            if Instant::now() > expires {
+                let _ = finish_err("The code expired before it was entered. Get a new one.".into());
+                lock().code = None;
+                return;
+            }
+            let asked = agent().post(&format!("{}/app/token", accounts())).set("content-type", "application/json").send_json(json!({ "grant_type": "urn:ietf:params:oauth:grant-type:device_code", "device_code": device_code, "client_id": CLIENT_ID }));
+            match asked {
+                Ok(response) => {
+                    let answer: Value = response.into_json().unwrap_or(Value::Null);
+                    lock().code = None;
+                    match take(&answer) {
+                        Ok(_) => {
+                            let who = status().person.map(|person| person.email.split('@').next().unwrap_or("").to_string()).unwrap_or_default();
+                            log::info("account", format!("signed in with a code as {who}"));
+                            lock().signing_in = false;
+                            changed();
+                            focus_writer();
+                        }
+                        Err(why) => {
+                            let _ = finish_err(why);
+                        }
+                    }
+                    return;
+                }
+                Err(ureq::Error::Status(_, response)) => {
+                    let body: Value = response.into_json().unwrap_or(Value::Null);
+                    match body["error"].as_str().unwrap_or("") {
+                        "authorization_pending" => {}
+                        "slow_down" => interval = body["interval"].as_u64().unwrap_or(interval + 5).clamp(interval + 1, 60),
+                        "expired_token" => {
+                            lock().code = None;
+                            let _ = finish_err("The code expired before it was entered. Get a new one.".into());
+                            return;
+                        }
+                        "access_denied" => {
+                            lock().code = None;
+                            let _ = finish_err(body["error_description"].as_str().unwrap_or("Your account can't use Writer yet. Ask an admin at accounts.spheceo.com.").to_string());
+                            return;
+                        }
+                        // Anything else: ask again next time, until the code expires.
+                        _ => {}
+                    }
+                }
+                // No answer: try again next time.
+                Err(ureq::Error::Transport(_)) => {}
+            }
+        }
+    });
+    Ok(())
 }
 
 pub fn authorize_url(redirect: &str, state: &str, challenge: &str) -> String {
@@ -594,25 +706,30 @@ fn page(outcome: Result<(), &str>) -> String {
         r#"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>{title}</title>
 <style>
 :root{{color-scheme:dark}}
-body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#000;color:#ededed;font:14px/1.55 "Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}}
-main{{width:min(360px,calc(100vw - 48px));padding:28px;border:1px solid #1b1b1b;border-radius:14px;background:#0a0a0a}}
-.mark{{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;margin-bottom:18px;background:#e2cf8f14;color:#e2cf8f;font-weight:700}}
-h1{{margin:0 0 6px;font-size:16px;font-weight:600;letter-spacing:-.01em}}
-p{{margin:0;color:#969696}}
-.bad p{{color:#f0a393}}
-button{{margin-top:22px;height:32px;padding:0 14px;border:0;border-radius:8px;background:#ededed;color:#000;font:inherit;font-weight:500;cursor:pointer}}
-button:hover{{background:#fff}}
+body{{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b0b;color:#ededed;font:14px/1.5 "Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}}
+main{{width:min(360px,calc(100vw - 48px));padding:24px;border:1px solid #363636;border-radius:14px;background:#111111}}
+.mark{{display:block;width:40px;height:40px;margin-bottom:16px}}
+h1{{margin:0;font-size:18px;font-weight:600;letter-spacing:-.3px;line-height:1.3}}
+p{{margin:4px 0 0;color:#969696}}
+.bad p{{color:#ff5c70}}
+button{{margin-top:22px;height:34px;padding:0 14px;border:1px solid #ff0033;border-radius:8px;background:#ff0033;color:#fff;font:500 13px/1 inherit;cursor:pointer}}
+button:hover{{background:#ff2a55;border-color:#ff2a55}}
+button:focus-visible{{outline:none;box-shadow:0 0 0 2px #111111,0 0 0 4px #ededed}}
 </style>
-<main class="{class}"><div class=mark>W</div><h1>{title}</h1><p id=say>{text}</p><button id=open type=button>Open Writer</button></main>
+<main class="{class}">{MARK}<h1>{title}</h1><p id=say>{text}</p><button id=open type=button>Open Writer</button></main>
 <script>
 history.replaceState(null,"",location.pathname);
 const say=document.getElementById("say");
 document.getElementById("open").onclick=()=>fetch("/focus",{{method:"POST"}}).catch(()=>{{}});
 {close}
 </script>"#,
-        text = html(&text)
+        text = html(&text),
+        MARK = MARK.replacen("<svg ", "<svg class=\"mark\" ", 1)
     )
 }
+
+/// Writer's mark (the kit's, src/assets/writer-mark.svg), for the page the browser lands on.
+const MARK: &str = include_str!("../../src/assets/writer-mark.svg");
 
 // ---- Signing out ----
 

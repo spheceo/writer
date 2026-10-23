@@ -93,12 +93,10 @@ fi
 
 echo "==> Writer-$human.dmg"
 dmg="$out/Writer-$human.dmg"
-stage="$work/dmg"
-mkdir "$stage"
-ditto "$app" "$stage/Writer.app"
-ln -s /Applications "$stage/Applications"
-rm -f "$dmg"
-hdiutil create -quiet -volname Writer -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
+# The install window in Edit's style (the spheceo kit): scripts/make-dmg.sh lays it
+# out with dmgbuild, the background drawn by scripts/dmg/background.swift. The app
+# inside is already signed (and stapled); the image is signed and notarised below.
+"$here/make-dmg.sh" "$app" "$dmg"
 if [[ "$identity" != - ]]; then
   codesign --force --timestamp -s "$identity" "$dmg"
   if [[ "$notary" == true ]]; then

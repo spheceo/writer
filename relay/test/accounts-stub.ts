@@ -10,6 +10,7 @@
  *   STUB_DENY=1 answers every sign-in with access_denied.
  *   STUB_PICTURE=https://… puts a photo in the token's `picture` claim.
  *   GET /stub/mint?aud=writer&perms=use,cloud → an access token, for curl tests.
+ *   POST /app/device: a code (RFC 8628), approved on the third poll of /app/token.
  *   GET /stub/limit?on=1 → /app/token and /app/revoke answer 429 (Retry-After: 60) until ?on=0.
  *
  * It never prints a token.
@@ -31,6 +32,7 @@ const deadChains = new Set<string>();
 const random = () => Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
 const say = (text: string) => console.log(`[accounts-stub] ${text}`);
 let limited = false;
+const devices = new Map<string, { client: string; polls: number }>();
 
 async function access(aud: string, granted = perms) {
   return new SignJWT({ email: "someone@gmail.com", name: "Someone", perms: granted, admin: false, ...(process.env.STUB_PICTURE ? { picture: process.env.STUB_PICTURE } : {}) })
@@ -69,6 +71,13 @@ Bun.serve({
       say(`429 for ${url.pathname}`);
       return Response.json({ error: "temporarily_unavailable", error_description: "Too many requests; try again in a minute." }, { status: 429, headers: { "retry-after": "60" } });
     }
+    if (url.pathname === "/app/device" && request.method === "POST") {
+      const { client_id } = (await request.json().catch(() => ({}))) as { client_id?: string };
+      const device_code = random();
+      devices.set(device_code, { client: client_id ?? "writer", polls: 0 });
+      say(`device: a code for ${client_id}`);
+      return Response.json({ device_code, user_code: "BCDF-GHJK", verification_uri: `${issuer}/device`, verification_uri_complete: `${issuer}/device?code=BCDF-GHJK`, expires_in: 600, interval: 1 });
+    }
     if (url.pathname === "/app/authorize") {
       const q = url.searchParams;
       const redirect = q.get("redirect_uri") ?? "";
@@ -100,6 +109,15 @@ Bun.serve({
         }
         say("token: code exchanged");
         return Response.json(await pair(body.client_id, random()));
+      }
+      if (body.grant_type === "urn:ietf:params:oauth:grant-type:device_code") {
+        const device = devices.get(body.device_code);
+        if (!device) return oauthError("invalid_grant");
+        device.polls += 1;
+        if (device.polls < 3) return Response.json({ error: "authorization_pending", interval: 1 }, { status: 400 });
+        devices.delete(body.device_code);
+        say("token: device code approved");
+        return Response.json(await pair(device.client, random()));
       }
       if (body.grant_type === "refresh_token") {
         const old = refreshes.get(body.refresh_token);

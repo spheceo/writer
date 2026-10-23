@@ -72,7 +72,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
       {engine && (
         <div className="update-channel">
           <b>Claude</b>
-          <select value={engine} aria-label="How Writer reaches Claude" onChange={(event) => void setEngine(event.target.value as "cli" | "sdk").then((settings) => setEngineShown(settings.engine ?? "cli"), () => {})}>
+          <select className="field-select" value={engine} aria-label="How Writer reaches Claude" onChange={(event) => void setEngine(event.target.value as "cli" | "sdk").then((settings) => setEngineShown(settings.engine ?? "cli"), () => {})}>
             <option value="cli">One answer (claude -p)</option>
             <option value="sdk">Agent SDK, building in steps (test)</option>
           </select>
@@ -82,6 +82,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
         <div className="update-channel">
           <b>Updates</b>
           <select
+            className="field-select"
             value={update.channel}
             disabled={!update.enabled}
             aria-label="Update channel"

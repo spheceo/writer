@@ -134,6 +134,11 @@ fn route(
         ("GET", ["api", "library"]) => write_json(stream, 200, &json!({ "version": crate::store::library_version() })),
         ("GET", ["api", "account"]) => write_json(stream, 200, &crate::account::status()),
         ("POST", ["api", "account", "sign-in"]) => json_result(stream, crate::account::sign_in().map(|_| crate::account::status())),
+        ("POST", ["api", "open"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::open_page_now(value["url"].as_str().unwrap_or("")))
+        }
+        ("POST", ["api", "account", "sign-in-code"]) => json_result(stream, crate::account::sign_in_with_code().map(|_| crate::account::status())),
         ("POST", ["api", "account", "cancel"]) => {
             crate::account::cancel();
             write_json(stream, 200, &crate::account::status())

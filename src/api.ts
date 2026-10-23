@@ -401,6 +401,8 @@ export type AccountStatus = {
   signingIn: boolean;
   /** While signing in: the page to open, if the browser didn't. */
   signInUrl: string | null;
+  /** Signing in with a code on another device: what to type, and where. */
+  code: { userCode: string; url: string; urlComplete: string | null } | null;
   error: string | null;
 };
 /** A script starter's photo, kept on this Mac: a src for <img>, or null (show initials). */
@@ -411,6 +413,9 @@ export const avatarSrc = async (sub: string, picture: string): Promise<string | 
 };
 export const accountStatus = () => (inTauri() ? invoke<AccountStatus>("account_status") : http<AccountStatus>("/api/account"));
 export const signIn = () => (inTauri() ? invoke<AccountStatus>("sign_in") : http<AccountStatus>("/api/account/sign-in", json({})));
+export const signInWithCode = () => (inTauri() ? invoke<AccountStatus>("sign_in_with_code") : http<AccountStatus>("/api/account/sign-in-code", json({})));
+/** Opens one of Writer's own pages (accounts.spheceo.com, Writer's issues) in the browser. */
+export const openPage = (url: string) => (inTauri() ? invoke<void>("open_page", { url }) : http<void>("/api/open", json({ url })));
 export const cancelSignIn = () => (inTauri() ? invoke<AccountStatus>("cancel_sign_in") : http<AccountStatus>("/api/account/cancel", json({})));
 export const signOut = () => (inTauri() ? invoke<AccountStatus>("sign_out") : http<AccountStatus>("/api/account/sign-out", json({})));
 

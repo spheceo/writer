@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /** Keeps something mounted for the length of its closing animation. */
 function usePresence(open: boolean, ms = 140) {
@@ -98,9 +98,10 @@ export function Dialog({
   );
 }
 
-export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean; hint?: string };
+export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean; hint?: string; separated?: boolean };
 
-export function Menu({ items, label = "More" }: { items: MenuItem[]; label?: string }) {
+/** A menu from a button: the "more" dots by default, or what `trigger` shows (the account menu opens from your avatar, `head` above its items). */
+export function Menu({ items, label = "More", trigger, head, className }: { items: MenuItem[]; label?: string; trigger?: ReactNode; head?: ReactNode; className?: string }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const { mounted, closing } = usePresence(open, 110);
@@ -141,16 +142,16 @@ export function Menu({ items, label = "More" }: { items: MenuItem[]; label?: str
   };
 
   return (
-    <div className="menu" ref={root} onClick={(event) => event.stopPropagation()}>
+    <div className={className ? `menu ${className}` : "menu"} ref={root} onClick={(event) => event.stopPropagation()}>
       <button
         type="button"
-        className={open ? "icon-button on" : "icon-button"}
+        className={trigger ? (open ? "menu-trigger on" : "menu-trigger") : open ? "icon-button on" : "icon-button"}
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        <Icon name="more" />
+        {trigger ?? <Icon name="more" />}
       </button>
       {mounted && (
         <div
@@ -168,11 +169,13 @@ export function Menu({ items, label = "More" }: { items: MenuItem[]; label?: str
             event.stopPropagation();
           }}
         >
+          {head && <div className="menu-head">{head}</div>}
           {items.map((item, index) => (
+            <Fragment key={item.label}>
+            {item.separated && <hr className="menu-sep" />}
             <button
               type="button"
               role="menuitem"
-              key={item.label}
               tabIndex={-1}
               disabled={item.disabled}
               className={[index === active ? "active" : "", item.danger ? "danger" : ""].join(" ")}
@@ -182,6 +185,7 @@ export function Menu({ items, label = "More" }: { items: MenuItem[]; label?: str
               {item.label}
               {item.hint && <span>{item.hint}</span>}
             </button>
+            </Fragment>
           ))}
         </div>
       )}

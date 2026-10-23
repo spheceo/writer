@@ -17,7 +17,9 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { AccountMenu } from "./account";
 import { Avatar } from "./avatar";
+import mark from "./assets/writer-mark.svg";
 import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
 import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
@@ -205,27 +207,20 @@ export function Library({
             <span className={claude?.loggedIn ? "dot on" : "dot"} />
             Claude{claude?.subscription ? ` · ${claude.subscription[0].toUpperCase()}${claude.subscription.slice(1)}` : ""}
           </button>
-          <button type="button" className="icon-button" aria-label="Logs" title="Logs (⇧⌘L)" onClick={onLogs}>
-            <Icon name="doc" size={17} />
+          <button type="button" className="primary" onClick={() => setCreating(true)}>
+            <Icon name="plus" size={15} />
+            New script
           </button>
-          <button type="button" className="icon-button" aria-label="Setup" title="Setup" onClick={onSettings}>
-            <Icon name="settings" size={17} />
-          </button>
-          {!empty && (
-            <button type="button" className="primary lg" onClick={() => setCreating(true)}>
-              <Icon name="plus" size={15} />
-              New script
-            </button>
-          )}
+          <AccountMenu onSettings={onSettings} onLogs={onLogs} />
         </div>
       </div>
       {loadError && <div className="notice">{loadError}</div>}
       {empty ? (
         <div className="welcome">
-          <img src="/favicon.svg" alt="" width={44} height={44} />
-          <h2>No scripts yet</h2>
-          <p>Bring in an interrogation from YouTube, Google Drive or this Mac, or start a commentary from its sources, and Claude writes the script.</p>
-          <button type="button" className="primary lg" onClick={() => setCreating(true)}>
+          <img src={mark} alt="" width={64} height={64} />
+          <h2>Write your first script</h2>
+          <p>Bring in footage or sources. Writer transcribes them, then Claude can write alongside you.</p>
+          <button type="button" className="primary" onClick={() => setCreating(true)}>
             <Icon name="plus" size={15} />
             New script
           </button>

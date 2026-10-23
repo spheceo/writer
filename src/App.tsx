@@ -7,7 +7,7 @@ import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
 import { ActivityPanel, LogsDialog } from "./logs";
 import { UpdatePill } from "./update";
-import { SignInDialog } from "./account";
+import { SignInScreen, useAccount } from "./account";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
 type Route = { name: "library" } | { name: "script"; id: string };
@@ -32,12 +32,16 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [logs, setLogs] = useState(false);
-  // ⌘⇧L opens the Logs window from anywhere.
+  const [account] = useAccount();
+  // ⌘⇧L opens the Logs window, ⌘, Setup, from anywhere.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l") {
         event.preventDefault();
         setLogs(true);
+      } else if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key === ",") {
+        event.preventDefault();
+        setSettings(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -143,7 +147,22 @@ export function App() {
     setRoute({ name: "library" });
     refresh();
   };
+  // Who's signed in decides which scripts they see (can.rs): list them again when that changes.
+  const grantsKey = account ? `${account.signedIn}|${account.person?.sub ?? ""}|${account.person?.admin ?? ""}|${(account.person?.perms ?? []).join(",")}` : "";
+  useEffect(() => {
+    if (grantsKey) refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [grantsKey]);
   const opened = route.name === "script" && open && open.id === route.id ? open : null;
+  // Signed out, the whole window is the sign-in.
+  if (account && !account.signedIn) {
+    return (
+      <>
+        <SignInScreen />
+        <UpdatePill />
+      </>
+    );
+  }
   return (
     <>
       {opened?.commentary ? (
@@ -176,7 +195,6 @@ export function App() {
       <ActivityPanel onOpen={(id) => setRoute({ name: "script", id })} onLogs={() => setLogs(true)} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
       <UpdatePill />
-      <SignInDialog />
     </>
   );
 }

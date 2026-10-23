@@ -418,7 +418,7 @@ export function CommentaryEditor({
           <span>Scripts</span>
           <span>/</span>
           <h1>{script.title}</h1>
-          <Avatar creator={script.createdBy} size={22} />
+          <Avatar creator={script.createdBy} size={24} />
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
