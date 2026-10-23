@@ -134,7 +134,8 @@ pub fn ask(question: Question, data: &Path) -> Result<Answer, Trouble> {
     Ok(answer)
 }
 
-/// Where a question runs: Writer's data folder (nothing there is read unless asked).
+/// Where a question runs: an empty folder, since Claude reads its own folder
+/// without asking (Writer's data folder holds its settings and logs).
 pub fn workspace() -> PathBuf {
-    crate::account::data_dir().unwrap_or_else(std::env::temp_dir)
+    crate::proc::claude_home()
 }

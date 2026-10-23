@@ -4,6 +4,37 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Claude Code, or writer-agent (and the Bun that runs it in a dev build).
+fn is_claude(program: &str) -> bool {
+    let name = std::path::Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program);
+    matches!(name, "claude" | "writer-agent" | "bun") || name.starts_with("writer-agent-")
+}
+
+/// What Claude may see of Writer's environment: enough to find the person's
+/// own sign-in and tools, nothing else. An ANTHROPIC_API_KEY (or a base URL,
+/// Bedrock, Vertex) in the shell Writer started from would bill builds at API
+/// prices, or send them elsewhere, instead of using the person's plan.
+const CLAUDE_ENV: [&str; 11] = ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TERM", "CLAUDE_CONFIG_DIR"];
+
+/// An empty folder to start Claude in: it reads its own folder without
+/// asking, so it starts where there is nothing (a question's folder to read
+/// is added to it, and nothing else).
+pub fn claude_home() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("writer-claude");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn for_claude(command: &mut Command) {
+    command.env_clear();
+    for key in CLAUDE_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command.current_dir(claude_home());
+}
+
 /// Run a program, streaming stdout lines, and kill it if it outlives `timeout`.
 /// Stderr is returned only when the program fails.
 pub fn run_lines(
@@ -18,6 +49,9 @@ pub fn run_lines(
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if is_claude(program) {
+        for_claude(&mut command);
+    }
     if stdin_bytes.is_some() {
         command.stdin(Stdio::piped());
     } else {
@@ -117,5 +151,21 @@ fn clip(text: &str) -> String {
         "no details".to_string()
     } else {
         trimmed[..end].replace('\n', " ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_sees_no_api_key() {
+        assert!(is_claude("/opt/homebrew/bin/claude") && is_claude("writer-agent") && is_claude("writer-agent-aarch64-apple-darwin") && !is_claude("yt-dlp"));
+        let mut command = Command::new("/usr/bin/env");
+        std::env::set_var("ANTHROPIC_API_KEY", "sk-test-not-real");
+        for_claude(&mut command);
+        let shown = String::from_utf8(command.output().unwrap().stdout).unwrap();
+        assert!(!shown.contains("ANTHROPIC_API_KEY") && shown.contains("HOME="), "{shown}");
+        std::env::remove_var("ANTHROPIC_API_KEY");
     }
 }

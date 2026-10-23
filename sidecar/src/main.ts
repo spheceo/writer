@@ -39,6 +39,8 @@ type Request = {
 
 const say = (event: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(event)}\n`);
 
+const ENV = ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "SHELL", "TERM", "CLAUDE_CONFIG_DIR"];
+
 /** Edit's baseOptions: the user's own `claude`, and nothing of their setup. */
 export function baseOptions(request: Request): Options {
   return {
@@ -48,7 +50,10 @@ export function baseOptions(request: Request): Options {
     strictMcpConfig: true,
     settings: { disableAllHooks: true },
     env: {
-      ...process.env,
+      // Only what finds the person's own sign-in and tools: never an
+      // ANTHROPIC_API_KEY or base URL from the shell, which would bill or
+      // redirect the build (Writer starts writer-agent with these alone too).
+      ...Object.fromEntries(ENV.flatMap((key) => (process.env[key] === undefined ? [] : [[key, process.env[key]]]))),
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
       CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
       CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1",
@@ -62,7 +67,9 @@ export function baseOptions(request: Request): Options {
 
 /** The whole question's options: the base, then only what this request asks for. */
 export function optionsFor(request: Request, abortController: AbortController): Options {
-  const allowed = [...(request.readDir ? ["Read"] : []), ...(request.mcp ? [`mcp__${request.mcp.name}`] : [])];
+  // Read only inside the question's folder ("//" makes the path absolute); the
+  // question starts in an empty folder, so nothing else is in reach.
+  const allowed = [...(request.readDir ? [`Read(/${request.readDir.replace(/\/+$/, "")}/**)`] : []), ...(request.mcp ? [`mcp__${request.mcp.name}`] : [])];
   return {
     ...baseOptions(request),
     model: request.model,
@@ -76,6 +83,15 @@ export function optionsFor(request: Request, abortController: AbortController): 
     ...(request.schema ? { outputFormat: { type: "json_schema", schema: request.schema } } : {}),
     ...(request.resume ? { resume: request.resume } : {}),
     ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
+    // And a check of every Read's path, whatever the rules allow.
+    canUseTool: async (tool, input) => {
+      if (tool === "Read") {
+        const path = typeof input.file_path === "string" ? input.file_path : "";
+        const inside = request.readDir && path.startsWith(`${request.readDir.replace(/\/+$/, "")}/`) && !path.includes("/../");
+        return inside ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "Only the files in this question's folder can be read." };
+      }
+      return tool.startsWith("mcp__") ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "That tool isn't available here." };
+    },
     abortController,
   };
 }
