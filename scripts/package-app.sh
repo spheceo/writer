@@ -67,6 +67,21 @@ done
 codesign --force "${runtime[@]}" -s "$identity" --entitlements "$here/writer.entitlements" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
+notarise() {
+  xcrun notarytool submit "$1" --key "$work/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+}
+notary=false
+if [[ "$identity" != - && -n "${NOTARY_KEY:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER:-}" ]]; then
+  notary=true
+  print -rn -- "$NOTARY_KEY" | base64 --decode >"$work/notary.p8"
+  # The app first, so the copy in the disk image carries its own ticket
+  # (it opens offline on first launch) as the update zip's does.
+  echo "==> Notarising Writer.app (a few minutes)"
+  ditto -c -k --keepParent "$app" "$work/Writer-notarise.zip"
+  notarise "$work/Writer-notarise.zip"
+  xcrun stapler staple "$app"
+fi
+
 echo "==> Writer-$human.dmg"
 dmg="$out/Writer-$human.dmg"
 stage="$work/dmg"
@@ -77,13 +92,10 @@ rm -f "$dmg"
 hdiutil create -quiet -volname Writer -srcfolder "$stage" -fs HFS+ -format UDZO "$dmg"
 if [[ "$identity" != - ]]; then
   codesign --force --timestamp -s "$identity" "$dmg"
-  if [[ -n "${NOTARY_KEY:-}" && -n "${NOTARY_KEY_ID:-}" && -n "${NOTARY_ISSUER:-}" ]]; then
-    echo "==> Notarising (a few minutes)"
-    print -rn -- "$NOTARY_KEY" | base64 --decode >"$work/notary.p8"
-    xcrun notarytool submit "$dmg" --key "$work/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait
+  if [[ "$notary" == true ]]; then
+    echo "==> Notarising the disk image"
+    notarise "$dmg"
     xcrun stapler staple "$dmg"
-    # The image's ticket covers the app inside it: staple it to the app the updater downloads too.
-    xcrun stapler staple "$app"
   fi
 fi
 

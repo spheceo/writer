@@ -112,7 +112,14 @@ jobs:
           # Notarised: Gatekeeper accepts it and the ticket is stapled.
           if [ "$NOTARISED" = true ]; then
             spctl -a -vv "$app/Writer.app"
+            xcrun stapler validate "$app/Writer.app"
             xcrun stapler validate out/Writer-*.dmg
+            dmg="$(ls out/Writer-*.dmg)"
+            spctl -a -vv -t open --context context:primary-signature "$dmg"
+            mnt="$(hdiutil attach -nobrowse -readonly "$dmg" | tail -1 | awk -F'\t' '{print $NF}')"
+            spctl -a -vv "$mnt/Writer.app"
+            xcrun stapler validate "$mnt/Writer.app"
+            hdiutil detach -quiet "$mnt"
           fi
       - name: Upload to the release
         if: env.RELEASE == 'true'
