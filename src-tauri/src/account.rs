@@ -192,6 +192,16 @@ pub fn refused() {
     }
 }
 
+/// Debug builds only: renews now, as a refused token would, for testing.
+#[cfg(debug_assertions)]
+pub fn renew_now() -> Result<Status, String> {
+    if let Some(session) = lock().session.as_mut() {
+        session.until = Instant::now();
+    }
+    renew()?;
+    Ok(status())
+}
+
 /// What a relay refusal means, said plainly: 401 is the sign-in (a token it
 /// didn't accept is renewed before the next call), 403 a permission the
 /// person lacks (the relay names it).

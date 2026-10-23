@@ -115,6 +115,21 @@ fn route(
             crate::account::sign_out();
             write_json(stream, 200, &crate::account::status())
         }
+        // Debug builds only: one audio file heard through the relay as Writer
+        // calls it, for testing the sign-in without an import.
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "transcribe"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let path = std::path::PathBuf::from(value["path"].as_str().unwrap_or(""));
+            let keyterms: Vec<String> = value["keyterms"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            let relay = crate::net::Relay::new(&crate::settings::load(&data_dir(&app)?))?;
+            json_result(stream, relay.transcribe(&path, &keyterms).map_err(|failed| match failed {
+                crate::net::Failed::Status(code, body) => crate::transcribe::explain(code, &crate::net::said(&body)),
+                crate::net::Failed::Unsent(why) | crate::net::Failed::Network(why) => why,
+            }))
+        }
         ("GET", ["api", "update"]) => write_json(stream, 200, &crate::update::status(&data_dir(&app)?)),
         ("POST", ["api", "update", "check"]) => {
             let data = data_dir(&app)?;
