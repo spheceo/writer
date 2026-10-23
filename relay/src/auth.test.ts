@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
-import { allowed, forgetKeys, identify, OUT_OF_DATE, permissionFor } from "./auth";
+import { forgetKeys, identify, mayUse, OUT_OF_DATE } from "./auth";
 
 // A stand-in accounts site: its JWKS, with keys that can be swapped.
 const keyA = await generateKeyPair("RS256");
@@ -33,16 +33,13 @@ async function token(claims: Record<string, unknown> = {}, { key = keyA.privateK
 }
 const asking = (bearer?: string) => new Request("https://relay/v1/transcribe", { headers: bearer ? { authorization: `Bearer ${bearer}` } : {} });
 
-test("maps every route to its permission", () => {
-  expect(permissionFor("/v1/transcribe")).toBe("use");
-  expect(permissionFor("/v1/watch")).toBe("ai");
-  expect(permissionFor("/v1/drive/token")).toBe("drive");
-  expect(permissionFor("/v1/docs/export")).toBe("drive");
-  expect(permissionFor("/v1/docs/comments")).toBe("drive");
-  expect(permissionFor("/v1/trello/cards")).toBe("trello");
-  expect(permissionFor("/v1/proxy")).toBe("proxy");
-  expect(permissionFor("/v1/cloud/r2/url")).toBe("cloud");
-  expect(permissionFor("/v1/cloud/convex")).toBe("cloud");
+test("needs only use; v1 permissions and unknown ids are ignored", async () => {
+  const v1 = await identify(asking(await token({ perms: ["ai", "cloud", "use", "scripts.interrogation", "something.new"] })), env);
+  expect("caller" in v1 && mayUse(v1.caller)).toBe(true);
+  const without = await identify(asking(await token({ perms: ["cloud", "scripts.commentary"] })), env);
+  expect("caller" in without && mayUse(without.caller)).toBe(false);
+  const admin = await identify(asking(await token({ perms: [], admin: true })), env);
+  expect("caller" in admin && mayUse(admin.caller)).toBe(true);
 });
 
 test("refuses the retired team token and no token, telling old builds to update", async () => {
@@ -51,15 +48,11 @@ test("refuses the retired team token and no token, telling old builds to update"
   expect("refused" in (await identify(asking(), env))).toBe(true);
 });
 
-test("a person's token passes, with only their permissions", async () => {
-  const who = await identify(asking(await token({ perms: ["use", "ai"] })), env);
+test("a person's token passes, naming who it is", async () => {
+  const who = await identify(asking(await token({ perms: ["use"] })), env);
   if (!("caller" in who)) throw new Error(JSON.stringify(who));
   expect(who.caller.sub).toBe("person123");
-  expect(allowed(who.caller, "use")).toBe(true);
-  expect(allowed(who.caller, "ai")).toBe(true);
-  expect(allowed(who.caller, "cloud")).toBe(false);
-  const admin = await identify(asking(await token({ perms: [], admin: true })), env);
-  expect("caller" in admin && allowed(admin.caller, "proxy")).toBe(true);
+  expect(who.caller.email).toBe("someone@gmail.com");
 });
 
 test("refuses a token for another app, from another issuer, or expired", async () => {

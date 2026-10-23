@@ -4,7 +4,10 @@ import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from "jose";
  * Who is asking. Writer signs people in at accounts.spheceo.com, and sends
  * their access token (an RS256 JWT, an hour long) on every request: checked
  * here against the accounts site's public keys, its issuer, `aud: "writer"`
- * and expiry (60 s of skew), then the route's permission from its `perms`.
+ * and expiry (60 s of skew), then `use` in its `perms` (or `admin`): every
+ * route needs only that (contract v2). What kinds of work someone may do
+ * (manifest.ts) Writer checks itself; ids the relay doesn't know, v1's
+ * `ai`, `cloud`… included, are simply ignored.
  *
  * Nothing else passes. The team-wide token older Writers had built in was
  * retired on 2026-10-23; they're told to update and sign in.
@@ -15,25 +18,14 @@ export interface AuthEnv {
   ACCOUNTS_URL?: string;
 }
 
-export type Permission = "use" | "ai" | "drive" | "trello" | "proxy" | "cloud";
-
 export type Caller = { sub: string; email: string; perms: Set<string>; admin: boolean };
 
 const ISSUER = "https://accounts.spheceo.com";
 const AUDIENCE = "writer";
 
-/** What each route needs. `/health` needs nothing; an unknown route, `use`. */
-export function permissionFor(pathname: string): Permission {
-  if (pathname.startsWith("/v1/cloud/")) return "cloud";
-  if (pathname === "/v1/watch") return "ai";
-  if (pathname === "/v1/drive/token" || pathname.startsWith("/v1/docs/")) return "drive";
-  if (pathname === "/v1/trello/cards") return "trello";
-  if (pathname === "/v1/proxy") return "proxy";
-  return "use";
-}
-
-export function allowed(caller: Caller, permission: Permission): boolean {
-  return caller.admin || caller.perms.has(permission);
+/** May use Writer at all: every route needs this and nothing more. */
+export function mayUse(caller: Caller): boolean {
+  return caller.admin || caller.perms.has("use");
 }
 
 /** The keys, per isolate: jose caches them ten minutes and refetches once on an unknown `kid`. */

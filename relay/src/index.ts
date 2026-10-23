@@ -1,5 +1,6 @@
-import { type AuthEnv, allowed, type Caller, identify, limitKey, named, permissionFor } from "./auth";
+import { type AuthEnv, type Caller, identify, limitKey, mayUse, named } from "./auth";
 import { type CloudEnv, cloud } from "./cloud";
+import { manifestResponse } from "./manifest";
 
 declare const FixedLengthStream: {
   new (size: number): {
@@ -40,11 +41,12 @@ declare const FixedLengthStream: {
  *                         presigned R2 URLs and Writer's Convex functions;
  *                         also Repack's reviews (as Writer) and Edit's footage
  *                         registry and shared keys, for the handoff (cloud.ts)
+ *   GET  /.well-known/spheceo-app.json → what Writer can do, for accounts'
+ *                           admin pages (manifest.ts), public
  *   GET  /health
  *
- * Every route but /health needs a signed-in person's access token, with the
- * route's permission (auth.ts): transcription `use`, the watcher `ai`, Drive
- * and Docs `drive`, Trello `trello`, the proxy `proxy`, the cloud `cloud`.
+ * Every /v1 route needs a signed-in person's access token with `use` (or an
+ * admin's) (auth.ts); the kinds of work in the manifest Writer gates itself.
  * Nothing else passes: older Writers' team token was retired on 2026-10-23.
  *
  * Spend is bounded three ways: a burst limit per person, a daily byte quota
@@ -99,14 +101,18 @@ export default {
         cloud: Boolean(env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
       });
     }
+    // What Writer can do, for accounts.spheceo.com's admin pages: public.
+    if (url.pathname === "/.well-known/spheceo-app.json") {
+      if (request.method !== "GET" && request.method !== "HEAD") return json(405, { error: "GET the manifest." });
+      return manifestResponse();
+    }
     if (!url.pathname.startsWith("/v1/")) return json(404, { error: "not found" });
     const who = await identify(request, env);
     if ("refused" in who) return json(401, { error: who.refused });
     const caller = who.caller;
-    const permission = permissionFor(url.pathname);
-    console.log(JSON.stringify({ who: named(caller), method: request.method, route: url.pathname, permission }));
-    if (!allowed(caller, permission)) {
-      return json(403, { error: `Your account can't use ${PERMISSION_NAMES[permission]} in Writer yet. Ask an admin at accounts.spheceo.com.`, permission });
+    console.log(JSON.stringify({ who: named(caller), method: request.method, route: url.pathname }));
+    if (!mayUse(caller)) {
+      return json(403, { error: "Your account can't use Writer yet. Ask an admin at accounts.spheceo.com." });
     }
     if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env);
     if (url.pathname === "/v1/drive/token") {
@@ -195,16 +201,6 @@ export default {
       },
     });
   },
-};
-
-/** Each permission as the person reads it, when they lack it. */
-const PERMISSION_NAMES: Record<ReturnType<typeof permissionFor>, string> = {
-  use: "transcription",
-  ai: "the watcher (Gemini)",
-  drive: "Google Drive and Docs",
-  trello: "Trello",
-  proxy: "the download proxy",
-  cloud: "the cloud",
 };
 
 const driveReady = (env: Env) =>
