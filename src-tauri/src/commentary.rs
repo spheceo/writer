@@ -132,7 +132,7 @@ impl Pacing {
     fn instructions(self) -> &'static str {
         match self {
             Pacing::Channel => "CHANNEL PACING, as in the channel's own videos. The narration sets up and the people tell it: a line or two of narration (about 10 seconds) leads into a clip, and clips often run 20 seconds to a minute, longer when someone tells their own story best. Clips together usually run about twice as long as the narration.",
-            Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. The intro can open straight into narration over footage, with a short cold open at most, and still ends on the channel line. Few or no on-screen chapter cards are needed.",
+            Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. THE COLD OPEN IS A HOOK, NOT A MONTAGE: no run of clips before the first word. Open on who the person was in the public's eyes; in one breath, the two or three most striking things they did; the turn, where it paid off against the odds; what's strange about where they are now; the machine behind it; then end the intro on two or three sharp questions the video will answer, with no channel line. Short paragraphs, often one line each. Ask for the visuals the open names (\"Find: …\" notes). Clips are rare in a documentary: most paragraphs end on narration, and a clip comes in only when it adds a lot. Few or no on-screen chapter cards are needed.",
         }
     }
 
@@ -781,7 +781,7 @@ This is about real people. Never invent a quote, a time, a date, a link or a fac
 
 const WRITER_PLAN: &str = r#"The answer:
 - open: the montage of short clips before the first word, as many as it needs (none if the video opens another way).
-- sections: in order. The first is headed "Intro" (its last paragraph ends on the channel line), then the numbered chapters ("1. MrBeast's Evil Formula"), then "Ending".
+- sections: in order. The first is headed "Intro" (its last paragraph ends on the channel line, unless the pacing says otherwise), then the numbered chapters ("1. MrBeast's Evil Formula"), then "Ending".
 - Each section's paragraphs are pieces in reading order: {"kind":"say","text":"…"} is narration; {"kind":"clip",…} plays a clip at that point. A clip usually follows narration ending in "…", inside the same paragraph.
 - A clip: source is the ID of the source whose text holds the quote. video names the recording as the editor will find it, including which version when there are several ("Exams Be Like (uncut, archive.org)", "Exams Be Like (current YouTube upload)"). link is that recording's URL exactly as a source writes it, or leave it out. start and end are times in that recording, as the source gives them, written m:ss or h:mm:ss (round to the second; end after start). quote is the exact words spoken in the clip, copied from the source text: leave words out with "…" but never change, add or reorder one; empty only for a clip without speech. verify says what someone must confirm by ear or eye before the clip is used (the speaker, a misheard word), when the source gives reason to doubt it.
 - note (optional, per paragraph): a note for the editor, one or two sentences: what to show on screen, what to blur or bleep.
@@ -952,13 +952,23 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
     let (mut plan, mut session, spent) = crate::claude::ask_opus(&system, &schema, &prompt, None).map_err(too_long)?;
     cost += spent;
     let mut repairs = 0;
+    let mut audited = false;
     loop {
         let refusal = match &plan {
             Some(plan) => match compile(plan, &corpus) {
                 Ok(draft) => match pacing.off(&draft) {
                     None => {
-                        let report = summary(&draft);
-                        return Ok(Built { draft, report, cost_usd: cost });
+                        // What a reviewer would flag goes back once; what's still flagged after is said in the report.
+                        let flags = audit(&draft, &sources, &script.title, pacing);
+                        if flags.is_empty() || audited || repairs == 2 || session.is_none() {
+                            let mut report = summary(&draft);
+                            if !flags.is_empty() {
+                                report.push_str(&format!("\n\nStill flagged: {}", flags.join(" ")));
+                            }
+                            return Ok(Built { draft, report, cost_usd: cost });
+                        }
+                        audited = true;
+                        format!("The app sent that script back: a reviewer would flag these.\n- {}\nFix each one wherever it occurs in the script, and keep everything else as it is. Send the corrected complete script.", flags.join("\n- "))
                     }
                     // Out of tries: the script is kept, and the report says how far off it is.
                     Some(off) if repairs == 2 || session.is_none() => {
@@ -1222,6 +1232,116 @@ fn too_long(reason: String) -> String {
     } else {
         reason
     }
+}
+
+// ---- What a reviewer would flag ----
+//
+// Lessons from reviews (scripts/teach) stick when a check names them: each
+// of these sends a script back once, as a refused clip is (Edit found the
+// same). Every one holds for any commentary, never one script's facts.
+
+/// The narration as sentences.
+fn sentences(draft: &Draft) -> Vec<String> {
+    let mut out = Vec::new();
+    for text in draft.sections.iter().flat_map(|section| section.paragraphs.iter().flat_map(|paragraph| &paragraph.pieces)).filter_map(|piece| match piece {
+        Piece::Say { text } => Some(text.as_str()),
+        Piece::Clip(_) => None,
+    }) {
+        let mut current = String::new();
+        for ch in text.chars() {
+            current.push(ch);
+            if matches!(ch, '.' | '!' | '?' | '…') {
+                if !current.trim().is_empty() {
+                    out.push(current.trim().to_string());
+                }
+                current.clear();
+            }
+        }
+        if !current.trim().is_empty() {
+            out.push(current.trim().to_string());
+        }
+    }
+    out
+}
+
+/// The makers of other creators' video essays and commentaries among the
+/// sources, from the header Writer writes on each ("Captions of "…" by Name
+/// on YouTube … What it is: a video essay …"), less anyone the title names
+/// (a video about a creator is about them).
+fn creators(sources: &[(Source, String)], title: &str) -> Vec<String> {
+    let title = title.to_lowercase();
+    let mut out: Vec<String> = sources
+        .iter()
+        .filter(|(source, _)| source.role == Role::Evidence)
+        .filter_map(|(_, text)| {
+            let head: String = text.chars().take(2_000).collect();
+            let what = head.split("What it is:").nth(1)?.lines().next()?.to_lowercase();
+            if !["video essay", "commentary video", "documentary"].iter().any(|kind| what.contains(kind)) {
+                return None;
+            }
+            let by = head.split("\" by ").nth(1)?.split(" on YouTube").next()?.trim().to_string();
+            (by.chars().count() >= 3 && !title.contains(&by.to_lowercase())).then_some(by)
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn clipped(text: &str) -> String {
+    let short: String = text.chars().take(90).collect();
+    if short.len() < text.len() { format!("{short}…") } else { short }
+}
+
+/// What a reviewer would flag that a count can find, one line each.
+pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pacing: Pacing) -> Vec<String> {
+    let said = sentences(draft);
+    let words = draft.words().max(1);
+    let mut flags = Vec::new();
+    // OWN THE RESEARCH: "Never write according to [another creator], like we have done our own investigative research."
+    for name in creators(sources, title) {
+        let lower = name.to_lowercase();
+        let credited: Vec<&String> = said.iter().filter(|sentence| sentence.to_lowercase().contains(&lower)).collect();
+        if let Some(first) = credited.first() {
+            flags.push(format!(
+                "The narration credits {name}'s video {} {} (\"{}\"). The channel does its own research: say what holds up as our own finding, credit the primary source if anything (the person's own upload, post, stream or interview), and leave the other creator out.",
+                credited.len(),
+                if credited.len() == 1 { "time" } else { "times" },
+                clipped(first)
+            ));
+        }
+    }
+    // EVERY LINE EARNS ITS PLACE: "Remember that phrase. He uses it a lot." / "Just remove this".
+    let cues: Vec<&String> = said.iter().filter(|sentence| {
+        let lower = sentence.to_lowercase();
+        ["remember that", "remember this", "keep that in mind", "keep this in mind", "hold on to that", "hold onto that"].iter().any(|cue| lower.contains(cue))
+    }).collect();
+    if let Some(first) = cues.first() {
+        flags.push(format!("Lines that only tell the viewer to remember something (\"{}\"): cut them, and let the callback land on its own.", clipped(first)));
+    }
+    // A POINT OF VIEW, NOT A LIST: "And then, and then, then, then, then. It gets so annoying for the viewer."
+    let chained = said.iter().filter(|sentence| ["Then ", "And then", "After that", "Next,"].iter().any(|start| sentence.starts_with(start))).count();
+    if chained * 1_000 / words >= 3 && chained >= 6 {
+        flags.push(format!("{chained} sentences start with \"Then\", \"And then\" or \"After that\": the story reads as a list of events. Give each chapter a point that serves the video's question, cut the incidents that don't, and join the rest by why they matter, not by what came next."));
+    }
+    if pacing == Pacing::Documentary {
+        // CLIPS ARE RARE: "you dont need to add a clip at every end. It should be a rare thing for a script like this."
+        let paragraphs: Vec<&Paragraph> = draft.sections.iter().flat_map(|section| &section.paragraphs).collect();
+        let ending = paragraphs.iter().filter(|paragraph| matches!(paragraph.pieces.last(), Some(Piece::Clip(_)))).count();
+        if paragraphs.len() >= 10 && ending * 100 / paragraphs.len() > 40 {
+            flags.push(format!("{ending} of {} paragraphs end on a clip. In a documentary-paced script a clip is rare and earned: keep the ones where hearing the person adds a lot, tell the rest in narration, and put footage that only illustrates a line in the note as \"Show: …\".", paragraphs.len()));
+        }
+    }
+    // HIS OWN WORDS ON SCREEN: "sometimes do the exact quote. Then add a note to editor … a cool 'quote' pop up effect."
+    let reported = said.iter().filter(|sentence| [" said ", " says ", " told ", " claimed ", " claims ", " admitted ", " bragged "].iter().any(|verb| sentence.contains(verb))).count();
+    let on_screen = draft.sections.iter().flat_map(|section| &section.paragraphs).filter_map(|paragraph| paragraph.note.as_deref()).filter(|note| {
+        let lower = note.to_lowercase();
+        lower.contains("quote") && (lower.contains("screen") || lower.contains("pop") || lower.contains("type"))
+    }).count();
+    if reported >= 8 && on_screen == 0 {
+        flags.push(format!("The narration reports what people said {reported} times and never puts their exact words on screen. In a few of the strongest places, give the exact quote in the narration and add a note for the editor to type it out on screen as a quote pop-up."));
+    }
+    flags
 }
 
 /// The report the producer reads after a build: Claude's, then the length.
@@ -1587,6 +1707,25 @@ mod tests {
         assert!(apply_edits(&draft, &[json!({ "op": "delete", "id": "pc" })], &corpus).unwrap_err().contains("three sections"));
     }
     use super::*;
+
+    #[test]
+    fn the_audit_flags_what_a_reviewer_would() {
+        let say = |text: &str| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: text.into() }], note: None };
+        let draft = |paragraphs: Vec<Paragraph>| Draft { open: Vec::new(), sections: vec![Section { heading: "Intro".into(), paragraphs }], checks: Vec::new(), report: String::new(), written_at: 0 };
+        let essay = (source("S2", Role::Evidence, true), "Captions of \"The Rise of Someone\" by Kettle Kate on YouTube (https://x). What it is: A commentary/documentary-style video essay by Kettle Kate on her career.\n[0:01] hello".to_string());
+        let podcast = (source("S3", Role::Evidence, true), "Captions of \"Someone Talks\" by Big Pod on YouTube (https://y). What it is: Podcast episode with Someone.\n[0:01] hi".to_string());
+        let sources = vec![essay, podcast];
+        let flagged = audit(&draft(vec![say("According to Kettle Kate, she started in 2012. Remember that phrase. Big Pod asked her why.")]), &sources, "The Rise of Someone", Pacing::Channel);
+        assert_eq!(flagged.len(), 2, "{flagged:?}");
+        assert!(flagged[0].contains("Kettle Kate's video 1 time") && flagged[1].contains("remember"));
+        // A creator the video is about isn't flagged; a podcast host never is.
+        assert!(audit(&draft(vec![say("Kettle Kate says she started in 2012.")]), &sources, "Kettle Kate Was Right", Pacing::Channel).is_empty());
+        // Clip endings count only in a documentary.
+        let clip = Cite { source: "S3".into(), video: "v".into(), link: None, start_ms: 1_000, end_ms: 4_000, quote: "hi".into(), verify: None };
+        let ending: Vec<Paragraph> = (0..10).map(|_| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: "She went live.".into() }, Piece::Clip(clip.clone())], note: None }).collect();
+        assert!(audit(&draft(ending.clone()), &sources, "t", Pacing::Channel).is_empty());
+        assert!(audit(&draft(ending), &sources, "t", Pacing::Documentary)[0].contains("10 of 10 paragraphs end on a clip"));
+    }
 
     fn source(id: &str, role: Role, timed: bool) -> Source {
         Source {

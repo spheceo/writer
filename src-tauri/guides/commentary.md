@@ -29,7 +29,7 @@ The shape below is how the channel's videos usually go, not a template. Every vi
 - A clip follows its lead-in, which ends on an ellipsis: "And this is how long the video stays on that…" then the clip. The lead-in says what to watch for; it never repeats what the clip says.
 - Cut each clip to the part that makes the point, not the whole exchange around it. How long clips run is set by the pacing.
 - When a point is already made, don't add a second clip that makes it again.
-- Show, don't tell: when a source has the moment on video, cite the clip instead of describing it.
+- A clip has to earn its place: use one when hearing the person, or seeing the moment, does more than any sentence could. When a sentence does the job, write the sentence. Never end a paragraph on a clip out of habit.
 - Before and after. When something changed (a cut, a deleted post, a reversed statement), show both: the original first, then where it is now.
 - Every clip names its source and exact times. Take times from the source as written; never estimate.
 - A clip that only a past script or the brief gives, with its time and link but no transcript, keeps that time and link. Its quote stays empty and its verify says where it came from and that it needs a listen before recording. Never write a quote from narration.
@@ -39,10 +39,18 @@ The shape below is how the channel's videos usually go, not a template. Every vi
 
 - Plain, spoken English: short sentences, everyday words, the way someone talks to a friend. Contractions are fine.
 - Pointed, never hysterical. Let the evidence make the accusation; the narration joins the dots. Irony lands harder than insults.
-- Attribute every claim to where it comes from: "according to the lawsuit", "she says", "the archive uploader claims". What a source alleges is said as alleged.
+- OWN THE RESEARCH. The channel does its own investigating, and the narration sounds like it: what checks out is stated as our finding ("Her oldest surviving upload is from 2012"). Credit the primary source when it matters: the person's own words ("he told one podcast host"), the lawsuit, the police report, the archive. Never credit another creator's video essay or commentary for a fact ("According to [another YouTuber]…", "[a creator], who went through his channel, found…"); their video is a lead to check against the primary footage, not a source to name. The reviewer: "Never write 'according to' another creator, like we have done our own investigative research. WE have looked at his channel."
+- What a source only alleges is said as alleged ("the lawsuit claims"). A plain, well-documented event needs no hedge ("By her own account, she was escorted out" when the footage shows it is just "She was escorted out").
 - Give the other side when one exists: a denial, a statement, an explanation. "Beast Industries denies all of it." Then move on.
 - Keep separate things separate: an employee's act is not the boss's, a company's investment fund is not its charity, and an old joke is a joke, not an admission. Say what it was, then why it still matters.
 - Never invent facts, quotes, dates, motives or thoughts. If the evidence can't show something (who made an edit, why, when), say that plainly; it can be part of the point.
+
+## Writing that holds attention
+
+- EVERY PARAGRAPH EARNS ITS PLACE. Each one moves the video's question forward. Cut trivia, side stories and incidents that don't (a stat from a hobby, a feud that isn't the story), even when they're true and on video. The reviewer: "how is this relevant? Delete." Lines that only tell the viewer to remember something ("Remember that phrase.") go: let the callback land on its own.
+- A POINT OF VIEW, NOT A LIST. Never "and then, and then": a chapter that walks through events one after another reads as a timeline. Each chapter argues something that serves the question, picks the two or three moments that prove it, and joins them by why they matter. Be critical where the evidence lets you: name the contradiction between what someone says they stand for and what they do for money. The reviewer: "Right now your script is just a bunch of: and then, and then, then then then. Rather be way more critical."
+- TURNING POINTS ARE DISCOVERIES. When something changed the person's path (a tactic, a deal, a person), set it up as the moment it happened ("And it was here that she found what would change everything: …"), explain it in a sentence or two of plain words, give its scale (with a check on the number), and say what it led to. Say the human stakes plainly: who helped, who used whom, who turned out right.
+- PEOPLE, PROPERLY. Say who someone is when they come in ("his manager", not "a friend") and why they matter, before they act; never drop a name in out of the blue. Look up industry names and spell them the way the industry knows them. Every sentence says what it means: a line the viewer has to decode ("What went on for eight years?", "this is written weirdly") gets rewritten. Never make a moment bigger than it was, or tell it as something it wasn't.
 
 ## Advertiser-friendly wording
 
@@ -51,6 +59,9 @@ The channel avoids words that get videos limited. Say "pass away" or "lose their
 ## Editor notes
 
 Notes for the editor go after the paragraph they belong to: what to show on screen (a screenshot, an article, the old and new upload side by side), what to blur or bleep, and what to check. Keep each to one or two sentences.
+
+- THEIR OWN WORDS ON SCREEN. When the narration reports something a person said, sometimes give the exact quote, and add a note for the editor to type it out on screen as a quote pop-up. A clip whose words carry the point is either heard clearly or its words are quoted in the narration just before it, never left for the viewer to make out. The reviewer: "it would be great if you could sometimes do the exact quote. Then add a note to editor about it needing to be shown on screen as like a cool quote pop up."
+- ASK FOR THE VISUALS, PRECISELY. When the narration cites a record (a post, an interview, a stream), ask for it: "Show: the post itself" or "b-roll of him at that interview". When the moment the narration needs isn't among the sources, ask for it by what it shows ("Find: the moment she announces the deal on stream", "Find: three short clips of the worst of it, 15 to 20 seconds in all"). Name the exact sentence a visual goes under, not the whole paragraph: a visual held over a long stretch makes slow editing. Where the video's mood turns (the money, the people behind the scenes), say so: "Tense, low music from here; stills of the company's filings and the people behind it, a quick flash as each appears."
 
 ## Checks before recording
 
