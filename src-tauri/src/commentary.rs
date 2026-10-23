@@ -132,7 +132,7 @@ impl Pacing {
     fn instructions(self) -> &'static str {
         match self {
             Pacing::Channel => "CHANNEL PACING, as in the channel's own videos. The narration sets up and the people tell it: a line or two of narration (about 10 seconds) leads into a clip, and clips often run 20 seconds to a minute, longer when someone tells their own story best. Clips together usually run about twice as long as the narration.",
-            Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. THE COLD OPEN IS A HOOK, NOT A MONTAGE: no run of clips before the first word. Open on who the person was in the public's eyes; in one breath, the two or three most striking things they did; the turn, where it paid off against the odds; what's strange about where they are now; the machine behind it; then end the intro on two or three sharp questions the video will answer, with no channel line. Short paragraphs, often one line each. Ask for the visuals the open names (\"Find: …\" notes). Clips are rare in a documentary: most paragraphs end on narration, and a clip comes in only when it adds a lot. Few or no on-screen chapter cards are needed.",
+            Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. THE COLD OPEN IS A HOOK, NOT A MONTAGE: no run of clips before the first word. Open on the person at their worst in the public's eyes, said as bluntly as the internet said it (hated, not merely mocked); in one breath, the two or three worst things they did; then the turn, a short line of its own, where it paid off against the odds; what's strange about where they are now; the machine behind it; then end the intro on two or three sharp questions the video will answer, with no channel line. Short paragraphs, often one line each. Ask for the visuals the open names (\"Find: …\" notes). Clips are rare in a documentary: most paragraphs end on narration, and a clip comes in only when it adds a lot. Few or no on-screen chapter cards are needed.",
         }
     }
 
@@ -1336,6 +1336,30 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
         if paragraphs.len() >= 10 && ending * 100 / paragraphs.len() > 40 {
             flags.push(format!("{ending} of {} paragraphs end on a clip. In a documentary-paced script a clip is rare and earned: keep the ones where hearing the person adds a lot, tell the rest in narration, and put footage that only illustrates a line in the note as \"Show: …\".", paragraphs.len()));
         }
+    }
+    // NO HEDGE ON WHAT'S DOCUMENTED: "no need to say by his own account."
+    let hedged: Vec<&String> = said.iter().filter(|sentence| {
+        let lower = sentence.to_lowercase();
+        ["by his own account", "by her own account", "by their own account", "by his own count", "by her own count", "by his own admission", "by her own admission"].iter().any(|hedge| lower.contains(hedge))
+    }).collect();
+    if hedged.len() >= 2 {
+        flags.push(format!("{} sentences hedge with \"by his own account\" or the like (\"{}\"). Where the footage or the record shows what happened, just say it; keep \"he says\" for what nobody else can confirm.", hedged.len(), clipped(hedged[0])));
+    }
+    // ASK FOR THE VISUALS: "here you need to find the post … so we can put it up as b-roll."
+    let unshown: Vec<String> = draft.sections.iter().flat_map(|section| &section.paragraphs).filter(|paragraph| {
+        let note = paragraph.note.as_deref().unwrap_or("").to_lowercase();
+        let asked = ["show", "b-roll", "broll", "on screen", "find:", "screenshot"].iter().any(|word| note.contains(word));
+        let cites = paragraph.pieces.iter().any(|piece| match piece {
+            Piece::Say { text } => {
+                let lower = format!(" {} ", text.to_lowercase());
+                [" posted ", " tweeted ", " instagram", " his post", " her post", " the post ", " a post ", " an interview", " in an interview", " the article", " a statement"].iter().any(|word| lower.contains(word))
+            }
+            Piece::Clip(_) => false,
+        });
+        cites && !asked
+    }).filter_map(|paragraph| paragraph.pieces.iter().find_map(|piece| match piece { Piece::Say { text } => Some(clipped(text)), Piece::Clip(_) => None })).collect();
+    if unshown.len() >= 2 {
+        flags.push(format!("{} paragraphs cite a record (a post, an interview, a statement) and ask the editor for nothing (\"{}\"). Ask for it: \"Show: the post itself\", \"b-roll of him at that interview\", or \"Find: …\" when it isn't among the sources.", unshown.len(), unshown[0]));
     }
     // HIS OWN WORDS ON SCREEN: "sometimes do the exact quote. Then add a note to editor … a cool 'quote' pop up effect."
     let reported = said.iter().filter(|sentence| [" said ", " says ", " told ", " claimed ", " claims ", " admitted ", " bragged "].iter().any(|verb| sentence.contains(verb))).count();
