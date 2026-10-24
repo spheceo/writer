@@ -1624,6 +1624,18 @@ pub struct Measures {
 /// The counts behind the audit.
 pub fn measure(draft: &Draft) -> Measures {
     let mut out = Measures::default();
+    // Names: words the narration capitalises mid-sentence. With the pronouns, they're who a recital is about.
+    let mut names: std::collections::HashSet<String> = ["He", "She", "They", "We", "I"].iter().map(|word| word.to_string()).collect();
+    for (_, text) in draft.sections.iter().flat_map(|section| &section.paragraphs).flat_map(|paragraph| paragraph.said()) {
+        let mut starts = true;
+        for token in text.split_whitespace() {
+            let word: String = token.chars().filter(|c| c.is_alphanumeric()).collect();
+            if !starts && word.chars().next().is_some_and(char::is_uppercase) {
+                names.insert(word);
+            }
+            starts = token.ends_with(['.', '!', '?', '\u{2026}', ':']);
+        }
+    }
     let split = |text: &str| -> Vec<String> {
         let mut found = Vec::new();
         let mut current = String::new();
@@ -1675,7 +1687,7 @@ pub fn measure(draft: &Draft) -> Measures {
         let mut run = 1;
         for at in 1..said.len() {
             let (a, b) = (first(&said[at - 1]), first(&said[at]));
-            run = if a == b && a.chars().next().is_some_and(char::is_uppercase) && !["The", "A", "It", "That", "This", "But", "And", "So", "Not", "No", "What", "If", "When"].contains(&a.as_str()) { run + 1 } else { 1 };
+            run = if a == b && names.contains(&a) { run + 1 } else { 1 };
             if run == 3 {
                 out.recital_runs.push(format!("\"{}\" three times running (\"{}\")", a, clipped(&said[at - 2])));
             }
@@ -2510,6 +2522,8 @@ mod tests {
         assert_eq!(found, vec!["on Bradley Martyn's podcast", "told Steiny", "according to Logan"]);
         assert!(attributions("According to the lawsuit, he told police nothing. On his own stream he laughed.").is_empty());
         // "He… He… He…" and sequence openers are a recital; "and then" is counted anywhere.
+        // A device isn't a recital: "Whether… Whether… Whether…".
+        assert!(measure(&draft(vec![say("Whether he paid. Whether he knew. Whether anyone was paid.")])).recital_runs.is_empty());
         let measured = measure(&draft(vec![say("He went live. He insulted a guest. He got banned. Later, he came back. A week later, he did it again. And then it got worse.")]));
         assert_eq!(measured.sequence_openers, 3);
         assert_eq!(measured.and_then, 1);

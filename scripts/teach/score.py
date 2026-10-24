@@ -48,6 +48,21 @@ counts = {
     "introParagraphs": len(intro["paragraphs"]),
     "introEndsOnQuestions": intro_text.rstrip().count("?") >= 2 and "?" in intro_text[-300:],
 }
+# Writer's own counts (commentary::measure) and what its audit flags, when the round recorded them.
+if result.get("measures"):
+    m = result["measures"]
+    counts.update({
+        "attributions": len(m["attributions"]),
+        "attributionsPer1000Words": round(len(m["attributions"]) * 1000 / max(1, m["words"]), 1),
+        "sentencesIntoClipsShare": round(m["sentencesIntoClips"] / max(1, m["sentences"]), 2),
+        "andThen": m["andThen"],
+        "sequenceOpeners": m["sequenceOpeners"],
+        "recitalRuns": len(m["recitalRuns"]),
+        "wholeParagraphNotes": len(m["wholeParagraphNotes"]),
+        "notes": m["notes"],
+        "quotePopups": m["quotePopups"],
+    })
+    counts["auditFlags"] = len(result.get("flags", []))
 
 # ---- J: every row judged on the script ----
 key = KEY.read_text()
