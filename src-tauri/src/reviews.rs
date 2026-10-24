@@ -284,6 +284,26 @@ pub fn resolve_suggestion(data: &Path, note_id: &str, version: u32, ranges: &[Ra
     Ok(())
 }
 
+/// Asks the review page for changed notes now, rather than at the next poll.
+pub fn refresh(data: &Path) -> Result<bool, String> {
+    poll(data)
+}
+
+/// A note left from Writer on the script's review (feedback.spheceo.com): on
+/// its latest version, about the whole script. It shows on the page as
+/// Writer's, and is feedback like any reviewer's.
+pub fn add_note(data: &Path, id: &str, text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Write the note first.".into());
+    }
+    let script = store::read(&store::script_dir(data, id)?)?;
+    let link = script.review.ok_or("Share the script for review first: notes live on its review page.")?;
+    cloud::call(data, "mutation", "reviews:note", json!({ "reviewId": link.review_id, "version": link.version, "text": text }))?;
+    let _ = poll(data);
+    Ok(())
+}
+
 pub fn reply(data: &Path, note_id: &str, text: &str) -> Result<(), String> {
     cloud::call(data, "mutation", "reviews:reply", json!({ "noteId": note_id, "text": text, "author": "Writer" }))?;
     Ok(())

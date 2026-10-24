@@ -854,19 +854,31 @@ fn get_finds(app: AppHandle, id: String) -> Result<Option<scout::Finds>, String>
     finds_now(&data_dir(&app)?, &id)
 }
 
-/// Pulls the comments and highlights on the script's Doc, starting the feedback over.
-pub fn pull_feedback_now(data: &Path, id: &str, link: Option<&str>) -> Result<feedback::Feedback, String> {
+/// Starts the feedback over from the notes on the script's review page.
+pub fn pull_feedback_now(data: &Path, id: &str) -> Result<feedback::Feedback, String> {
     can::require(can::LESSONS)?;
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
     }
-    feedback::pull(data, id, link)
+    feedback::pull(data, id)
+}
+
+/// Leaves a note on the script's review page from Writer.
+pub fn add_review_note_now(data: &Path, id: &str, text: &str) -> Result<(), String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    reviews::add_note(data, id, text)
 }
 
 #[tauri::command]
-async fn pull_feedback(app: AppHandle, id: String, link: Option<String>) -> Result<feedback::Feedback, String> {
+async fn add_review_note(app: AppHandle, id: String, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || add_review_note_now(&data_dir(&app)?, &id, &text)).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn pull_feedback(app: AppHandle, id: String) -> Result<feedback::Feedback, String> {
     can::require_id(&data_dir(&app)?, &id)?;
-    tauri::async_runtime::spawn_blocking(move || pull_feedback_now(&data_dir(&app)?, &id, link.as_deref()))
+    tauri::async_runtime::spawn_blocking(move || pull_feedback_now(&data_dir(&app)?, &id))
         .await
         .map_err(|error| error.to_string())?
 }
@@ -1562,6 +1574,7 @@ pub fn run() {
             set_pacing,
             get_finds,
             pull_feedback,
+            add_review_note,
             get_feedback,
             set_feedback_item,
             set_lesson,

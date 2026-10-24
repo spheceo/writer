@@ -593,9 +593,12 @@ export function CommentaryEditor({
                 }
                 id={script.id}
                 feedback={feedback}
+                notes={review.notes}
+                shared={!!script.review}
                 busy={busy}
                 canPull={!!draft}
                 onFeedback={setFeedback}
+                onNotes={review.refresh}
                 onStep={(step) => void learn(step)}
                 onError={setError}
               />

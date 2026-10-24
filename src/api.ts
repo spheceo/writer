@@ -131,8 +131,13 @@ export const findClips = (id: string) =>
 export const getFinds = (id: string) =>
   inTauri() ? invoke<Finds | null>("get_finds", { id }) : http<Finds | null>(`/api/scripts/${id}/finds`);
 
-export const pullFeedback = (id: string, link: string | null) =>
-  inTauri() ? invoke<Feedback>("pull_feedback", { id, link }) : http<Feedback>(`/api/scripts/${id}/feedback`, json({ link }));
+/** Starts the feedback over from the notes on the script's review page. */
+export const pullFeedback = (id: string) =>
+  inTauri() ? invoke<Feedback>("pull_feedback", { id }) : http<Feedback>(`/api/scripts/${id}/feedback`, json({}));
+
+/** Leaves a note on the script's review page from Writer: feedback like a reviewer's. */
+export const addReviewNote = (id: string, text: string) =>
+  inTauri() ? invoke<void>("add_review_note", { id, text }) : http<void>(`/api/scripts/${id}/review/notes`, json({ text }));
 
 export const getFeedback = (id: string) =>
   inTauri() ? invoke<Feedback | null>("get_feedback", { id }) : http<Feedback | null>(`/api/scripts/${id}/feedback`);

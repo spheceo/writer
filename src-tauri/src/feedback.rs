@@ -26,8 +26,6 @@ use crate::commentary::{self, Draft, Piece, Writing};
 use crate::model::now_ms;
 use crate::store;
 
-/// The name Writer signs its own Doc comments with (src/doc-export.ts).
-const OWN_COMMENTS: &str = "GeniusScriptwriter10";
 const MAX_ITEMS: usize = 200;
 const MAX_LESSON_CHARS: usize = 12_000;
 /// A run of this many words shared with the script is a lesson pointing at it.
@@ -130,7 +128,9 @@ pub struct Round {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Feedback {
+    /// The review the notes are on (a Google Doc's id, for feedback pulled before Oct 24 2026).
     pub doc: String,
+    /// The review page.
     pub doc_url: String,
     pub pulled_at: i64,
     /// The script's revision the feedback is matched against (base.json).
@@ -333,99 +333,52 @@ pub fn forget(data: &Path, lesson: &str) -> Result<Vec<Lesson>, String> {
 
 /// Reads the comments and highlights on a Doc (the script's latest export
 /// unless a link names another) and starts over with them, matched against
-/// the script as it is now.
-pub fn pull(data: &Path, id: &str, link: Option<&str>) -> Result<Feedback, String> {
+
+/// Starts the feedback over from the notes on the script's review page
+/// (feedback.spheceo.com): each reviewer's note, and each note left from
+/// Writer, with the words it's on and its replies.
+pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
-    let draft = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("Write the script before pulling feedback on it.")?;
-    let settings = crate::settings::load(data);
-    let doc = match link.map(str::trim).filter(|link| !link.is_empty()) {
-        Some(link) => doc_id(link).ok_or("That isn't a Google Docs link.")?,
-        None => script.doc_export.as_ref().map(|doc| doc.id.clone()).ok_or("Export the script to a Google Doc first, or paste the Doc's link.")?,
-    };
-    let mut problems = Vec::new();
-    if script.doc_export.as_ref().is_some_and(|export| export.id == doc && export.revision != script.revision) {
-        problems.push("The script changed after this Doc was exported. The feedback is matched against the script as it is now.".into());
-    }
-    let html = doc_html(&doc, &settings)?;
-    let parsed = parse_doc(&html);
+    let draft = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("Write the script before teaching from feedback on it.")?;
+    let link = script.review.clone().ok_or("Share the script for review first: its notes are the feedback.")?;
+    // The notes as the review page has them now, not as of the last poll.
+    let _ = crate::reviews::refresh(data);
+    let notes = crate::reviews::notes_of(data, id);
     let blocks = blocks(&draft);
-    let mut items = Vec::new();
-    // Drive's comments say what they're on and who wrote them; the HTML only
-    // where they sit. Only a Doc exported from this script can be asked.
-    let relay = crate::net::Relay::new(&settings);
-    match relay.and_then(|relay| relay.doc_comments(id, &doc)) {
-        Ok(listed) => {
-            for comment in listed.as_array().map(Vec::as_slice).unwrap_or(&[]) {
-                let content = comment["content"].as_str().unwrap_or("").trim();
-                let author = comment["author"]["displayName"].as_str().unwrap_or("").to_string();
-                if content.is_empty() || comment["deleted"] == true || comment["resolved"] == true || author == OWN_COMMENTS {
-                    continue;
-                }
-                let replies = comment["replies"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|reply| reply["deleted"] != true)
-                    .filter_map(|reply| reply["content"].as_str().map(str::trim).filter(|text| !text.is_empty()).map(str::to_string))
-                    .collect();
-                items.push(Item {
-                    id: String::new(),
-                    kind: Kind::Comment,
-                    quote: comment["quotedFileContent"]["value"].as_str().unwrap_or("").trim().to_string(),
-                    comment: content.to_string(),
-                    author,
-                    replies,
-                    color: None,
-                    place: None,
-                    note: String::new(),
-                    skip: false,
-                });
-            }
-        }
-        Err(reason) => {
-            problems.push(format!("Drive's list of comments wasn't available ({reason}), so each comment is matched to the words just before it."));
-            for (text, near) in &parsed.comments {
-                if !own_comment(text, &draft) {
-                    items.push(Item {
-                        id: String::new(),
-                        kind: Kind::Comment,
-                        quote: near.clone(),
-                        comment: text.clone(),
-                        author: String::new(),
-                        replies: Vec::new(),
-                        color: None,
-                        place: None,
-                        note: String::new(),
-                        skip: false,
-                    });
-                }
-            }
-        }
+    let mut problems = Vec::new();
+    if link.revision != script.revision {
+        problems.push("The script changed after it was last shared. The notes are matched against the script as it is now.".into());
     }
-    // A highlight the reviewer also commented on is that comment.
-    let quoted: Vec<String> = items.iter().map(|item| normalise(&item.quote)).filter(|quote| !quote.is_empty()).collect();
-    for (text, color) in parsed.highlights {
-        let words = normalise(&text);
-        if words.is_empty() || quoted.iter().any(|quote| quote.contains(&words) || words.contains(quote.as_str())) {
-            continue;
-        }
-        items.push(Item {
-            id: String::new(),
-            kind: Kind::Highlight,
-            quote: text,
-            comment: String::new(),
-            author: String::new(),
-            replies: Vec::new(),
-            color: Some(color),
-            place: None,
-            note: String::new(),
-            skip: false,
-        });
-    }
+    let mut items: Vec<Item> = notes
+        .iter()
+        .filter(|note| note.parent_id.is_none() && !note.deleted)
+        .filter(|note| !note.text.trim().is_empty() || note.replacement.is_some())
+        .map(|note| {
+            let quote = note.anchor["quote"].as_str().unwrap_or("").trim().to_string();
+            // A suggestion says what to put in place of the words it's on.
+            let comment = match note.replacement.as_deref() {
+                Some("") => format!("Delete these words. {}", note.text.trim()).trim().to_string(),
+                Some(words) if note.text.trim().is_empty() || note.text.contains(words) => format!("Replace with: {words}"),
+                Some(words) => format!("{} (Replace with: {words})", note.text.trim()),
+                None => note.text.trim().to_string(),
+            };
+            Item {
+                id: String::new(),
+                kind: Kind::Comment,
+                quote,
+                comment,
+                author: if note.from_app { "Writer".into() } else { note.author.clone() },
+                replies: crate::reviews::replies(data, &note.id).into_iter().filter(|reply| !reply.from_app).map(|reply| reply.text.trim().to_string()).filter(|text| !text.is_empty()).collect(),
+                color: None,
+                place: None,
+                note: String::new(),
+                skip: false,
+            }
+        })
+        .collect();
     if items.is_empty() {
-        return Err("That Doc has no open comments or highlights.".into());
+        return Err("The review has no notes yet. Leave some on its page, or add them here.".into());
     }
     items.truncate(MAX_ITEMS);
     for (index, item) in items.iter_mut().enumerate() {
@@ -434,14 +387,14 @@ pub fn pull(data: &Path, id: &str, link: Option<&str>) -> Result<Feedback, Strin
     }
     let missing = items.iter().filter(|item| item.place.is_none() && !item.quote.is_empty()).count();
     if missing > 0 {
-        problems.push(format!("{missing} of the marked passages aren't in the script as it is now; Claude sees their words and finds them itself."));
+        problems.push(format!("{missing} of the noted passages aren't in the script as it is now; Claude sees their words and finds them itself."));
     }
     // Starting over: the earlier pull's key and rounds were about other feedback.
     let _ = fs::remove_dir_all(folder(&dir));
     write_json(&folder(&dir).join("base.json"), &draft)?;
     let feedback = Feedback {
-        doc: doc.clone(),
-        doc_url: format!("https://docs.google.com/document/d/{doc}/edit"),
+        doc: link.review_id.clone(),
+        doc_url: link.url.clone(),
         pulled_at: now_ms(),
         revision: script.revision,
         items,
@@ -456,211 +409,6 @@ pub fn pull(data: &Path, id: &str, link: Option<&str>) -> Result<Feedback, Strin
     Ok(feedback)
 }
 
-fn doc_id(link: &str) -> Option<String> {
-    let id = if link.contains("/document/d/") { link.split_once("/document/d/")?.1 } else { link };
-    let id = id.split(['/', '?', '#']).next()?.to_string();
-    ((10..=200).contains(&id.len()) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).then_some(id)
-}
-
-/// The Doc as HTML: from its public link, else as Repack's Drive account.
-fn doc_html(doc: &str, settings: &crate::settings::Settings) -> Result<String, String> {
-    let read = |response: ureq::Response| -> Option<String> {
-        let html = response.content_type().contains("html");
-        let text = response.into_string().ok()?;
-        (html && text.contains("doc-content")).then_some(text)
-    };
-    let public = format!("https://docs.google.com/document/d/{doc}/export?format=html");
-    if let Some(html) = crate::research::agent().get(&public).call().ok().and_then(read) {
-        return Ok(html);
-    }
-    const NOT_SHARED: &str = "That Doc isn't shared publicly or with Repack's Drive account.";
-    let token = crate::drive::access_token(settings).map_err(|_| NOT_SHARED.to_string())?;
-    crate::net::agent()
-        .get(&format!("https://www.googleapis.com/drive/v3/files/{doc}/export?mimeType=text/html"))
-        .set("authorization", &format!("Bearer {token}"))
-        .call()
-        .ok()
-        .and_then(read)
-        .ok_or_else(|| NOT_SHARED.to_string())
-}
-
-/// What a Doc's HTML export holds of a review.
-#[derive(Debug, Default, PartialEq)]
-struct Parsed {
-    /// Highlighted runs and their colour, a run carried across paragraphs joined.
-    highlights: Vec<(String, String)>,
-    /// Each comment's words and the words just before where it sits.
-    comments: Vec<(String, String)>,
-}
-
-/// A paragraph's text, and its highlighted runs: start, end, colour.
-type Line = (String, Vec<(usize, usize, String)>);
-
-/// White and no colour aren't highlights.
-fn highlight(value: &str) -> Option<String> {
-    let value = value.trim().trim_end_matches("!important").trim().to_ascii_lowercase();
-    let plain = value.is_empty() || matches!(value.as_str(), "#ffffff" | "#fff" | "white" | "transparent" | "inherit" | "initial" | "none");
-    (!plain).then_some(value)
-}
-
-fn background(style: &str) -> Option<String> {
-    style.split(';').find_map(|rule| {
-        let (name, value) = rule.split_once(':')?;
-        (name.trim() == "background-color").then(|| highlight(value)).flatten()
-    })
-}
-
-fn attribute<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let marker = format!("{name}=\"");
-    let at = tag.find(&marker)?;
-    let rest = &tag[at + marker.len()..];
-    rest.split('"').next()
-}
-
-/// Reads Google's HTML export: highlights are classes in its <style> (or an
-/// inline style) with a background colour; comments are "[a]" marks in the
-/// text that link to their words at the end.
-fn parse_doc(html: &str) -> Parsed {
-    let mut classes: Vec<(String, String)> = Vec::new();
-    if let Some(style) = html.split_once("<style").and_then(|(_, rest)| rest.split_once('>')).and_then(|(_, rest)| rest.split_once("</style>")).map(|(style, _)| style) {
-        for rule in style.split('}') {
-            let Some((selector, body)) = rule.split_once('{') else { continue };
-            if let Some(color) = background(body) {
-                for name in selector.split(',').filter_map(|part| part.trim().strip_prefix('.')) {
-                    if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-                        classes.push((name.to_string(), color.clone()));
-                    }
-                }
-            }
-        }
-    }
-    let body = html.split_once("<body").and_then(|(_, rest)| rest.split_once('>')).map(|(_, rest)| rest).unwrap_or(html);
-    // Paragraphs: their text, and each character run's highlight.
-    let mut paragraphs: Vec<Line> = vec![(String::new(), Vec::new())];
-    let mut spans: Vec<Option<String>> = Vec::new();
-    let mut refs: Vec<(usize, usize, String)> = Vec::new();
-    let mut comment_text: Vec<(String, String)> = Vec::new();
-    let mut in_mark = false;
-    let mut in_comment: Option<usize> = None;
-    let mut rest = body;
-    while let Some(at) = rest.find('<') {
-        let text = crate::research::decode_entities(&rest[..at]).replace('\u{a0}', " ");
-        if !in_mark && !text.is_empty() {
-            match in_comment {
-                Some(index) => comment_text[index].1.push_str(&text),
-                None => {
-                    let color = spans.iter().rev().flatten().next().cloned();
-                    let (line, runs) = paragraphs.last_mut().expect("a paragraph");
-                    let start = line.len();
-                    line.push_str(&text);
-                    if let Some(color) = color {
-                        match runs.last_mut() {
-                            Some((_, end, last)) if *end == start && *last == color => *end = line.len(),
-                            _ => runs.push((start, line.len(), color)),
-                        }
-                    }
-                }
-            }
-        }
-        let Some(end) = rest[at..].find('>') else { break };
-        let tag = &rest[at + 1..at + end];
-        rest = &rest[at + end + 1..];
-        let closing = tag.starts_with('/');
-        let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
-        match name.as_str() {
-            "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "tr" | "br" => match in_comment {
-                Some(index) => comment_text[index].1.push(' '),
-                None => {
-                    let (line, runs) = paragraphs.last_mut().expect("a paragraph");
-                    // Only the space between tags: not a paragraph.
-                    if line.trim().is_empty() {
-                        line.clear();
-                        runs.clear();
-                    } else {
-                        paragraphs.push((String::new(), Vec::new()));
-                    }
-                }
-            },
-            "span" if closing => {
-                spans.pop();
-            }
-            "span" => {
-                let from_class = attribute(tag, "class")
-                    .and_then(|names| names.split_whitespace().find_map(|name| classes.iter().find(|(class, _)| class == name).map(|(_, color)| color.clone())));
-                spans.push(attribute(tag, "style").and_then(background).or(from_class));
-            }
-            "a" if closing => in_mark = false,
-            "a" => {
-                let id = attribute(tag, "id").unwrap_or("");
-                if let Some(number) = id.strip_prefix("cmnt_ref") {
-                    // The mark in the text: the comment sits at the end of what it's on.
-                    in_mark = true;
-                    let index = paragraphs.len() - 1;
-                    refs.push((index, paragraphs[index].0.len(), number.to_string()));
-                } else if let Some(number) = id.strip_prefix("cmnt") {
-                    in_mark = true;
-                    comment_text.push((number.to_string(), String::new()));
-                    in_comment = Some(comment_text.len() - 1);
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut parsed = Parsed::default();
-    // Runs carried from a paragraph's end into the next one's start are one.
-    let mut carried: Option<(usize, String)> = None;
-    for (index, (line, runs)) in paragraphs.iter().enumerate() {
-        for (start, end, color) in runs {
-            let words = line[*start..*end].trim().to_string();
-            if words.is_empty() {
-                continue;
-            }
-            let joins = line[..*start].trim().is_empty() && carried.as_ref().is_some_and(|(at, last)| *at + 1 == index && last == color);
-            match parsed.highlights.last_mut() {
-                Some((text, _)) if joins => {
-                    text.push('\n');
-                    text.push_str(&words);
-                }
-                _ => parsed.highlights.push((words, color.clone())),
-            }
-            carried = line[*end..].trim().is_empty().then(|| (index, color.clone()));
-        }
-        if runs.is_empty() && !line.trim().is_empty() {
-            carried = None;
-        }
-    }
-    for (number, text) in comment_text {
-        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let near = refs
-            .iter()
-            .find(|(_, _, mark)| *mark == number)
-            .map(|(index, at, _)| {
-                let line = &paragraphs[*index].0[..*at];
-                let start = line.char_indices().rev().nth(199).map(|(at, _)| at).unwrap_or(0);
-                line[start..].trim().to_string()
-            })
-            .unwrap_or_default();
-        if !text.is_empty() {
-            parsed.comments.push((text, near));
-        }
-    }
-    parsed
-}
-
-/// One of the comments Writer puts on a clip's timestamp or an editor note.
-fn own_comment(text: &str, draft: &Draft) -> bool {
-    let text = normalise(text);
-    draft.cites().any(|cite| {
-        let video = normalise(&cite.video);
-        !video.is_empty() && text.starts_with(&video)
-    }) || draft.sections.iter().flat_map(|section| &section.paragraphs).filter_map(|paragraph| paragraph.note.as_deref()).any(|note| {
-        let note = normalise(note);
-        let head: String = note.chars().take(60).collect();
-        !head.is_empty() && text.contains(&head)
-    })
-}
-
-// ---- The script as blocks, and what changed ----
 
 /// A piece of the script a reviewer can point at: a montage clip, a heading,
 /// a paragraph (with its clips and note), or a check.
@@ -1281,25 +1029,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_highlights_and_comments_from_a_docs_export() {
-        let html = r##"<html><head><style>.c1{color:#000000}.c4{background-color:#ffff00}.c9{background-color:#ffffff}</style></head><body class="c9 doc-content">
-<p><span class="c1">Neon was everywhere. </span><span class="c1 c4">He said he would get Megan Fox</span><span class="c1"> on stream.</span><sup><a href="#cmnt1" id="cmnt_ref1">[a]</a></sup></p>
-<p><span class="c4">A run carried over</span></p><p><span class="c4">into the next paragraph</span><span> and plain after.</span></p>
-<p><span style="background-color:#00ff00">Inline green</span></p>
-<div><p><a href="#cmnt_ref1" id="cmnt1">[a]</a><span class="c1">Too long, cut this.</span></p></div></body></html>"##;
-        let parsed = parse_doc(html);
-        assert_eq!(
-            parsed.highlights,
-            vec![
-                ("He said he would get Megan Fox".to_string(), "#ffff00".to_string()),
-                ("A run carried over\ninto the next paragraph".to_string(), "#ffff00".to_string()),
-                ("Inline green".to_string(), "#00ff00".to_string()),
-            ]
-        );
-        assert_eq!(parsed.comments, vec![("Too long, cut this.".to_string(), "Neon was everywhere. He said he would get Megan Fox on stream.".to_string())]);
-    }
-
-    #[test]
     fn finds_what_changed_paragraph_by_paragraph() {
         let before = draft(&["One.", "Two.", "Three."]);
         let after = draft(&["One.", "Two, said better.", "Three.", "Four."]);
@@ -1356,11 +1085,5 @@ mod tests {
         assert_eq!(merged.lessons[2].text, "new");
         assert_eq!(merged.forgotten, ["L3"]);
         assert_eq!(merge(&merged, &here), merged);
-    }
-
-    #[test]
-    fn reads_a_doc_link() {
-        assert_eq!(doc_id("https://docs.google.com/document/d/1U11pjcL4Iax36pHV3himWjQkn4ERl3Zr-45QOatOxd4/edit?tab=t.0").as_deref(), Some("1U11pjcL4Iax36pHV3himWjQkn4ERl3Zr-45QOatOxd4"));
-        assert_eq!(doc_id("not a link"), None);
     }
 }

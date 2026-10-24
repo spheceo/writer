@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { forgetLesson, getLessons, keepLesson, message, pullFeedback, setFeedbackItem, setLesson } from "./api";
-import type { Feedback, FeedbackItem, Grade, LearnStep, Lesson, LessonRound, ScriptChange } from "./types";
+import { addReviewNote, forgetLesson, getLessons, keepLesson, message, pullFeedback, setFeedbackItem, setLesson } from "./api";
+import type { Feedback, FeedbackItem, Grade, LearnStep, Lesson, LessonRound, ReviewNote, ScriptChange } from "./types";
 import { Icon } from "./ui";
 
 const GRADES: Record<Grade, string> = { fixed: "Fixed", partly: "Partly", missed: "Missed", wrong: "Wrong" };
@@ -158,13 +158,60 @@ function RoundView({ round, key_, items, open, busy, onToggle, onFinish }: {
  * Claude draws from them, and rounds that test whether a fresh Claude, given
  * only the lesson, finds and fixes the same problems.
  */
+/** Leaves a note on the review page from here, as a reviewer would. */
+function AddNote({ id, shared, busy, onAdded, onError }: { id: string; shared: boolean; busy: boolean; onAdded: () => void; onError: (error: string) => void }) {
+  const [text, setText] = useState("");
+  const [adding, setAdding] = useState(false);
+  const add = async () => {
+    setAdding(true);
+    try {
+      await addReviewNote(id, text);
+      setText("");
+      onAdded();
+    } catch (cause) {
+      onError(message(cause));
+    } finally {
+      setAdding(false);
+    }
+  };
+  return (
+    <form
+      className="fb-add"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (text.trim()) void add();
+      }}
+    >
+      <textarea
+        value={text}
+        rows={2}
+        disabled={!shared || adding}
+        placeholder={shared ? "Leave a note of your own: what's wrong, and where…" : "Share the script for review to leave notes."}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) {
+            event.preventDefault();
+            void add();
+          }
+        }}
+      />
+      <button type="submit" className="secondary sm" disabled={!shared || adding || busy || !text.trim()}>
+        {adding ? "Adding…" : "Add note"}
+      </button>
+    </form>
+  );
+}
+
 export function FeedbackPanel({
   status,
   id,
   feedback,
+  notes,
+  shared,
   busy,
   canPull,
   onFeedback,
+  onNotes,
   onStep,
   onError,
 }: {
@@ -172,15 +219,20 @@ export function FeedbackPanel({
   status: ReactNode;
   id: string;
   feedback: Feedback | null;
+  /** The notes on the script's review page, reviewers' and Writer's. */
+  notes: ReviewNote[];
+  /** Shared for review: notes can be left and read. */
+  shared: boolean;
   busy: boolean;
   canPull: boolean;
   onFeedback: (feedback: Feedback) => void;
+  /** Asks for the review's notes again. */
+  onNotes: () => void;
   onStep: (step: LearnStep) => void;
   onError: (error: string) => void;
 }) {
-  const [link, setLink] = useState("");
   const [pulling, setPulling] = useState(false);
-  const [askLink, setAskLink] = useState(false);
+  const top = notes.filter((note) => !note.parentId);
   const [lesson, setLessonText] = useState(feedback?.lesson ?? "");
   const [leaks, setLeaks] = useState<string[]>([]);
   const [open, setOpen] = useState<number | null>(null);
@@ -196,12 +248,10 @@ export function FeedbackPanel({
   useEffect(() => setItemsOpen(rounds.length === 0), [feedback?.pulledAt, rounds.length]);
 
   const pull = async () => {
-    if (rounds.length > 0 && !window.confirm("Pull the feedback again? This starts over: the answer key, the lesson and the rounds go.")) return;
+    if (rounds.length > 0 && !window.confirm("Read the review's notes again? This starts over: the answer key, the lesson and the rounds go.")) return;
     setPulling(true);
     try {
-      onFeedback(await pullFeedback(id, link.trim() || null));
-      setAskLink(false);
-      setLink("");
+      onFeedback(await pullFeedback(id));
       setLeaks([]);
     } catch (cause) {
       onError(message(cause));
@@ -243,20 +293,9 @@ export function FeedbackPanel({
   const used = feedback?.items.filter((found) => !found.skip).length ?? 0;
   const edited = !!feedback && lesson.trim() !== feedback.lesson.trim();
   const keptThis = !!feedback && kept.some((found) => found.script === id && found.pulledAt === feedback.pulledAt);
-  const linkForm = (
-    <form
-      className="fb-pull"
-      onSubmit={(event) => {
-        event.preventDefault();
-        void pull();
-      }}
-    >
-      <input value={link} placeholder="Doc link (blank: the latest export)" disabled={pulling || busy} onChange={(event) => setLink(event.target.value)} />
-      <button type="submit" className="sm" disabled={pulling || busy || !canPull}>
-        {pulling ? "Reading…" : "Pull"}
-      </button>
-    </form>
-  );
+  const addNote = <AddNote id={id} shared={shared} busy={busy} onAdded={onNotes} onError={onError} />;
+  // Notes left since the feedback was read: reading again brings them in.
+  const newer = feedback ? top.filter((note) => (note.createdAt ?? 0) > feedback.pulledAt).length : 0;
 
   return (
     <div className="sources found-clips feedback-panel">
@@ -264,28 +303,49 @@ export function FeedbackPanel({
       {!feedback ? (
         <div className="empty">
           <p>
-            Pull the comments and highlights a reviewer left on the script's Doc. Opus makes an answer key by applying them directly,
-            then writes a lesson from them in general terms. In each round a fresh Opus gets only the script and the lesson, finds the
-            problems itself and fixes them, and Opus grades its fixes against the feedback.
+            The feedback is the notes on the script's review page: what reviewers left there, and notes you leave here. Opus makes an
+            answer key by applying them, then writes a lesson from them in general terms. In each round a fresh Opus gets only the script
+            and the lesson, finds the problems itself and fixes them, and is graded against the notes.
           </p>
-          <p className="hint">
-            Improve the lesson and run rounds until the match is high. Then keep the lesson, so every later script reads it, and use the
-            best round's script with what it missed fixed directly. Each round takes about 15 minutes.
-          </p>
-          {canPull ? linkForm : <p className="hint">Write the script first.</p>}
+          <p className="hint">Run rounds until the match is high, then keep the lesson so every later script reads it. Each round takes about 15 minutes.</p>
+          {!canPull ? (
+            <p className="hint">Write the script first.</p>
+          ) : !shared ? (
+            <p className="hint">Share the script for review (Share, at the top): its notes are the feedback.</p>
+          ) : (
+            <>
+              {top.length > 0 && (
+                <ul className="fb-notes">
+                  {top.map((note) => (
+                    <li key={note.id}>
+                      {note.anchor?.quote && <blockquote>{note.anchor.quote}</blockquote>}
+                      <p>
+                        <strong>{note.fromApp ? "Writer" : note.author}: </strong>
+                        {note.text}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {addNote}
+              <button type="button" className="sm" disabled={pulling || busy || top.length === 0} onClick={() => void pull()}>
+                {pulling ? "Reading…" : top.length ? `Teach from ${top.length} ${top.length === 1 ? "note" : "notes"}` : "No notes yet"}
+              </button>
+            </>
+          )}
         </div>
       ) : (
         <>
           <div className="found-head">
             <p className="faint">
-              <a href={feedback.docUrl} target="_blank" rel="noreferrer">The Doc</a> · {used} of {feedback.items.length} items used
+              <a href={feedback.docUrl} target="_blank" rel="noreferrer">{feedback.docUrl.includes("docs.google.com") ? "The Doc" : "The review"}</a> · {used} of {feedback.items.length} notes used
               {feedback.costUsd > 0 ? ` · $${feedback.costUsd.toFixed(2)}` : ""}
             </p>
-            <button type="button" className="tool" disabled={busy || pulling} onClick={() => setAskLink(!askLink)}>
-              Pull again
+            <button type="button" className="tool" disabled={busy || pulling || !shared} title="Starts over from the review's notes as they are now" onClick={() => void pull()}>
+              {pulling ? "Reading…" : newer ? `Read again (${newer} new)` : "Read again"}
             </button>
           </div>
-          {askLink && linkForm}
+          {shared && addNote}
           {feedback.problems.length > 0 && (
             <ul className="fb-problems faint">
               {feedback.problems.map((problem, index) => (

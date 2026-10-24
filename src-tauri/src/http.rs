@@ -391,9 +391,10 @@ fn route(
             json_result(stream, crate::start_find_clips_now(app, &data, (*id).to_string()))
         }
         ("GET", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::feedback_now(&data_dir(&app)?, id)),
-        ("POST", ["api", "scripts", id, "feedback"]) => {
-            let value: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
-            json_result(stream, crate::pull_feedback_now(&data_dir(&app)?, id, value["link"].as_str()))
+        ("POST", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::pull_feedback_now(&data_dir(&app)?, id)),
+        ("POST", ["api", "scripts", id, "review", "notes"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::add_review_note_now(&data_dir(&app)?, id, value["text"].as_str().unwrap_or("")).map(|_| json!({ "ok": true })))
         }
         ("PUT", ["api", "scripts", id, "feedback", "items", item]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

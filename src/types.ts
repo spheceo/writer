@@ -448,6 +448,8 @@ export type ReviewNote = {
   anchor: ReviewAnchor | null;
   text: string;
   author: string;
+  /** Left from Writer (a note of our own, or Writer's reply), not by a reviewer. */
+  fromApp?: boolean;
   status: "open" | "done";
   doneInVersion?: number | null;
   changedRanges: ReviewRange[];
