@@ -119,9 +119,10 @@ export function splitTitle(title: string) {
 const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc", compilation: "stack" };
 
 /** The list's sections, as Edit's Home splits its own: one case's footage, compilations, commentaries. */
-type Section = "footage" | "compilations" | "commentary";
+type Section = "all" | "footage" | "compilations" | "commentary";
 
 const SECTIONS: { value: Section; label: string }[] = [
+  { value: "all", label: "All" },
   { value: "footage", label: "Footage" },
   { value: "compilations", label: "Compilations" },
   { value: "commentary", label: "Commentary" },
@@ -168,7 +169,7 @@ export function Library({
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const next = useRef(0);
   const [query, setQuery] = useState("");
-  const [section, setSectionNow] = useState<Section>(() => (localStorage.getItem("writer.section") as Section | null) ?? "footage");
+  const [section, setSectionNow] = useState<Section>(() => (localStorage.getItem("writer.section") as Section | null) ?? "all");
   const setSection = (next: Section) => {
     setSectionNow(next);
     setStyle(null);
@@ -199,18 +200,19 @@ export function Library({
   const needle = query.trim().toLowerCase();
   // Footage a commentary was written from lives inside that commentary: the list shows it only to a search.
   const listed = scripts.filter((script) => !script.inCommentary);
-  const sections = SECTIONS.map((option) => ({ ...option, count: listed.filter((script) => sectionOf(script) === option.value).length })).filter(
-    (option) => option.count > 0 || option.value === "footage",
+  const sections = SECTIONS.map((option) => ({ ...option, count: option.value === "all" ? listed.length : listed.filter((script) => sectionOf(script) === option.value).length })).filter(
+    (option) => option.count > 0 || option.value === "all",
   );
-  const shownSection = sections.some((option) => option.value === section) ? section : "footage";
-  const styles = shownSection === "commentary" ? [] : STYLES.filter((option) => listed.some((script) => sectionOf(script) === shownSection && (script.kind ?? "interrogation") === option.value));
+  const shownSection = sections.some((option) => option.value === section) ? section : "all";
+  const inSection = (script: Summary) => shownSection === "all" || sectionOf(script) === shownSection;
+  const styles = shownSection === "commentary" ? [] : STYLES.filter((option) => listed.some((script) => inSection(script) && sectionOf(script) !== "commentary" && (script.kind ?? "interrogation") === option.value));
   // A search looks through everything; otherwise the section and the style narrow the list.
   const rows = [...scripts]
     .sort((a, b) => b.createdAt - a.createdAt)
     .filter((script) =>
       needle
         ? script.title.toLowerCase().includes(needle)
-        : !script.inCommentary && sectionOf(script) === shownSection && (!style || (script.kind ?? "interrogation") === style),
+        : !script.inCommentary && inSection(script) && (!style || (sectionOf(script) !== "commentary" && (script.kind ?? "interrogation") === style)),
     );
   const open = (script: Summary) => (stuck(script) ? setRecovering(script) : onOpen(script.id));
 
