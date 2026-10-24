@@ -178,7 +178,7 @@ input[type="checkbox"] { accent-color: var(--play); margin: 0; }
 .library-body { flex: 1; min-height: 0; overflow: auto; padding: 32px max(40px, calc((100% - 1200px) / 2)) 64px; }
 /* The kit's app header: mark and name, the page's controls, the avatar at the far right; room for the traffic lights. */
 .app-header { display: flex; flex-shrink: 0; align-items: center; gap: 12px; height: 52px; padding: 0 14px 0 84px; border-bottom: 1px solid var(--line); }
-.app-header .brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; user-select: none; }
+.app-header .brand { display: flex; align-items: center; gap: 8px; margin-left: 10px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; user-select: none; }
 .app-header .brand img { display: block; flex-shrink: 0; }
 .app-header .spacer { flex: 1; align-self: stretch; }
 .heading-actions { display: flex; align-items: center; gap: 6px; }
