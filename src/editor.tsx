@@ -165,8 +165,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
-  // The formats this person may write this script as (can.ts): a compilation's
-  // (never FOIA) or a single case's.
+  // The formats this person may write this script as (can.ts): a compilation's or a single case's.
   const grants = useGrants();
   const kinds = KINDS.filter((item) => (script.compilation ? grants.compilationKinds : grants.singleKinds).includes(item.value));
   const split = useSplit();

@@ -97,7 +97,7 @@ export function workOf(summary: unknown): string | null {
   if (!isObject(summary)) return null;
   if (summary.sourceKind === "commentary") return "scripts.commentary";
   const kind = typeof summary.kind === "string" ? summary.kind : "interrogation";
-  if (summary.compilation === true) return kind === "courtroom" ? "scripts.courtroom-compilation" : "scripts.interrogation-compilation";
+  if (summary.compilation === true) return kind === "courtroom" ? "scripts.courtroom-compilation" : kind === "foia" ? "scripts.foia-compilation" : "scripts.interrogation-compilation";
   return ["interrogation", "foia", "courtroom"].includes(kind) ? `scripts.${kind}` : null;
 }
 

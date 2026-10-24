@@ -16,6 +16,7 @@ export const CAPABILITIES: Capability[] = [
   { id: "scripts.interrogation", label: "Interrogation", description: "One case's footage (YouTube, Google Drive or this Mac) into an interrogation script.", group: "Scripts from footage" },
   { id: "scripts.interrogation-compilation", label: "Interrogation compilations", description: "2 to 20 cases in one interrogation script, standard (\"When…\") or hidden.", group: "Scripts from footage" },
   { id: "scripts.foia", label: "FOIA", description: "One case's FOIA footage (bodycam and records) into a FOIA script.", group: "Scripts from footage" },
+  { id: "scripts.foia-compilation", label: "Bodycam compilations", description: "2 to 20 bodycam (FOIA) cases in one compilation script, standard (\"When…\") or hidden.", group: "Scripts from footage" },
   { id: "scripts.courtroom", label: "Courtroom", description: "One case's hearing into a courtroom script, including one hearing split across several videos.", group: "Scripts from footage" },
   { id: "scripts.courtroom-compilation", label: "Courtroom compilations", description: "Several cases' hearings in one courtroom script.", group: "Scripts from footage" },
   { id: "scripts.commentary", label: "Commentary", description: "A voiceover essay from articles, videos and Docs, with clips found and placed.", group: "Other scripts" },

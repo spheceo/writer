@@ -47,6 +47,10 @@ impl Format {
     pub fn court_compilation(&self) -> bool {
         self.kind == Kind::Courtroom && self.compilation
     }
+    /// A bodycam compilation: Repack gives a compilation in its FOIA workspace both guides.
+    pub fn foia_compilation(&self) -> bool {
+        self.kind == Kind::Foia && self.compilation
+    }
 }
 
 pub const CUT_IN_GUIDE: &str = include_str!("../guides/cut-in.md");
@@ -65,6 +69,9 @@ pub fn extra_guides(format: &Format) -> Vec<(&'static str, &'static str)> {
         guides.push(("PRODUCER'S COURTROOM GUIDE", COURTROOM_GUIDE));
     } else if format.compilation {
         guides.push(("PRODUCER'S COMPILATION GUIDE", COMPILATION_GUIDE));
+        if format.foia_compilation() {
+            guides.push(("PRODUCER'S FOIA GUIDE", FOIA_GUIDE));
+        }
         if format.court_compilation() {
             guides.push(("PRODUCER'S COURTROOM GUIDE", COURTROOM_GUIDE));
         }
@@ -82,6 +89,9 @@ pub fn plain(text: &str) -> String {
         .replace("save it on that cut-in with set_reuse_link, and the script shows it as a comment on the transition", "put it on that cut-in as its reuseLink")
         .replace("In the plan, give a reuse's cut-in its reuseLink; set_reuse_link changes it later.", "In the plan, give a reuse's cut-in its reuseLink.")
         .replace("read the runtime the tool reports", "check the runtime")
+        .replace("Never count pages or words yourself. Every result that changes the timeline, read_script and write_cut_ins report pages: how many the script fills now and how that stands against the target; read_script also gives what is on each page and the lines free at its bottom. They also report narrationWords: the words written and the cut-ins still unwritten. ", "The app counts the pages of the finished plan and sends back one outside the target, saying how far off it is. ")
+        .replace("after assembling, read pages, and if", "after assembling, estimate the pages, and if")
+        .replace("build_script then reports the exact pages;", "The app then counts the exact pages;")
         .replace("build_script", "the plan")
 }
 
@@ -212,11 +222,16 @@ The next case's transition follows that outro directly. The last case ends on it
 }
 
 const SHARED: &str = r#"A transition is the only cut-in with no footage before it. That is how the script tells a case's transition, case opening and outro apart, so never place two cut-ins together anywhere else and never leave out a case's intro clips. Never put the reading of rights in any intro clips: no Miranda warning and no talk about the person's rights.
-Choosing footage in a compilation: every case is there because of the title, so choose the moments that deliver what the title promises, and leave out side conversations, long legal explanations and background that do not lead back to it. These videos were published by other creators and often carry that creator's own voice-over, recaps, intro, sponsor read and requests to subscribe: usually one speaker who talks about the people in the third person and is never answered. The transcript labels that speaker Narrator when the import recognised one, but check for yourself: an unlabelled or wrongly labelled speaker who talks that way is a narrator too. Never put any of that in a clip, and trim a clip so it neither starts nor ends on it. Use only what was said at the scene, on the call or in the interview room. Read the voice-over for what it tells you about the case, and never repeat its wording in the narration. When a narrator talks over footage the story needs, say so to the producer instead of keeping it silently. A short video, about 10-20 minutes, is usually used almost whole. A longer one is trimmed: when a question is asked or an answer given again, keep it once unless the repeat reveals something new, and let a cut-in carry what was left out (a 35-minute video may make a 24-minute case). Blocks inside a case mostly run one to three minutes. Place a cut-in where the footage changes location, where a new person enters, just before an escalation, after a key statement or reveal, or between two long stretches of dialogue. Do not interrupt a strong emotional moment: when the footage is already intense, let it run."#;
+Choosing footage in a compilation: every case is there because of the title, so choose the moments that deliver what the title promises, and leave out side conversations, long legal explanations and background that do not lead back to it. These videos were published by other creators and often carry that creator's own voice-over, recaps, intro, sponsor read and requests to subscribe: usually one speaker who talks about the people in the third person and is never answered. The transcript labels that speaker Narrator when the import recognised one, but check for yourself: an unlabelled or wrongly labelled speaker who talks that way is a narrator too. Never put any of that in a clip, and trim a clip so it neither starts nor ends on it. Use only what was said at the scene, on the call or in the interview room. Read the voice-over for what it tells you about the case, and never repeat its wording in the narration. When a narrator talks over footage the story needs, say so to the producer instead of keeping it silently. A short video, about 10-20 minutes, is usually used almost whole. A longer one is trimmed: when a question is asked or an answer given again, keep it once unless the repeat reveals something new, and let a cut-in carry what was left out (a 35-minute video may make a 24-minute case). Blocks inside a case mostly run one to three minutes. Place a cut-in where the footage changes location, where a new person enters, just before an escalation, after a key statement or reveal, or between two long stretches of dialogue. Do not interrupt a strong emotional moment: when the footage is already intense, let it run.
+Reuse cases: the producer may mark a case as a reuse ("REUSE" and a link). It is a case the channel has already covered in an earlier video, and the editor lifts that finished segment into this one, so here it has no footage, no intro clips and no cut-ins of its own. It takes a single cut-in in its place in the order: its transition, written like any other. The link is never written in the narration: save it on that cut-in with set_reuse_link, and the script shows it as a comment on the transition. The next case's transition follows directly. Reuses the producer marked when making the script are listed with the videos, each with its link and its place in the order; they may name others in chat. In the plan, give a reuse's cut-in its reuseLink; set_reuse_link changes it later. You cannot watch a reuse video: write its transition from its title and what the producer tells you about the case, and ask for one line about it when the title alone does not say what happened."#;
 
-/// Writer has no page view, so Repack's page target becomes a word guide:
-/// 6 to 7 pages of about 45 lines of 13 words.
-const COMPILATION_LENGTH: &str = "Length: a compilation is measured by its written script, not its runtime. The script, with its timestamp lines and every cut-in, runs 6 to 7 Letter pages unless the producer names another length (a page holds about 45 lines, a cut-in takes a line for about every 13 words plus one, and each footage block a line or two of timestamps). It may run just over, by one more page, when the cases truly need it, and never further. Runtime has no target: such a video often lands around an hour, and may run well over or well under that when the footage calls for it. Let each case run as long as it stays interesting and no longer, and do not let one case crowd out the others. An explicit requested length takes precedence: share it across the cases and land within about 10% of it. Share the room across the cases by how much each has to tell, not evenly. A cut-in must still read as a story told to someone who has not seen the case: who called and why, what the officer found, how one thing led to the next. A paragraph cut down to bare facts in clipped sentences is worse than a script that runs a page long, so when the choice is between the two, keep the paragraph whole, run over, and say so in the report. Never pad with dead air, repetition, duplicated footage or invented narration.";
+const REUSE_FIRST: &str = " If the first case of this hidden compilation is the reuse, the script begins with a cut-in that carries only the reuse link (its reuseLink in the plan) and no narration, calm opening or hook, and the cut-in directly after it is the transition into the second case.";
+
+/// Repack's, word for word (its 6 to 7 pages are `pages::COMPILATION_PAGES`);
+/// `plain` says its tools as what Writer does: the app counts the finished
+/// plan's pages and sends back one outside the target.
+const COMPILATION_LENGTH: &str = "Length: a compilation is measured by its written script, not its runtime. The script, with its timestamp lines and every cut-in, runs 6 to 7 Letter pages unless the producer names another length. It may run just over, by one more page, when the cases truly need it, and never further. Runtime has no target: such a video often lands around an hour, and may run well over or well under that when the footage calls for it. Let each case run as long as it stays interesting and no longer, and do not let one case crowd out the others. An explicit requested length takes precedence: share it across the cases and land within about 10% of it.
+Never count pages or words yourself. Every result that changes the timeline, read_script and write_cut_ins report pages: how many the script fills now and how that stands against the target; read_script also gives what is on each page and the lines free at its bottom. They also report narrationWords: the words written and the cut-ins still unwritten. Two things fill the pages: the cut-ins, each one concise paragraph, and the timestamp lines, which grow with the number of clips. So the length is largely settled when the cut is assembled: after assembling, read pages, and if the timestamp lines and empty cut-ins already take most of the target, there are too many cut-ins or the footage is cut into more clips than it needs; if they take very little, a case may be missing cut-ins where the placing rules call for one. Share the room across the cases by how much each has to tell, not evenly, and a reused case takes only its transition. Plan the whole script to the target before building: a page holds about 45 lines, a cut-in takes a line for about every 13 words plus one, and each footage block a line or two of timestamps. build_script then reports the exact pages; when they fall outside the target, bring the script inside it: when over, take out what repeats the footage, a cut-in the story does not need, or clips that split one moment into many timestamps; when under, add only sourced context the viewer lacks. Never reach the target by squeezing a paragraph. A cut-in must still read as a story told to someone who has not seen the case: who called and why, what the officer found, how one thing led to the next. A paragraph cut down to bare facts in clipped sentences is worse than a script that runs a page long, so when the choice is between the two, keep the paragraph whole, run over, and say so. The judgment calls show what a squeezed paragraph looks like. Never pad with dead air, repetition, duplicated footage or invented narration, and when the cases cannot honestly fit the target, say so with the page count rather than claim it was reached. After arranging AND tightening silences, read the runtime the tool reports, then review case by case whether a distinct beat is missing or a passage drags.";
 
 const EACH_CASE: &str = r#"Each case is then written as a single case is: its case opening ("On [date], …") with the verified date, place and how it reached police, ending on a tease of what the next footage shows; story development with Anchor → Bridge → Teaser; and its own outro ("In the end, …") with that case's sourced outcome, kept short, with no new tease. Every fact comes from that video and its own research (under its video in the evidence), never from another case."#;
 
@@ -243,8 +258,9 @@ pub fn shape_length_sequence(format: &Format, cases: usize) -> (String, String, 
             Style::When => (when_shape(), when_sequence()),
             Style::Hidden => (hidden_shape(), hidden_sequence()),
         };
+        let reuse_first = if format.style == Style::Hidden { REUSE_FIRST } else { "" };
         (
-            format!("{shape}\n{SHARED}"),
+            format!("{shape}\n{SHARED}{reuse_first}"),
             COMPILATION_LENGTH.to_string(),
             format!("{sequence} The compilation guide is given beside the Cut-In framework; where they differ, follow the compilation guide."),
         )
@@ -300,5 +316,29 @@ mod tests {
                 assert!(!text.contains("build_script") && !text.contains("read_script") && !text.contains("remove_silences"), "{text}");
             }
         }
+    }
+
+    #[test]
+    fn a_bodycam_compilation_reads_both_guides_as_repack_gives_them() {
+        let names = |format: Format| extra_guides(&format).into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+        assert_eq!(names(Format::new(Kind::Foia, true, "When Cops")), vec!["PRODUCER'S COMPILATION GUIDE", "PRODUCER'S FOIA GUIDE"]);
+        assert_eq!(names(Format::new(Kind::Interrogation, true, "When Cops")), vec!["PRODUCER'S COMPILATION GUIDE"]);
+        assert_eq!(names(Format::new(Kind::Foia, false, "A case")), vec!["PRODUCER'S FOIA GUIDE"]);
+        // Its shape, length and sequence are the compilation's, as in Repack.
+        let (shape, length, _) = shape_length_sequence(&Format::new(Kind::Foia, true, "When Cops"), 3);
+        assert!(shape.contains("standard compilation") && length.contains("6 to 7 Letter pages"));
+    }
+
+    #[test]
+    fn compilations_carry_repacks_reuse_rules_and_length() {
+        let (hidden, length, _) = shape_length_sequence(&Format::new(Kind::Interrogation, true, "Cop Reports Dead Body"), 3);
+        assert!(hidden.contains("Reuse cases: the producer may mark a case as a reuse"));
+        assert!(hidden.contains("If the first case of this hidden compilation is the reuse"));
+        let (when, _, _) = shape_length_sequence(&Format::new(Kind::Interrogation, true, "When Cops"), 3);
+        assert!(when.contains("Reuse cases:") && !when.contains("If the first case of this hidden compilation"));
+        // Repack's tools are said as what Writer does.
+        assert!(!length.contains("read_script") && !length.contains("build_script") && !length.contains("write_cut_ins"));
+        assert!(length.contains("The app counts the pages of the finished plan"));
+        assert!(!hidden.contains("set_reuse_link"));
     }
 }

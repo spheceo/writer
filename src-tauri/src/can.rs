@@ -16,6 +16,8 @@ use crate::model::{Script, Summary};
 pub const INTERROGATION: &str = "scripts.interrogation";
 pub const INTERROGATION_COMPILATION: &str = "scripts.interrogation-compilation";
 pub const FOIA: &str = "scripts.foia";
+/// Bodycam (FOIA) compilations, since Oct 24 2026: Repack's compilation guide with its FOIA guide.
+pub const FOIA_COMPILATION: &str = "scripts.foia-compilation";
 pub const COURTROOM: &str = "scripts.courtroom";
 pub const COURTROOM_COMPILATION: &str = "scripts.courtroom-compilation";
 pub const COMMENTARY: &str = "scripts.commentary";
@@ -48,9 +50,9 @@ impl Grants {
         [(Kind::Interrogation, INTERROGATION), (Kind::Foia, FOIA), (Kind::Courtroom, COURTROOM)].into_iter().filter(|(_, id)| self.has(id)).map(|(kind, _)| kind).collect()
     }
 
-    /// The compilation formats this person may write (FOIA has none).
+    /// The compilation formats this person may write, in the editor's order.
     pub fn compilation_kinds(&self) -> Vec<Kind> {
-        [(Kind::Interrogation, INTERROGATION_COMPILATION), (Kind::Courtroom, COURTROOM_COMPILATION)].into_iter().filter(|(_, id)| self.has(id)).map(|(kind, _)| kind).collect()
+        [(Kind::Interrogation, INTERROGATION_COMPILATION), (Kind::Foia, FOIA_COMPILATION), (Kind::Courtroom, COURTROOM_COMPILATION)].into_iter().filter(|(_, id)| self.has(id)).map(|(kind, _)| kind).collect()
     }
 }
 
@@ -70,8 +72,8 @@ pub fn work_of(source_kind: &str, compilation: bool, kind: Kind) -> &'static str
     }
     match (compilation, kind) {
         (true, Kind::Courtroom) => COURTROOM_COMPILATION,
-        // FOIA compilations were never a format; any made before count as interrogation compilations.
-        (true, _) => INTERROGATION_COMPILATION,
+        (true, Kind::Foia) => FOIA_COMPILATION,
+        (true, Kind::Interrogation) => INTERROGATION_COMPILATION,
         (false, Kind::Interrogation) => INTERROGATION,
         (false, Kind::Foia) => FOIA,
         (false, Kind::Courtroom) => COURTROOM,
@@ -96,7 +98,8 @@ pub fn doing(id: &str) -> &'static str {
     match id {
         INTERROGATION => "write interrogation scripts in Writer",
         INTERROGATION_COMPILATION => "write interrogation compilations in Writer",
-        FOIA => "write FOIA scripts in Writer",
+        FOIA => "write bodycam (FOIA) scripts in Writer",
+        FOIA_COMPILATION => "write bodycam compilations in Writer",
         COURTROOM => "write courtroom scripts in Writer",
         COURTROOM_COMPILATION => "write courtroom compilations in Writer",
         COMMENTARY => "write commentary scripts in Writer",
@@ -142,11 +145,8 @@ pub fn first_compilation_kind() -> Result<Kind, String> {
     grants().compilation_kinds().into_iter().next().ok_or_else(|| refusal(INTERROGATION_COMPILATION))
 }
 
-/// Building as `kind`: refused when the person can't write that kind, or for a FOIA compilation.
+/// Building as `kind`: refused when the person can't write that kind.
 pub fn require_kind(script: &Script, kind: Kind) -> Result<(), String> {
-    if script.compilation && kind == Kind::Foia {
-        return Err("FOIA compilations aren't one of the formats. Build it as an interrogation or courtroom compilation.".into());
-    }
     let work = work_of(&script.source_kind, script.compilation, kind);
     require(work)
 }
@@ -163,7 +163,7 @@ mod tests {
         // One hearing across several videos is a one-case courtroom script.
         assert_eq!(work_of("compilation", false, Kind::Courtroom), COURTROOM);
         assert_eq!(work_of("compilation", true, Kind::Interrogation), INTERROGATION_COMPILATION);
-        assert_eq!(work_of("compilation", true, Kind::Foia), INTERROGATION_COMPILATION);
+        assert_eq!(work_of("compilation", true, Kind::Foia), FOIA_COMPILATION);
         assert_eq!(work_of("compilation", true, Kind::Courtroom), COURTROOM_COMPILATION);
         assert_eq!(work_of("commentary", false, Kind::Interrogation), COMMENTARY);
     }

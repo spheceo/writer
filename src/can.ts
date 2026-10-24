@@ -10,6 +10,7 @@ export const CAN = {
   interrogation: "scripts.interrogation",
   interrogationCompilation: "scripts.interrogation-compilation",
   foia: "scripts.foia",
+  foiaCompilation: "scripts.foia-compilation",
   courtroom: "scripts.courtroom",
   courtroomCompilation: "scripts.courtroom-compilation",
   commentary: "scripts.commentary",
@@ -32,10 +33,10 @@ export function grantsOf(perms: string[], admin: boolean): Grants {
     )
       .filter(([, id]) => has(id))
       .map(([kind]) => kind),
-    // FOIA has no compilation form.
     compilationKinds: (
       [
         ["interrogation", CAN.interrogationCompilation],
+        ["foia", CAN.foiaCompilation],
         ["courtroom", CAN.courtroomCompilation],
       ] as const
     )
@@ -55,6 +56,6 @@ export function useGrants(): Grants {
 export function workOf(script: Pick<Summary | Script, "sourceKind" | "compilation" | "kind">): string {
   if (script.sourceKind === "commentary") return CAN.commentary;
   const kind = script.kind ?? "interrogation";
-  if (script.compilation) return kind === "courtroom" ? CAN.courtroomCompilation : CAN.interrogationCompilation;
+  if (script.compilation) return kind === "courtroom" ? CAN.courtroomCompilation : kind === "foia" ? CAN.foiaCompilation : CAN.interrogationCompilation;
   return kind === "foia" ? CAN.foia : kind === "courtroom" ? CAN.courtroom : CAN.interrogation;
 }
