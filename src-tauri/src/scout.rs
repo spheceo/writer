@@ -478,7 +478,7 @@ fn plan(title: &str, brief: &str) -> Result<(Vec<Need>, f64), String> {
         }
     });
     let prompt = format!("Working title: {title}\n\n=== THE PRODUCER'S BRIEF ===\n{}\n=== END OF THE BRIEF ===", brief.trim());
-    let turn = crate::claude::ask_model_patiently("opus", PLAN_SYSTEM, &schema.to_string(), &prompt, None)?;
+    let turn = crate::claude::ask_model_patiently(crate::claude::OPUS, PLAN_SYSTEM, &schema.to_string(), &prompt, None)?;
     let plan = turn.plan.ok_or("Claude did not answer in the expected shape.")?;
     let needs: Vec<Need> = plan["needs"]
         .as_array()

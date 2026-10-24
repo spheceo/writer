@@ -342,7 +342,7 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
     let url = format!("http://127.0.0.1:{}/mcp/{token}", crate::http::PORT);
     let asked = || {
         crate::agent::ask(
-            crate::agent::Question { model: "opus", system: &system, prompt: &prompt, schema: None, resume: None, read: None, tools: Some(&url), max_turns: Some(MAX_TURNS), timeout: Duration::from_secs(40 * 60), label: "Claude opus building in steps".into() },
+            crate::agent::Question { model: crate::claude::OPUS, system: &system, prompt: &prompt, schema: None, resume: None, read: None, tools: Some(&url), max_turns: Some(MAX_TURNS), timeout: Duration::from_secs(40 * 60), label: "Claude opus building in steps".into() },
             &crate::agent::workspace(),
         )
     };

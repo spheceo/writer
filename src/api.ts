@@ -112,7 +112,7 @@ export const startBuild = (id: string, note: string, kind?: Kind) =>
     ? invoke<BuildStatus>("start_build", { id, note, kind })
     : http<BuildStatus>(`/api/scripts/${id}/build`, json({ note, kind }));
 
-/** Sonnet revises a built script with targeted edits; followed as a build is. */
+/** Opus revises a built script with targeted edits; followed as a build is. */
 export const startRevision = (id: string, request: string, focus: Focus) =>
   inTauri()
     ? invoke<BuildStatus>("start_revision", { id, request, focus })

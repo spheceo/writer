@@ -467,7 +467,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     }
   };
 
-  // Once the script is built, a message asks Sonnet for targeted edits, as
+  // Once the script is built, a message asks Opus for targeted edits, as
   // Repack's chat does, with what the producer has selected as "this".
   const revise = async () => {
     const request = note.trim();

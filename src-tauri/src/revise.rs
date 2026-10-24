@@ -586,7 +586,7 @@ pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, researc
         seen(script, focus),
     );
     let mut cost = 0.0;
-    let mut turn = claude::ask_model_patiently("opus", &system, &schema, &prompt, None)?;
+    let mut turn = claude::ask_model_patiently(crate::claude::OPUS, &system, &schema, &prompt, None)?;
     cost += turn.cost_usd;
     let mut repairs = 0;
     loop {
@@ -616,7 +616,7 @@ pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, researc
             });
         }
         repairs += 1;
-        turn = claude::ask_model_patiently("opus", &system, &schema, &refusal, turn.session.as_deref())?;
+        turn = claude::ask_model_patiently(crate::claude::OPUS, &system, &schema, &refusal, turn.session.as_deref())?;
         cost += turn.cost_usd;
     }
 }

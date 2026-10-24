@@ -786,7 +786,7 @@ fn lesson_schema() -> Value {
 fn teach(prompt: &str, base: &Draft) -> Result<(String, String, String, f64), String> {
     let schema = lesson_schema().to_string();
     let mut cost = 0.0;
-    let mut turn = crate::claude::ask_model_patiently("opus", TEACHER, &schema, prompt, None)?;
+    let mut turn = crate::claude::ask_model_patiently(crate::claude::OPUS, TEACHER, &schema, prompt, None)?;
     cost += turn.cost_usd;
     for attempt in 0..3 {
         let plan = turn.plan.clone().ok_or("Claude did not send a lesson.")?;
@@ -810,7 +810,7 @@ fn teach(prompt: &str, base: &Draft) -> Result<(String, String, String, f64), St
             "The app sent the lesson back: it points at this script, so the test would show the writer the answers. It uses {}. Rewrite those parts in general terms, or with a made-up example about someone else, and send the whole lesson again.",
             found.join(", ")
         );
-        turn = crate::claude::ask_model_patiently("opus", TEACHER, &schema, &refusal, turn.session.as_deref())?;
+        turn = crate::claude::ask_model_patiently(crate::claude::OPUS, TEACHER, &schema, &refusal, turn.session.as_deref())?;
         cost += turn.cost_usd;
     }
     unreachable!("the loop returns by its third try")
@@ -885,7 +885,7 @@ fn grade(items: &[&Item], key: &[Change], test: &[Change]) -> Result<(Vec<Verdic
         changes_text("K", key),
         changes_text("T", test)
     );
-    let turn = crate::claude::ask_model_patiently("opus", GRADER, &grade_schema().to_string(), &prompt, None)?;
+    let turn = crate::claude::ask_model_patiently(crate::claude::OPUS, GRADER, &grade_schema().to_string(), &prompt, None)?;
     let plan = turn.plan.ok_or("Claude did not send its grades.")?;
     let parse = |value: &Value| -> Option<Verdict> { serde_json::from_value(value.clone()).ok() };
     let mut verdicts: Vec<Verdict> = plan["verdicts"].as_array().map(Vec::as_slice).unwrap_or(&[]).iter().filter_map(parse).collect();

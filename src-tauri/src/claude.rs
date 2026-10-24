@@ -28,6 +28,9 @@ pub struct Built {
     pub stats: Value,
 }
 
+/// The model every build, revision and check that reads the whole script uses: Opus 5.5, pinned.
+pub const OPUS: &str = "claude-opus-5-5";
+
 pub fn status() -> ClaudeStatus {
     let text = match proc::run("claude", &["auth", "status"], Duration::from_secs(20)) {
         Ok(text) => text,
@@ -228,7 +231,7 @@ pub(crate) enum Trouble {
 
 /// Claude busy or overloaded gets one more try a minute later.
 fn ask_patiently(system: &str, schema: &str, prompt: &str, resume: Option<&str>) -> Result<Turn, String> {
-    ask_model_patiently("opus", system, schema, prompt, resume)
+    ask_model_patiently(crate::claude::OPUS, system, schema, prompt, resume)
 }
 
 pub(crate) fn ask_model_patiently(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>) -> Result<Turn, String> {

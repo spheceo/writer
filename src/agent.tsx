@@ -34,7 +34,7 @@ export function Working({ stage, since, hint }: { stage: string; since: number |
     <div className="turn working">
       <div className="thinking">
         <span className="dot live" />
-        <span>{stage === "Editing the script" ? "Sonnet is editing the script" : stage && stage !== "Writing the script" ? (stage.includes("·") ? stage : `${stage}…`) : "Opus is writing the script"}</span>
+        <span>{stage === "Editing the script" ? "Opus is editing the script" : stage && stage !== "Writing the script" ? (stage.includes("·") ? stage : `${stage}…`) : "Opus is writing the script"}</span>
         <span className="mono faint">
           <Elapsed since={since} />
         </span>

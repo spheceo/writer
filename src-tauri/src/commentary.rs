@@ -1290,7 +1290,7 @@ pub fn revise(dir: &Path, script: &Script, request: &str, lessons: &str) -> Resu
     );
     let schema = revise_schema();
     let corpus = Corpus::new(&sources);
-    let mut turn = crate::claude::ask_model_patiently("opus", &system, &schema, &prompt, None).map_err(too_long)?;
+    let mut turn = crate::claude::ask_model_patiently(crate::claude::OPUS, &system, &schema, &prompt, None).map_err(too_long)?;
     let mut cost = turn.cost_usd;
     let mut repairs = 0;
     loop {
@@ -1314,7 +1314,7 @@ pub fn revise(dir: &Path, script: &Script, request: &str, lessons: &str) -> Resu
             return Err(format!("Claude's edits were refused again. {}", refusal.trim_start_matches("The app refused your edits: ")));
         }
         repairs += 1;
-        turn = crate::claude::ask_model_patiently("opus", &system, &schema, &refusal, turn.session.as_deref()).map_err(too_long)?;
+        turn = crate::claude::ask_model_patiently(crate::claude::OPUS, &system, &schema, &refusal, turn.session.as_deref()).map_err(too_long)?;
         cost += turn.cost_usd;
     }
 }
@@ -1912,7 +1912,7 @@ fn story_check(draft: &Draft, sources: &[(Source, String)], title: &str) -> Resu
         }
     });
     let prompt = format!("THE VIDEO: {title}\n\nTHE BRIEF\n{brief}\n\nTHE DRAFT\n{}", crate::feedback::script_text(draft));
-    let turn = crate::claude::ask_model_patiently("opus", STORY_EDITOR, &schema.to_string(), &prompt, None)?;
+    let turn = crate::claude::ask_model_patiently(crate::claude::OPUS, STORY_EDITOR, &schema.to_string(), &prompt, None)?;
     let plan = turn.plan.unwrap_or(Value::Null);
     let mut flags = Vec::new();
     let off: Vec<String> = plan["offQuestion"].as_array().into_iter().flatten().map(|item| format!("{} (\"{}\"): {}", item["place"].as_str().unwrap_or(""), item["words"].as_str().unwrap_or(""), item["why"].as_str().unwrap_or(""))).collect();

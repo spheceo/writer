@@ -385,10 +385,13 @@ export function Toasts({ toasts, onDismiss }: { toasts: ToastMessage[]; onDismis
 }
 
 function Toast({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => void }) {
+  // The list re-renders all the time (polling), handing a new onDismiss each time: the timer starts once and reads the latest.
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
   useEffect(() => {
-    const timer = window.setTimeout(onDismiss, 6000);
+    const timer = window.setTimeout(() => dismiss.current(), 6000);
     return () => window.clearTimeout(timer);
-  }, [onDismiss]);
+  }, []);
   return (
     <div className="toast">
       <span>{toast.text}</span>

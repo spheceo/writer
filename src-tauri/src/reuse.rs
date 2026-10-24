@@ -451,7 +451,7 @@ fn pick(script: &Script, part: &Part) -> Result<(Vec<Highlight>, f64), String> {
         .join("\n");
     let system = PICK_SYSTEM.replace("{title}", &script.title);
     let prompt = format!("Reused case: {}\n\nTranscript, one numbered line per speaker turn (times are this video's own):\n{text}", part.title);
-    let turn = crate::claude::ask_model_patiently("opus", &system, &pick_schema().to_string(), &prompt, None)?;
+    let turn = crate::claude::ask_model_patiently(crate::claude::OPUS, &system, &pick_schema().to_string(), &prompt, None)?;
     let answer = turn.plan.ok_or("Claude did not answer in the expected shape.")?;
     let moments = answer["moments"].as_array().cloned().unwrap_or_default();
     Ok((moments.iter().filter_map(|moment| placed(script, &lines, moment)).take(8).collect(), turn.cost_usd))
