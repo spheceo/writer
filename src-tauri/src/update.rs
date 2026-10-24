@@ -26,9 +26,14 @@ const RELEASES: &str = "https://api.github.com/repos/spheceo/writer/releases";
 /// when the feed's tags change, as Edit does.
 const FEED: &str = "https://github.com/spheceo/writer/releases.atom";
 const EVERY: Duration = Duration::from_secs(60);
-/// The API is asked again after this long even with the feed unchanged (a
-/// release whose builds were still uploading when it was last asked).
+/// The API is asked again after this long even with the feed unchanged.
 const ASK_ANYWAY: Duration = Duration::from_secs(30 * 60);
+/// ...or this soon while the feed has a tag the API's answer lacks: its build
+/// is still uploading. The feed lists a tag when it's pushed, ten minutes
+/// before its release is published, and doesn't change again at publish (Edit
+/// had nightlies 30-40 minutes late, Oct 24). At most 20 asks an hour of
+/// GitHub's 60, and only until it's out.
+const ASK_WHILE_BUILDING: Duration = Duration::from_secs(3 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -177,6 +182,27 @@ pub fn feed_tags(feed: &str) -> String {
     tags.join(" ")
 }
 
+/// Whether the feed's `tags` have a build for `channel` ahead of this one and
+/// of `answer`, the newest the API offered (None: none): pushed, not yet
+/// published. Nightlies compare by number, so a draft left behind by a failed
+/// build stops counting once a newer one is out; Stable waits only for v* tags.
+pub fn building(tags: &str, channel: Channel, answer: Option<&str>, version: &str, nightly: Option<u64>) -> bool {
+    let number = |tag: &str| tag.strip_prefix("nightly-").and_then(|number| number.parse::<u64>().ok());
+    tags.split(' ')
+        .filter(|tag| !tag.is_empty() && Some(*tag) != answer && (channel == Channel::Nightly || tag.starts_with('v')))
+        .any(|tag| {
+            if !ahead(tag, version, nightly) {
+                return false;
+            }
+            let Some(answer) = answer else { return true };
+            match (number(tag), number(answer)) {
+                (Some(mine), Some(theirs)) => mine > theirs,
+                (None, None) => newer(tag, answer),
+                _ => false,
+            }
+        })
+}
+
 fn read_feed() -> Result<String, String> {
     let response = agent().get(FEED).set("accept", "application/atom+xml").call().map_err(|error| format!("couldn't read the releases feed ({error})"))?;
     response.into_string().map(|body| feed_tags(&body)).map_err(|error| error.to_string())
@@ -188,8 +214,13 @@ fn read_feed() -> Result<String, String> {
 pub fn poll(data: &Path) -> Result<Option<Offer>, String> {
     let channel = channel(data);
     let tags = read_feed().ok();
+    let answer = STATE.lock().ok().and_then(|state| state.offer.as_ref().map(|offer| offer.tag.clone()));
+    let nightly = release::tag().and_then(|tag| tag.strip_prefix("nightly-")).and_then(|number| number.parse().ok());
     let unchanged = match (&tags, ASKED.lock().ok().and_then(|asked| asked.clone())) {
-        (Some(tags), Some((was, known, at))) => was == channel && &known == tags && at.elapsed() < ASK_ANYWAY,
+        (Some(tags), Some((was, known, at))) => {
+            let wait = if building(&known, channel, answer.as_deref(), release::VERSION, nightly) { ASK_WHILE_BUILDING } else { ASK_ANYWAY };
+            was == channel && &known == tags && at.elapsed() < wait
+        }
         _ => false,
     };
     if unchanged {
@@ -420,6 +451,21 @@ mod tests {
         assert_eq!(tag(pick(&releases(), Channel::Stable, "-1.0.0", None, target)), None);
         // Nothing for an Intel Mac among these.
         assert!(pick(&releases(), Channel::Nightly, "0.0.0", Some(1), "x86_64-apple-darwin").is_none());
+    }
+
+    #[test]
+    fn asks_again_soon_while_a_pushed_build_is_still_uploading() {
+        // On nightly-15, the feed lists nightly-16 and the API offered nothing: it's building.
+        assert!(building("nightly-14 nightly-15 nightly-16", Channel::Nightly, None, "0.0.0", Some(15)));
+        // Once the API offers nightly-16, it isn't.
+        assert!(!building("nightly-14 nightly-15 nightly-16", Channel::Nightly, Some("nightly-16"), "0.0.0", Some(15)));
+        // A nightly-14 draft whose build failed, with nightly-16 offered, isn't either.
+        assert!(!building("nightly-14 nightly-16", Channel::Nightly, Some("nightly-16"), "0.0.0", Some(13)));
+        // Stable ignores nightly tags, and waits for a newer v* one.
+        assert!(!building("nightly-16 v0.0.0", Channel::Stable, None, "0.0.0", None));
+        assert!(building("nightly-16 v0.0.0 v0.0.1", Channel::Stable, None, "0.0.0", None));
+        // Nothing ahead of this build: nothing building.
+        assert!(!building("nightly-14 nightly-15", Channel::Nightly, None, "0.0.0", Some(15)));
     }
 
     #[test]
