@@ -1254,7 +1254,7 @@ pub fn audit_now(data: &Path, id: &str, draft: Option<commentary::Draft>) -> Res
         let (measures, flags) = commentary::checks(&dir, &script, draft.as_ref())?;
         return Ok(serde_json::json!({ "measures": measures, "flags": flags }));
     }
-    Ok(serde_json::json!({ "measures": null, "flags": Vec::<String>::new() }))
+    Ok(serde_json::json!({ "measures": null, "flags": claude::audit(&script) }))
 }
 
 pub fn teach_with(data: &Path, id: &str, mode: &str, draft: Option<commentary::Draft>, request: &str) -> Result<serde_json::Value, String> {

@@ -486,7 +486,8 @@ fn ask_sdk(model: &str, system: &str, schema: &str, prompt: &str, resume: Option
 }
 
 /// How a cut that passed misses its format's target, if it does: a
-/// compilation outside 6 to 7 Letter pages, a FOIA cut under ten minutes.
+/// compilation outside 6 to 7 Letter pages, a FOIA cut under ten minutes,
+/// or what the team flags in a compilation that a count can find.
 pub(crate) fn off_target(script: &Script, format: &Format, done: &Compiled) -> Option<String> {
     if format.compilation {
         let pages = crate::pages::count(script, &done.clips);
@@ -495,11 +496,140 @@ pub(crate) fn off_target(script: &Script, format: &Format, done: &Compiled) -> O
             let change = if pages > most { "Shorten it: tighter cut-ins and fewer or shorter footage ranges" } else { "Lengthen it: fuller cut-ins and more of the strongest footage" };
             return Some(format!("The script runs {pages} Letter pages; a compilation's runs {least} to {most}. {change}, keeping every case."));
         }
+        let flags = team_flags(script, format, &done.clips);
+        if !flags.is_empty() {
+            return Some(format!("The team would flag this: {}", flags.join(" ")));
+        }
     }
     if format.foia() && done.below_floor {
         return Some("The cut runs under a FOIA video's ten-minute floor even with every pause kept. Keep more of the footage.".into());
     }
     None
+}
+
+/// Longest pause inside a teaser before the team calls it dead space.
+const TEASER_PAUSE_MS: u64 = 1_500;
+/// Longest the opening's clips run before the first cut-in, and a case's intro clips.
+const OPENING_MS: u64 = 45_000;
+const CASE_INTRO_MS: u64 = 40_000;
+
+/// What the team flagged in past compilations that a count can find
+/// (formats.rs TEAM_COMPILATION has the rules in their words), one line
+/// each: dead space in teasers, an opening or a case's intro clips that run
+/// long, a case's footage played out of order, a case opening or transition
+/// that starts mid-thought. Courtroom compilations aren't covered: no notes.
+pub(crate) fn team_flags(script: &Script, format: &Format, clips: &[Clip]) -> Vec<String> {
+    if !format.compilation || format.court_compilation() {
+        return Vec::new();
+    }
+    let purposes = purposes(clips, format, Opening::OneRun);
+    // What each footage clip is: the opening, a case's intro clips, or a case's body.
+    #[derive(PartialEq, Clone, Copy)]
+    enum Role {
+        Opening,
+        CaseIntro,
+        Body,
+    }
+    let mut roles = Vec::with_capacity(clips.len());
+    let mut cue = 0;
+    let mut role = Role::Opening;
+    for clip in clips {
+        if clip.is_cut_in() {
+            role = match purposes.get(cue).copied().unwrap_or("") {
+                "transition" => Role::CaseIntro,
+                // The When opening's hook comes between its intro clips.
+                "hook" if role == Role::Opening => Role::Opening,
+                _ => Role::Body,
+            };
+            cue += 1;
+        }
+        roles.push(role);
+    }
+    let range = |clip: &Clip| format!("({}-{})", clock(clip.start_ms), clock(clip.end_ms));
+    let mut flags = Vec::new();
+    // NO DEAD SPACE IN THE TEASERS: "Dead space like this must be removed".
+    let paused: Vec<String> = clips
+        .iter()
+        .zip(&roles)
+        .filter(|(clip, role)| !clip.is_cut_in() && **role != Role::Body)
+        .filter_map(|(clip, _)| {
+            let inside: Vec<&crate::model::Word> = script.words.iter().filter(|word| word.start_ms >= clip.start_ms && word.end_ms <= clip.end_ms).collect();
+            let longest = inside.windows(2).map(|pair| pair[1].start_ms.saturating_sub(pair[0].end_ms)).max().unwrap_or(0);
+            (longest > TEASER_PAUSE_MS).then(|| format!("{} ({:.1} s)", range(clip), longest as f64 / 1000.0))
+        })
+        .collect();
+    if !paused.is_empty() {
+        flags.push(format!("{} intro clips hold a pause over {:.1} s: {}. The team: \"Dead space like this must be removed.\" Cut each at its pause, or choose a tighter moment.", paused.len(), TEASER_PAUSE_MS as f64 / 1000.0, paused.iter().take(4).cloned().collect::<Vec<_>>().join(", ")));
+    }
+    // THE INTRO IS SHORT AND STRONG: "I need you to redo the first 30 seconds. This is not good enough."
+    let opening: u64 = clips.iter().zip(&roles).take_while(|(clip, _)| !clip.is_cut_in()).map(|(clip, _)| clip.end_ms.saturating_sub(clip.start_ms)).sum();
+    if opening > OPENING_MS {
+        flags.push(format!("The opening's clips run {} before the first cut-in. Keep it under {} s: the few strongest moments, each short.", clock(opening), OPENING_MS / 1000));
+    }
+    let mut long_intros = Vec::new();
+    let mut run: u64 = 0;
+    let mut first: Option<&Clip> = None;
+    for (clip, role) in clips.iter().zip(&roles) {
+        if *role == Role::CaseIntro && !clip.is_cut_in() {
+            first.get_or_insert(clip);
+            run += clip.end_ms.saturating_sub(clip.start_ms);
+        } else if clip.is_cut_in() {
+            if run > CASE_INTRO_MS {
+                long_intros.push(format!("{} from {} on", clock(run), first.map(range).unwrap_or_default()));
+            }
+            run = 0;
+            first = None;
+        }
+    }
+    if !long_intros.is_empty() {
+        flags.push(format!("A case's intro clips run long ({}): two to five clips of 1-8 seconds each, the moments the transition promises.", long_intros.join("; ")));
+    }
+    // EACH CASE'S FOOTAGE PLAYS IN ITS OWN ORDER: "there is some switching up in the footage that shouldn't be there."
+    let mut back = Vec::new();
+    let mut last: Option<&Clip> = None;
+    for (clip, role) in clips.iter().zip(&roles) {
+        if clip.is_cut_in() {
+            if *role != Role::Body {
+                last = None;
+            }
+            continue;
+        }
+        if *role != Role::Body {
+            continue;
+        }
+        if let Some(before) = last {
+            if part_at(&script.parts, before.start_ms) == part_at(&script.parts, clip.start_ms) && clip.start_ms + 2_000 < before.start_ms {
+                back.push(format!("{} after {}", range(clip), range(before)));
+            }
+        }
+        last = Some(clip);
+    }
+    if !back.is_empty() {
+        flags.push(format!("A case's footage goes back to a moment it already passed: {}. The team: \"It seems like there is some switching up in the footage that shouldn't be there.\" Play each case's footage in its own order; only the intro clips come from later.", back.iter().take(3).cloned().collect::<Vec<_>>().join("; ")));
+    }
+    // EVERY CUT-IN STANDS ON ITS OWN: "It seems like we start in the middle of something."
+    const MID: [&str; 12] = ["and", "so", "also", "then", "he", "she", "they", "it", "this", "that", "these", "those"];
+    let mid: Vec<String> = clips
+        .iter()
+        .filter(|clip| clip.is_cut_in())
+        .zip(&purposes)
+        .filter(|(_, purpose)| matches!(**purpose, "transition" | "case-opening"))
+        .filter_map(|(clip, purpose)| {
+            let text = clip.narration.as_deref()?.trim();
+            let first = text.split(|c: char| !c.is_alphanumeric()).next()?.to_lowercase();
+            MID.contains(&first.as_str()).then(|| format!("a {} opening \"{}\"", purpose.replace('-', " "), text.chars().take(50).collect::<String>()))
+        })
+        .collect();
+    if !mid.is_empty() {
+        flags.push(format!("{} starts mid-thought ({}). The team: \"It seems like we start in the middle of something.\" Open it so it stands on its own: who, what, where.", if mid.len() == 1 { "A cut-in".to_string() } else { format!("{} cut-ins", mid.len()) }, mid.join("; ")));
+    }
+    flags
+}
+
+/// What the team would flag on a footage script as it's saved, shown before sharing.
+pub fn audit(script: &Script) -> Vec<String> {
+    let format = Format::new(script.kind, script.compilation, &script.title);
+    team_flags(script, &format, &script.clips)
 }
 
 /// What the clean-up did, as Repack's build report says it.
@@ -1197,6 +1327,49 @@ mod tests {
             script
         })
         .unwrap()
+    }
+
+    #[test]
+    fn flags_what_the_team_flagged_in_compilations() {
+        use crate::model::{Clip, Part};
+        let mut script = script();
+        script.compilation = true;
+        script.title = "Cop Reports Dead Body".into();
+        script.parts = vec![
+            Part { title: "One".into(), start_ms: 0, duration_ms: 50_000, ..Default::default() },
+            Part { title: "Two".into(), start_ms: 50_000, duration_ms: 50_000, ..Default::default() },
+        ];
+        // A teaser with 2.2 s of nothing in it.
+        script.words = vec![(0, 500), (600, 1_000), (3_200, 3_600)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (start_ms, end_ms))| Word { id: format!("w{index}"), text: "word".into(), start_ms, end_ms, speaker: None })
+            .collect();
+        let footage = |start_ms: u64, end_ms: u64| Clip { id: format!("c{start_ms}"), start_ms, end_ms, ..Default::default() };
+        let cut_in = |text: &str| Clip { id: text.into(), start_ms: 0, end_ms: 3_000, kind: Some("cut-in".into()), narration: Some(text.into()), ..Default::default() };
+        let clips = vec![
+            footage(0, 3_600),
+            cut_in("She thought nobody would check."),
+            footage(20_000, 25_000),
+            cut_in("On May 1, 2024, a man called 911."),
+            footage(26_000, 30_000),
+            footage(10_000, 15_000),
+            cut_in("In the end, he was charged."),
+            cut_in("So this one went even further…"),
+            footage(60_000, 64_000),
+            cut_in("On June 2, 2023, deputies arrived."),
+            footage(66_000, 80_000),
+            cut_in("In the end, she was convicted."),
+        ];
+        let format = crate::formats::Format::new(script.kind, true, &script.title);
+        let flags = super::team_flags(&script, &format, &clips);
+        assert_eq!(flags.len(), 3, "{flags:?}");
+        assert!(flags[0].contains("(0:00-0:03) (2.2 s)") && flags[0].contains("Dead space"));
+        assert!(flags[1].contains("(0:10-0:15) after (0:26-0:30)"));
+        assert!(flags[2].contains("a transition opening \"So this one"));
+        // A courtroom compilation has no notes to check against.
+        let court = crate::formats::Format::new(crate::formats::Kind::Courtroom, true, "When Judges");
+        assert!(super::team_flags(&script, &court, &clips).is_empty());
     }
 
     #[test]

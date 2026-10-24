@@ -262,7 +262,7 @@ pub fn shape_length_sequence(format: &Format, cases: usize) -> (String, String, 
         (
             format!("{shape}\n{SHARED}{reuse_first}"),
             COMPILATION_LENGTH.to_string(),
-            format!("{sequence} The compilation guide is given beside the Cut-In framework; where they differ, follow the compilation guide."),
+            format!("{sequence} The compilation guide is given beside the Cut-In framework; where they differ, follow the compilation guide. {TEAM_COMPILATION}"),
         )
     } else if format.foia() {
         (FOIA_SHAPE.to_string(), FOIA_LENGTH.to_string(), FOIA_SEQUENCE.to_string())
@@ -277,6 +277,11 @@ pub fn shape_length_sequence(format: &Format, cases: usize) -> (String, String, 
     };
     (plain(&shape), plain(&length), plain(&sequence))
 }
+
+/// What the team asked of compilations in its reviews (docs/feedback/
+/// 2026-10-24-compilations.md), after Repack's rules: in their words, so the
+/// reason travels. `claude::team_flags` checks what a count can find.
+const TEAM_COMPILATION: &str = r#"The team's notes on past compilations. EVERY CUT-IN STANDS ON ITS OWN: a case opening or a transition never opens mid-thought, on "And", "So", "Also" or a "he", "she" or "it" the viewer hasn't met in that case; the team: "There is a voiceover mistake here. It seems like we start in the middle of something." NO DEAD SPACE IN THE TEASERS: an intro clip holds no pause; cut a clip at the pause or choose a tighter moment ("Dead space like this must be removed"), and show the people in them ("We need to be able to see the occupants"). THE INTRO IS SHORT AND STRONG: the opening's clips before the first cut-in run well under a minute, the strongest moments of the video, and each case's intro clips stay within their 1-8 seconds each ("I need you to redo the first 30 seconds. This is not good enough."). EACH CASE'S FOOTAGE PLAYS IN ITS OWN ORDER: after a case's intro clips, its footage runs forward, never back to a moment it already passed ("It seems like there is some switching up in the footage that shouldn't be there."). THE LAST LINE IS RIGHT: an outro's last sentence is the case's furthest sourced outcome, its name, charge and sentence exactly as the evidence gives them ("There is a mistake in the last line."). ONE STANDARD FOR EVERY CASE: what holds for the first case holds for the third ("ensure that the previous feedback given in the rest of the video is also applied to the third case"). In a hidden compilation, a transition may move on as the team's own do: "In a similar case, …" or "But this is just one of three cases when…"; the next case's intro clips follow it at once ("When we say "in a similar case," we just need to switch over to the next case.")."#;
 
 /// What the finished document looks like, as Repack tells its editor.
 pub fn document(format: &Format) -> &'static str {
