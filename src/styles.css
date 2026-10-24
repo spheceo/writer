@@ -565,9 +565,16 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 
 /* Transcript and research */
 .bin .panel-head { height: 38px; padding: 0 6px 0 12px; }
-.transcript-search { display: flex; align-items: center; gap: 6px; flex-shrink: 0; height: 34px; padding: 0 12px; border-bottom: 1px solid var(--line); color: var(--faint); }
-.transcript-search input { height: 26px; padding: 0; border: 0; background: none; font-size: 12.5px; }
-.transcript-search input:focus { border: 0; }
+.transcript-search { flex-shrink: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.search-field { display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 6px 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--faint); transition: border-color 0.12s; }
+.search-field:focus-within { border-color: var(--line-strong); color: var(--muted); }
+.search-field input { flex: 1; min-width: 0; height: 28px; padding: 0; border: 0; background: none; font-size: 12.5px; }
+.search-field input:focus { border: 0; }
+.search-field .search-count { flex-shrink: 0; color: var(--faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.search-field button { display: inline-grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 5px; background: none; color: var(--muted); }
+.search-field button:hover:not(:disabled) { background: var(--hover); border: 0; color: var(--text); }
+.search-field button[aria-label="Previous"] svg { transform: rotate(180deg); }
+.search-field .search-clear { font-size: 15px; }
 .transcript { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 24px; position: relative; }
 .transcript .empty { padding: 32px 0; }
 .recording {
@@ -592,8 +599,11 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .word { all: unset; cursor: pointer; border-radius: 3px; white-space: pre-wrap; }
 .word.out { color: var(--faint); }
 .word:hover { background: var(--hover); color: var(--text); }
-.word.hit { box-shadow: inset 0 -2px 0 var(--text); }
-.word.on { background: var(--word-live); color: #fff; }
+/* Highlights, found or playing: yellow, rounded. */
+.word.hit { background: #facc1533; color: #fff; border-radius: 4px; box-shadow: 0 0 0 1px #facc1533; }
+.word.hit.current { background: #facc1566; box-shadow: 0 0 0 1px #facc1599; }
+.word.on { background: #facc15; color: #111; border-radius: 4px; box-shadow: 0 0 0 1px #facc15; }
+.who b.hit { padding: 0 4px; margin-left: -4px; border-radius: 4px; background: #facc1533; }
 .word.pick { background: #4f9dff33; color: #fff; border-radius: 0; }
 .selection {
   flex-shrink: 0;

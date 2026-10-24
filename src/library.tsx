@@ -230,6 +230,10 @@ export function Library({
               ref={search}
               value={query}
               placeholder="Search scripts"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               aria-label="Search scripts"
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {

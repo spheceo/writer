@@ -86,7 +86,7 @@ export function LogsDialog({ open, onClose }: { open: boolean; onClose: () => vo
       }
     >
       <div className="logs-tools">
-        <input type="search" placeholder="Search the log" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search the log" />
+        <input type="search" placeholder="Search the log" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search the log" />
         <Select value={area} label="Subsystem" onChange={setArea} options={[{ value: "all", label: "Every subsystem" }, ...areas.map((item) => ({ value: item, label: item }))]} />
         <div className="segmented" role="group" aria-label="Which lines">
           <button type="button" className={problems ? "" : "on"} onClick={() => setProblems(false)}>All</button>

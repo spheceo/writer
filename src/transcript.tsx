@@ -117,19 +117,51 @@ export const Transcript = memo(function Transcript({
     return playhead.subscribe(paint);
   }, [playhead, words]);
 
+  // A search finds words said and who says them: a speaker's name finds
+  // the lines they speak, starting where they first do.
   const needle = query.trim().toLowerCase();
-  const hits = useMemo(() => {
-    if (needle.length < 2) return new Set<number>();
-    const found = new Set<number>();
-    words.forEach((word, index) => (corrections?.[word.id] ?? word.text).toLowerCase().includes(needle) && found.add(index));
-    return found;
-  }, [needle, words, corrections]);
-  const jump = () => {
-    const first = [...hits][0];
-    const node = first !== undefined ? box.current?.querySelector<HTMLElement>(`[data-index="${first}"]`) : null;
+  const { hits, speaking, results } = useMemo(() => {
+    const hits = new Set<number>();
+    const speaking = new Set<number>();
+    const results: number[] = [];
+    if (needle.length < 2) return { hits, speaking, results };
+    let first = 0;
+    groups.forEach((line, at) => {
+      const name = (speakers.get(line.speaker ?? "")?.name ?? "").toLowerCase();
+      if (name.includes(needle)) {
+        speaking.add(at);
+        results.push(first);
+      }
+      line.words.forEach((word, offset) => {
+        if ((corrections?.[word.id] ?? word.text).toLowerCase().includes(needle)) hits.add(first + offset);
+      });
+      first += line.words.length;
+    });
+    // A speaker's name steps through their lines, from where they first speak; anything else, through the words.
+    if (!results.length) results.push(...hits);
+    return { hits, speaking, results };
+  }, [needle, groups, speakers, corrections]);
+  const [current, setCurrent] = useState(0);
+  const played = useRef(false);
+  const show = (at: number, cue: boolean) => {
+    const index = results[at];
+    const node = index !== undefined ? box.current?.querySelector<HTMLElement>(`[data-index="${index}"]`) : null;
     if (!node || !box.current) return;
-    box.current.scrollTo({ top: node.offsetTop - box.current.clientHeight / 3 });
-    player?.cue(words[first].startMs);
+    box.current.scrollTo({ top: node.offsetTop - box.current.clientHeight / 3, behavior: "smooth" });
+    if (cue) player?.cue(words[index].startMs);
+  };
+  // Typing goes to the first result; Enter (and the arrows) step through them, playing from each.
+  useEffect(() => {
+    setCurrent(0);
+    played.current = false;
+    show(0, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needle, results.length]);
+  const step = (by: number) => {
+    if (!results.length) return;
+    const next = (current + by + results.length) % results.length;
+    setCurrent(next);
+    show(next, true);
   };
 
   // Which words the cut plays, in one sweep rather than a search per word.
@@ -149,15 +181,43 @@ export const Transcript = memo(function Transcript({
   return (
     <>
       <div className="transcript-search">
-        <Icon name="search" size={13} />
-        <input
-          value={query}
-          placeholder="Search"
-          aria-label="Search transcript"
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => event.key === "Enter" && jump()}
-        />
-        {needle.length >= 2 && <span className="faint">{hits.size}</span>}
+        <label className="search-field">
+          <Icon name="search" size={13} />
+          <input
+            value={query}
+            placeholder="Search words or speakers"
+            aria-label="Search transcript"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              // The first Enter plays the result in view; each after it moves on.
+              if (event.key === "Enter") {
+                step(event.shiftKey ? -1 : played.current ? 1 : 0);
+                played.current = true;
+              }
+              if (event.key === "Escape") setQuery("");
+            }}
+          />
+          {needle.length >= 2 && (
+            <>
+              <span className="search-count">{results.length ? `${current + 1} of ${results.length}` : "None"}</span>
+              <button type="button" aria-label="Previous" title="Previous (⇧↩)" disabled={!results.length} onClick={() => step(-1)}>
+                <Icon name="chevron" size={12} />
+              </button>
+              <button type="button" aria-label="Next" title="Next (↩)" disabled={!results.length} onClick={() => step(1)}>
+                <Icon name="chevron" size={12} />
+              </button>
+            </>
+          )}
+          {query && (
+            <button type="button" className="search-clear" aria-label="Clear search" onClick={() => setQuery("")}>
+              ×
+            </button>
+          )}
+        </label>
       </div>
       <div className="transcript" ref={box}>
         {groups.length === 0 && <div className="empty">{noSpeech ? "No words were heard in this footage." : "No transcript yet."}</div>}
@@ -175,7 +235,7 @@ export const Transcript = memo(function Transcript({
               )}
               <div className="line">
                 <span className="who">
-                  <b style={{ color: who?.colour }}>{who?.name ?? "Speaker"}</b>
+                  <b className={speaking.has(at) ? "hit" : undefined} style={{ color: who?.colour }}>{who?.name ?? "Speaker"}</b>
                   <button type="button" className="mono" onClick={() => player?.cue(line.startMs)}>
                     {clock(line.startMs)}
                   </button>
@@ -190,7 +250,7 @@ export const Transcript = memo(function Transcript({
                         type="button"
                         key={word.id}
                         data-index={at}
-                        className={["word", picked ? "pick" : "", kept[at] ? "" : "out", hits.has(at) ? "hit" : ""].join(" ")}
+                        className={["word", picked ? "pick" : "", kept[at] ? "" : "out", hits.has(at) ? "hit" : "", results[current] === at && hits.has(at) ? "current" : ""].join(" ")}
                         onClick={(event) => {
                           if (event.shiftKey && anchor !== null) {
                             setFocus(at);
