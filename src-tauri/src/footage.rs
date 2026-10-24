@@ -35,6 +35,9 @@ pub struct Piece {
     pub to_ms: u64,
     /// The file, inside the script's `footage/` folder.
     pub file: String,
+    /// Its index (moov) is at the front, so a browser seeks in it at once.
+    #[serde(default)]
+    pub fast: bool,
 }
 
 /// What the view needs: the pieces there are, and how many are still coming.
@@ -58,6 +61,12 @@ struct Kept {
     /// Stretches that wouldn't download ("<video>@<from>-<to>"), not tried again this run.
     #[serde(default)]
     failed: Vec<String>,
+    /// Files put under the script's review (writer/reviews/<id>/clips/), for its review page.
+    #[serde(default)]
+    uploaded: Vec<String>,
+    /// The manifest as last written, so an earlier version's clips stay listed.
+    #[serde(default)]
+    published: Vec<serde_json::Value>,
 }
 
 fn folder(dir: &Path) -> PathBuf {
@@ -123,7 +132,9 @@ pub fn now(data: &Path, id: &str) -> Result<Footage, String> {
         .filter(|(video, from, to)| !covered(&kept.pieces, video, *from, *to, &dir) && !kept.failed.contains(&format!("{video}@{from}-{to}")))
         .collect();
     let pending = missing.len();
-    if pending > 0 {
+    // A shared script's review still lacking a piece, or its manifest, gets them put up too.
+    let unpublished = script.review.is_some() && (kept.published.is_empty() || kept.pieces.iter().any(|piece| !kept.uploaded.contains(&piece.file)));
+    if pending > 0 || unpublished {
         soon(data.to_path_buf(), id.to_string());
     }
     Ok(Footage { pieces: kept.pieces.into_iter().filter(|piece| folder(&dir).join(&piece.file).is_file()).collect(), dir: folder(&dir).to_string_lossy().into_owned(), pending, failed: kept.failed.len() })
@@ -154,6 +165,13 @@ fn fetch_all(data: &Path, id: &str) -> Result<(), String> {
     let script = store::read(&dir)?;
     let Some(commentary) = script.commentary.as_ref() else { return Ok(()) };
     let Some(draft) = commentary.draft.as_ref() else { return Ok(()) };
+    // A shared script's review page gets what's here first, and a manifest saying what's still coming.
+    let shared = script.review.is_some();
+    if shared {
+        if let Err(error) = publish(data, id) {
+            crate::log::warn("footage", format!("{}: the review's clips couldn't be put up: {error}", crate::log::named(id, &script.title)));
+        }
+    }
     let origins: BTreeMap<String, String> = commentary.sources.iter().map(|source| (source.id.clone(), source.origin.clone())).collect();
     crate::tools::ensure_yt_dlp().ok();
     let began = std::time::Instant::now();
@@ -169,6 +187,14 @@ fn fetch_all(data: &Path, id: &str) -> Result<(), String> {
                 kept.pieces.retain(|other| !(other.video == piece.video && other.from_ms >= piece.from_ms && other.to_ms <= piece.to_ms));
                 kept.pieces.push(piece);
                 got += 1;
+                write(&dir, &kept);
+                // Shared since the run began counts too.
+                if shared || store::read(&dir).is_ok_and(|now| now.review.is_some()) {
+                    if let Err(error) = publish(data, id) {
+                        crate::log::warn("footage", format!("{}: a clip couldn't be put up for the review: {error}", crate::log::named(id, &script.title)));
+                    }
+                }
+                continue;
             }
             Err(error) => {
                 crate::log::warn("footage", format!("{}: {video} {}–{} didn't download: {error}", crate::log::named(id, &script.title), crate::commentary::clock(from), crate::commentary::clock(to)));
@@ -204,8 +230,110 @@ fn fetch(dir: &Path, video: &str, from: u64, to: u64) -> Result<Piece, String> {
     if !target.is_file() {
         return Err("nothing came down".into());
     }
-    Ok(Piece { video: video.to_string(), from_ms: from, to_ms: to, file })
+    let fast = faststart(&target).is_ok();
+    Ok(Piece { video: video.to_string(), from_ms: from, to_ms: to, file, fast })
 }
+
+/// The file's index moved to its front (no re-encode), so a browser can seek in it before it's all down.
+fn faststart(path: &Path) -> Result<(), String> {
+    let tmp = path.with_extension("fast.mp4");
+    proc::run("ffmpeg", &["-v", "error", "-y", "-i", &path.to_string_lossy(), "-c", "copy", "-movflags", "+faststart", &tmp.to_string_lossy()], Duration::from_secs(120))?;
+    fs::rename(&tmp, path).map_err(|error| error.to_string())
+}
+
+/// Where a script's review clips live in the cloud: one folder per script, its manifest beside them.
+fn clips_key(id: &str, file: &str) -> String {
+    format!("writer/reviews/{id}/clips/{file}")
+}
+
+/// Puts a shared commentary's downloaded stretches under its review and
+/// rewrites the manifest the review page reads (feedback.spheceo.com's
+/// contract): one entry per clip the script plays, by its label and printed
+/// range, "ready" with the file that covers it, else "pending" while it
+/// downloads or "failed". Entries an earlier version listed stay, so its
+/// page still finds them. The manifest is written after the files it names.
+pub fn publish(data: &Path, id: &str) -> Result<usize, String> {
+    let dir = store::script_dir(data, id)?;
+    let script = store::read(&dir)?;
+    let Some(commentary) = script.commentary.as_ref() else { return Ok(0) };
+    let Some(draft) = commentary.draft.as_ref() else { return Ok(0) };
+    if script.review.is_none() {
+        return Ok(0);
+    }
+    let origins: BTreeMap<String, String> = commentary.sources.iter().map(|source| (source.id.clone(), source.origin.clone())).collect();
+    let mut kept = read(&dir);
+    let mut sent = 0;
+    // Every piece here goes up once (made seekable first).
+    for index in 0..kept.pieces.len() {
+        let piece = kept.pieces[index].clone();
+        let path = folder(&dir).join(&piece.file);
+        if kept.uploaded.contains(&piece.file) || !path.is_file() {
+            continue;
+        }
+        if !piece.fast && faststart(&path).is_ok() {
+            kept.pieces[index].fast = true;
+        }
+        crate::cloud::put_file(data, id, &clips_key(id, &piece.file), &path)?;
+        kept.uploaded.push(piece.file.clone());
+        sent += 1;
+        write(&dir, &kept);
+        manifest(data, id, draft, &origins, &mut kept)?;
+        write(&dir, &kept);
+    }
+    manifest(data, id, draft, &origins, &mut kept)?;
+    write(&dir, &kept);
+    if sent > 0 {
+        crate::log::info("footage", format!("{}: {sent} clip stretches put up for the review", crate::log::named(id, &script.title)));
+    }
+    Ok(sent)
+}
+
+fn manifest(data: &Path, id: &str, draft: &Draft, origins: &BTreeMap<String, String>, kept: &mut Kept) -> Result<(), String> {
+    let mut entries: Vec<serde_json::Value> = Vec::new();
+    let mut add = |block: &str, cite: &Cite| {
+        let Some(video) = video_of(cite, origins) else { return };
+        let ready = kept.pieces.iter().find(|piece| piece.video == video && piece.from_ms <= cite.start_ms && piece.to_ms >= cite.end_ms.min(piece.from_ms + MAX_MS) && kept.uploaded.contains(&piece.file));
+        let failed = kept.failed.iter().filter_map(|tag| {
+            let (failed_video, range) = tag.split_once('@')?;
+            let (a, b) = range.split_once('-')?;
+            Some((failed_video.to_string(), a.parse::<u64>().ok()?, b.parse::<u64>().ok()?))
+        }).any(|(failed_video, from, to)| failed_video == video && from <= cite.start_ms && to >= cite.end_ms.min(from + MAX_MS));
+        let mut entry = serde_json::json!({ "blockId": block, "label": cite.video.trim(), "startMs": cite.start_ms, "endMs": cite.end_ms });
+        match ready {
+            Some(piece) => {
+                entry["status"] = "ready".into();
+                entry["file"] = piece.file.clone().into();
+                entry["fromMs"] = piece.from_ms.into();
+                entry["toMs"] = piece.to_ms.into();
+            }
+            None => entry["status"] = (if failed { "failed" } else { "pending" }).into(),
+        }
+        entries.push(entry);
+    };
+    for cite in &draft.open {
+        add("open", cite);
+    }
+    for paragraph in draft.sections.iter().flat_map(|section| &section.paragraphs) {
+        for piece in &paragraph.pieces {
+            if let crate::commentary::Piece::Clip(cite) = piece {
+                add(&paragraph.id, cite);
+            }
+        }
+    }
+    // An earlier version's ready clips stay listed, unless this draft lists the same clip.
+    let same = |a: &serde_json::Value, b: &serde_json::Value| a["label"].as_str().map(str::to_lowercase) == b["label"].as_str().map(str::to_lowercase) && a["startMs"] == b["startMs"] && a["endMs"] == b["endMs"];
+    for old in &kept.published {
+        if old["status"] == "ready" && !entries.iter().any(|entry| same(entry, old)) && old["file"].as_str().is_some_and(|file| kept.uploaded.iter().any(|up| up == file)) {
+            entries.push(old.clone());
+        }
+    }
+    let body = serde_json::json!({ "updatedAt": crate::model::now_ms(), "clips": entries });
+    crate::cloud::put_bytes(data, &clips_key(id, "manifest.json"), &serde_json::to_vec(&body).map_err(|error| error.to_string())?, "application/json")?;
+    kept.published = body["clips"].as_array().cloned().unwrap_or_default();
+    Ok(())
+}
+
+
 
 /// A file of the script's footage, by its name only (for the dev page).
 pub fn file(dir: &Path, name: &str) -> Option<PathBuf> {

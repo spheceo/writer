@@ -353,6 +353,10 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     });
     store::write(&dir, &script)?;
     remember_link(data, &published.review_id, id);
+    // A commentary's review page plays its clips from stretches put up beside it (footage.rs).
+    if script.commentary.is_some() {
+        crate::footage::soon(data.to_path_buf(), id.to_string());
+    }
     // A version shared after an approval is the next round, unapproved.
     change(data, |known| {
         known.approved.remove(id);
