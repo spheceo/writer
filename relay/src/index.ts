@@ -130,7 +130,7 @@ export default {
     if (["/v1/drive/token", "/v1/proxy", "/v1/docs/export", "/v1/docs/exports", "/v1/docs/comments"].includes(url.pathname)) {
       if (!(await env.ROUTE_BURST.limit({ key: limitKey(caller) })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
     }
-    if (url.pathname === "/v1/trello/cards" && !(await env.TRELLO_BURST.limit({ key: limitKey(caller) })).success) {
+    if ((url.pathname === "/v1/trello/cards" || url.pathname === "/v1/trello/card") && !(await env.TRELLO_BURST.limit({ key: limitKey(caller) })).success) {
       return json(429, { error: "Too many Trello requests at once; try again in a minute." });
     }
     if (url.pathname === "/v1/drive/token") {
@@ -140,6 +140,10 @@ export default {
     if (url.pathname === "/v1/proxy") {
       if (request.method !== "GET") return json(405, { error: "GET the proxy." });
       return json(200, { proxyUrl: env.PROXY_URL || null });
+    }
+    if (url.pathname === "/v1/trello/card") {
+      if (request.method !== "GET") return json(405, { error: "GET a card." });
+      return trelloCard(url.searchParams.get("card") ?? "", env);
     }
     if (url.pathname === "/v1/trello/cards") {
       if (request.method !== "GET") return json(405, { error: "GET a list's cards." });
@@ -564,6 +568,49 @@ const TRELLO_LISTS: Record<string, { id: string; name: string }> = {
   // Interrogation board: a compilation a card, its cases' links in the description.
   comp: { id: "6abfd240d4c0d819f06458e9", name: "Interrogation · Ready for script (comp)" },
 };
+
+/**
+ * One card by its link's id (trello.com/c/<id>), from any board Repack's
+ * Trello token can read, with everything a script's links can be in: its
+ * description, attachments, checklist items and comments. Read only.
+ */
+async function trelloCard(card: string, env: Env): Promise<Response> {
+  if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) return json(503, { error: "Trello is not configured on the relay yet." });
+  if (!/^[A-Za-z0-9]{6,32}$/.test(card)) return json(400, { error: "That isn't a Trello card link." });
+  const query = new URLSearchParams({
+    fields: "name,desc,url,dateLastActivity,labels,idBoard",
+    attachments: "true",
+    attachment_fields: "name,url",
+    checklists: "all",
+    checklist_fields: "name",
+    actions: "commentCard",
+    actions_limit: "100",
+    key: env.TRELLO_API_KEY,
+    token: env.TRELLO_TOKEN,
+  });
+  const answer = await fetch(`https://api.trello.com/1/cards/${card}?${query}`, { signal: AbortSignal.timeout(20_000) }).catch(() => null);
+  if (!answer) return json(502, { error: "Trello did not answer." });
+  if (answer.status === 404 || answer.status === 401) return json(404, { error: "That card isn't on a board Writer can read (Repack's Trello)." });
+  if (!answer.ok) return json(502, { error: `Trello answered ${answer.status}.` });
+  type Found = {
+    id: string; name: string; desc?: string; url: string; dateLastActivity?: string;
+    labels?: { name?: string }[]; attachments?: { url?: string }[];
+    checklists?: { checkItems?: { name?: string }[] }[];
+    actions?: { data?: { text?: string } }[];
+  };
+  const found = (await answer.json()) as Found;
+  return json(200, {
+    id: found.id,
+    name: found.name,
+    desc: found.desc ?? "",
+    url: found.url,
+    activity: found.dateLastActivity ?? null,
+    labels: (found.labels ?? []).map((label) => label.name ?? "").filter(Boolean),
+    attachments: (found.attachments ?? []).map((item) => item.url ?? "").filter((link) => link.startsWith("http")),
+    checklists: (found.checklists ?? []).flatMap((list) => (list.checkItems ?? []).map((item) => item.name ?? "")).filter(Boolean),
+    comments: (found.actions ?? []).map((action) => action.data?.text ?? "").filter(Boolean),
+  });
+}
 
 async function trelloCards(list: string, env: Env): Promise<Response> {
   if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) return json(503, { error: "Trello is not configured on the relay yet." });
