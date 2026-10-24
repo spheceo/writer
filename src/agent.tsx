@@ -53,13 +53,12 @@ export function Asked({ text }: { text: string }) {
 }
 
 /** What Claude said, a paragraph at a time. */
-export function Said({ text, costUsd, failed }: { text: string; costUsd?: number; failed?: boolean }) {
+export function Said({ text, failed }: { text: string; costUsd?: number; failed?: boolean }) {
   return (
     <div className={failed ? "turn failed" : "turn"}>
       {text.split(/\n{2,}/).map((part, index) => (
         <p key={index}>{part}</p>
       ))}
-      {!!costUsd && costUsd > 0 && <small className="faint">About ${costUsd.toFixed(2)} at API prices, covered by your Claude plan.</small>}
     </div>
   );
 }

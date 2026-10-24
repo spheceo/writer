@@ -125,11 +125,28 @@ pub fn require_script(script: &Script) -> Result<(), String> {
     if sees(&grants(), script) { Ok(()) } else { Err(NOT_AVAILABLE.into()) }
 }
 
+/// The kind of work each script is, by its script.json's modified time:
+/// a player asks for a preview's bytes many times a second, and a long
+/// compilation's script.json takes a third of a second to read.
+static WORK: std::sync::Mutex<Option<std::collections::HashMap<String, (std::time::SystemTime, &'static str)>>> = std::sync::Mutex::new(None);
+
 /// The same, for a script by its folder.
 pub fn require_id(data: &std::path::Path, id: &str) -> Result<(), String> {
     let dir = crate::store::script_dir(data, id)?;
+    let changed = std::fs::metadata(dir.join("script.json")).and_then(|meta| meta.modified()).ok();
+    let known = WORK.lock().ok().and_then(|work| work.as_ref().and_then(|work| work.get(id).copied()));
+    if let (Some(changed), Some((at, work))) = (changed, known) {
+        if at == changed {
+            return if grants().may_write(work) { Ok(()) } else { Err(NOT_AVAILABLE.into()) };
+        }
+    }
     match crate::store::read(&dir) {
-        Ok(script) => require_script(&script),
+        Ok(script) => {
+            if let (Some(changed), Ok(mut work)) = (changed, WORK.lock()) {
+                work.get_or_insert_with(Default::default).insert(id.to_string(), (changed, script_work(&script)));
+            }
+            require_script(&script)
+        }
         // Missing or unreadable: let the caller say so in its own words.
         Err(_) => Ok(()),
     }

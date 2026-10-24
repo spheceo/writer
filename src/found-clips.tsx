@@ -43,7 +43,6 @@ export function FoundClips({
         {finds ? (
           <p className="faint">
             {finds.clips.length} clips for {covered.size} of {finds.needs.length} moments · {read} videos read · {finds.searches} searches
-            {finds.costUsd > 0 ? ` · $${finds.costUsd.toFixed(2)}` : ""}
           </p>
         ) : (
           <p className="faint">Search YouTube for the clips the brief asks for.</p>

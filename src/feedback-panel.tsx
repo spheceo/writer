@@ -82,7 +82,7 @@ function RoundView({ round, key_, items, open, busy, onToggle, onFinish }: {
           {count("fixed")} fixed{count("partly") ? `, ${count("partly")} partly` : ""}
           {count("missed") ? `, ${count("missed")} missed` : ""}
           {count("wrong") ? `, ${count("wrong")} wrong` : ""}
-          {hurt ? ` · ${hurt} hurt` : ""} · ${round.costUsd.toFixed(2)}
+          {hurt ? ` · ${hurt} hurt` : ""}
         </span>
         <Icon name="chevron" size={12} />
       </button>
@@ -339,7 +339,6 @@ export function FeedbackPanel({
           <div className="found-head">
             <p className="faint">
               <a href={feedback.docUrl} target="_blank" rel="noreferrer">{feedback.docUrl.includes("docs.google.com") ? "The Doc" : "The review"}</a> · {used} of {feedback.items.length} notes used
-              {feedback.costUsd > 0 ? ` · $${feedback.costUsd.toFixed(2)}` : ""}
             </p>
             <button type="button" className="tool" disabled={busy || pulling || !shared} title="Starts over from the review's notes as they are now" onClick={() => void pull()}>
               {pulling ? "Reading…" : newer ? `Read again (${newer} new)` : "Read again"}
