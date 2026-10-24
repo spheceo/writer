@@ -3,6 +3,7 @@ import { Asked, ChatLog, Composer, Said, Working } from "./agent";
 import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, message, previewSrc, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
+import { UpdateButton } from "./update";
 import { useGrants } from "./can";
 import { DocsDialog } from "./docs-dialog";
 import { VersionsDialog } from "./versions-dialog";
@@ -567,6 +568,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
+          <UpdateButton />
           {working && (
             <span className="agent-working">
               <span className="dot live" />

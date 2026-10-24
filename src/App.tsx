@@ -195,8 +195,6 @@ export function App() {
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
-      {/* The list has Update in its header; other screens show it at the bottom right. */}
-      {route.name !== "library" && <UpdatePill />}
     </>
   );
 }

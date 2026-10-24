@@ -16,6 +16,7 @@ import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
+import { UpdateButton } from "./update";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon, Menu, Select, Tabs } from "./ui";
 
@@ -481,6 +482,7 @@ export function CommentaryEditor({
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
+          <UpdateButton />
           {working && (
             <span className="agent-working">
               <span className="dot live" />

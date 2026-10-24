@@ -27,7 +27,8 @@ export function SyncDock({ onOpen }: { onOpen: (script: string) => void }) {
 
   useEffect(() => {
     let live = true;
-    const ask = () => void getActivity().then((found) => live && setWork(found), () => {});
+    // An update shows on its own button at the top (update.tsx).
+    const ask = () => void getActivity().then((found) => live && setWork(found.filter((item) => item.key !== "update")), () => {});
     ask();
     const timer = window.setInterval(ask, 1500);
     return () => {
