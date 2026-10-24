@@ -632,26 +632,6 @@ fn build_preview_from(app: &AppHandle, dir: &Path, script: &mut Script, source: 
     })
 }
 
-/// Downloads in the last hour before the proxy takes over. One or two videos
-/// on this Mac's own address cost nothing; a run of them is what gets an
-/// address flagged.
-const BUSY_DOWNLOADS: usize = 4;
-
-/// Notes a YouTube download and says whether this hour is a busy one.
-fn busy_on_youtube(data: &Path) -> bool {
-    let path = data.join("youtube-downloads.json");
-    let now = now_ms();
-    let mut recent: Vec<i64> = fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    recent.retain(|at| now - at < 3_600_000);
-    let busy = recent.len() >= BUSY_DOWNLOADS;
-    recent.push(now);
-    let _ = fs::write(&path, serde_json::to_vec(&recent).unwrap_or_default());
-    busy
-}
-
 /// YouTube, resuming a download already under way. It goes out on this Mac's
 /// own address unless this is a busy hour; a bot check or a dropped
 /// connection with nothing pulled yet gets one more try, through the relay's
@@ -719,44 +699,62 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
         }
     }
     ensure_yt_dlp()?;
-    let relay_proxy = || if pace == Pace::Backfill { None } else { crate::net::Relay::new(settings).and_then(|relay| relay.proxy()).ok().flatten() };
-    let mut proxy = if pace == Pace::Import && busy_on_youtube(data) { relay_proxy() } else { None };
+    // The order, as the producer wants it: the relay's proxy first (and once
+    // more on a fresh exit), then their YouTube sign-in from its file, then
+    // this Mac's own address. The backfill uses this Mac's address only.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Way {
+        Proxy,
+        Cookies,
+        Own,
+    }
+    let proxy = if pace == Pace::Backfill { None } else { crate::net::Relay::new(settings).and_then(|relay| relay.proxy()).ok().flatten() };
+    let jar = youtube::cookies_file(data);
+    let mut ways: Vec<Way> = Vec::new();
+    if proxy.is_some() {
+        ways.extend([Way::Proxy, Way::Proxy]);
+    }
+    if pace == Pace::Import && jar.is_file() {
+        ways.push(Way::Cookies);
+    }
+    ways.push(Way::Own);
     let folder = dest.parent().unwrap_or(data);
     on(0, None);
-    let mut tried_again = false;
-    loop {
-        let file = proxy_file(folder, proxy.as_deref())?;
-        let guard = file.as_ref().map(|path| DeleteFile(path.as_path()));
-        let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), &|percent| on(percent, None));
-        drop(guard);
-        let error = match result {
-            Ok(()) => break,
-            Err(error) => error,
-        };
-        let proxied = proxy.is_some();
-        match youtube::trouble(&error) {
-            Trouble::Blocked | Trouble::Connection if !tried_again && pulled(dest) == 0 => {
-                tried_again = true;
-                // Blocked on this Mac's address: the proxy, when there is one.
-                // Already on the proxy: a fresh exit, made by proxy_file. A
-                // dropped connection is usually this Mac's: tried again as it was.
-                if !proxied && matches!(youtube::trouble(&error), Trouble::Blocked) {
-                    proxy = relay_proxy();
-                }
-                if proxy.is_none() {
-                    std::thread::sleep(Duration::from_secs(10));
-                }
-                on(0, Some("Trying YouTube again."));
-            }
-            Trouble::Blocked if proxied => {
-                return Err("YouTube kept blocking the download, through the proxy too. Retry in a few minutes.".into())
-            }
-            Trouble::Blocked => {
-                return Err("YouTube asked this Mac to prove it isn't a bot, and there's no proxy to try instead. Retry later.".into())
-            }
-            Trouble::Connection => return Err("The connection to YouTube kept dropping. Retry: what downloaded is kept.".into()),
-            Trouble::Final(reason) => return Err(reason),
+    let mut last = String::new();
+    let mut done = false;
+    for (attempt, way) in ways.iter().copied().enumerate() {
+        if attempt > 0 {
+            on(0, Some(match way {
+                Way::Proxy => "Trying YouTube again through the proxy.",
+                Way::Cookies => "Trying YouTube with your sign-in.",
+                Way::Own => "Trying YouTube from this Mac.",
+            }));
         }
+        let file = if way == Way::Proxy { proxy_file(folder, proxy.as_deref())? } else { None };
+        let guard = file.as_ref().map(|path| DeleteFile(path.as_path()));
+        let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), (way == Way::Cookies).then_some(jar.as_path()), &|percent| on(percent, None));
+        drop(guard);
+        match result {
+            Ok(()) => {
+                crate::log::info("import", format!("YouTube {url}: downloaded on try {} ({})", attempt + 1, match way { Way::Proxy => "through the proxy", Way::Cookies => "with the saved sign-in", Way::Own => "from this Mac" }));
+                done = true;
+                break;
+            }
+            Err(error) => {
+                if let Trouble::Final(reason) = youtube::trouble(&error) {
+                    return Err(reason);
+                }
+                crate::log::warn("import", format!("YouTube {url}: try {} ({}) failed: {}", attempt + 1, match way { Way::Proxy => "proxy", Way::Cookies => "sign-in cookies", Way::Own => "this Mac" }, error.lines().last().unwrap_or("").chars().take(160).collect::<String>()));
+                last = error;
+            }
+        }
+    }
+    if !done {
+        return Err(match youtube::trouble(&last) {
+            Trouble::Blocked => "YouTube kept blocking the download, through the proxy too. Retry in a few minutes.".into(),
+            Trouble::Connection => "The connection to YouTube kept dropping. Retry: what downloaded is kept.".into(),
+            Trouble::Final(reason) => reason,
+        });
     }
     if !readable(dest) {
         let _ = fs::remove_file(dest);

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type About, clearStorage, doctor, getAbout, getSettings, setEngine, setUpdateChannel, storageReport, updateStatus, type UpdateStatus } from "./api";
+import { type About, clearStorage, doctor, getAbout, getSettings, message, saveYoutubeSignIn, setEngine, setUpdateChannel, storageReport, updateStatus, type UpdateStatus, youtubeSignIn } from "./api";
 import type { Check, StorageReport } from "./types";
 import { Dialog } from "./ui";
 import { AccountRow } from "./account";
@@ -17,6 +17,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [about, setAbout] = useState<About | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   const [engine, setEngineShown] = useState<"cli" | "sdk" | null>(null);
+  // The YouTube sign-in downloads fall back on when the proxy fails.
+  const [signIn, setSignIn] = useState<{ saved: boolean; savedAt: number | null } | null>(null);
+  const [signingIn, setSigningIn] = useState<string | null>(null);
   const [storage, setStorage] = useState<StorageReport | null>(null);
   const [clearing, setClearing] = useState(false);
   const [clearNote, setClearNote] = useState<string | null>(null);
@@ -36,6 +39,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     void getAbout().then(setAbout, () => {});
     void updateStatus().then(setUpdate, () => {});
     void getSettings().then((settings) => setEngineShown(settings.engine ?? "cli"), () => {});
+    void youtubeSignIn().then(setSignIn, () => {});
     setClearNote(null);
     void storageReport().then(setStorage, () => setStorage(null));
   }, [open]);
@@ -83,6 +87,31 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             <option value="cli">One answer (claude -p)</option>
             <option value="sdk">Agent SDK, building in steps (test)</option>
           </select>
+        </div>
+      )}
+      {signIn && (
+        <div className="update-channel">
+          <b>YouTube</b>
+          <span className="faint">
+            {signingIn ?? (signIn.saved ? `Downloads go through the proxy, then your saved YouTube sign-in (${new Date(signIn.savedAt ?? 0).toLocaleDateString()}).` : "Downloads go through the proxy. Save your YouTube sign-in for when it fails.")}
+          </span>
+          <button
+            type="button"
+            className="ghost sm"
+            disabled={signingIn === "Saving…"}
+            title="Copies your YouTube sign-in from your browser into a file Writer reads quietly. With Chrome, macOS asks for your password this one time."
+            onClick={() => {
+              setSigningIn("Saving…");
+              void saveYoutubeSignIn()
+                .then((browser) => {
+                  setSigningIn(`Saved from ${browser}.`);
+                  return youtubeSignIn().then(setSignIn);
+                })
+                .catch((cause) => setSigningIn(message(cause)));
+            }}
+          >
+            {signIn.saved ? "Save again" : "Save sign-in"}
+          </button>
         </div>
       )}
       {storage && (

@@ -159,6 +159,7 @@ pub fn download(
     url: &str,
     dest: &Path,
     proxy_file: Option<&Path>,
+    cookies: Option<&Path>,
     on_percent: &dyn Fn(u8),
 ) -> Result<(), String> {
     let dest_text = dest.to_string_lossy().to_string();
@@ -186,6 +187,13 @@ pub fn download(
     let config = proxy_file.map(|path| path.to_string_lossy().into_owned());
     if let Some(path) = config.as_deref() {
         args.push("--config-locations");
+        args.push(path);
+    }
+    // The person's YouTube sign-in as a cookies file (youtube::sign_in made it):
+    // read from disk, never from the browser, so nothing asks for the Keychain.
+    let jar = cookies.map(|path| path.to_string_lossy().into_owned());
+    if let Some(path) = jar.as_deref() {
+        args.push("--cookies");
         args.push(path);
     }
     args.push(url);
@@ -317,4 +325,43 @@ mod tests {
         let other = "http://user:secret@proxy.example:823";
         assert_eq!(sticky_proxy(other), other);
     }
+}
+
+/// Where the person's YouTube sign-in is kept, as a cookies file yt-dlp reads
+/// with `--cookies`: made once by `sign_in`, then read silently by downloads.
+pub fn cookies_file(data: &Path) -> std::path::PathBuf {
+    data.join("youtube-cookies.txt")
+}
+
+/// The person's YouTube sign-in, copied once from their browser into
+/// `cookies_file`, when they ask (Setup). Firefox's cookies are read without
+/// any prompt; Chrome, Brave and Edge keep theirs encrypted with a Keychain
+/// key, so macOS asks once, now, and never again: downloads only ever read
+/// the file. Answers which browser it came from.
+pub fn sign_in(data: &Path) -> Result<String, String> {
+    let file = cookies_file(data);
+    let tmp = file.with_extension("txt.new");
+    let mut tried = Vec::new();
+    for browser in ["firefox", "chrome", "brave", "edge"] {
+        let _ = std::fs::remove_file(&tmp);
+        let tmp_text = tmp.to_string_lossy().into_owned();
+        let ran = proc::run(
+            "yt-dlp",
+            &["-q", "--no-warnings", "--skip-download", "--no-playlist", "--cookies-from-browser", browser, "--cookies", &tmp_text, "https://www.youtube.com/watch?v=jNQXAC9IVRw"],
+            Duration::from_secs(120),
+        );
+        let signed_in = std::fs::read_to_string(&tmp).is_ok_and(|text| text.contains(".youtube.com") && (text.contains("SAPISID") || text.contains("LOGIN_INFO") || text.contains("__Secure-3PSID")));
+        if signed_in {
+            std::fs::rename(&tmp, &file).map_err(|error| error.to_string())?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
+            }
+            return Ok(browser.to_string());
+        }
+        tried.push(format!("{browser}: {}", ran.err().map(|error| error.lines().last().unwrap_or("").chars().take(120).collect::<String>()).unwrap_or_else(|| "not signed in to YouTube".into())));
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Err(format!("No browser on this Mac is signed in to YouTube ({}).", tried.join("; ")))
 }
