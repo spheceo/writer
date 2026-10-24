@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from "react";
-import { addReviewNote, forgetLesson, getLessons, keepLesson, message, pullFeedback, setFeedbackItem, setLesson } from "./api";
+import { forgetLesson, getLessons, keepLesson, message, pullFeedback, setFeedbackItem, setLesson } from "./api";
 import type { Feedback, FeedbackItem, Grade, LearnStep, Lesson, LessonRound, ReviewNote, ScriptChange } from "./types";
 import { Icon } from "./ui";
 
@@ -158,50 +158,6 @@ function RoundView({ round, key_, items, open, busy, onToggle, onFinish }: {
  * Claude draws from them, and rounds that test whether a fresh Claude, given
  * only the lesson, finds and fixes the same problems.
  */
-/** Leaves a note on the review page from here, as a reviewer would. */
-function AddNote({ id, shared, busy, onAdded, onError }: { id: string; shared: boolean; busy: boolean; onAdded: () => void; onError: (error: string) => void }) {
-  const [text, setText] = useState("");
-  const [adding, setAdding] = useState(false);
-  const add = async () => {
-    setAdding(true);
-    try {
-      await addReviewNote(id, text);
-      setText("");
-      onAdded();
-    } catch (cause) {
-      onError(message(cause));
-    } finally {
-      setAdding(false);
-    }
-  };
-  return (
-    <form
-      className="fb-add"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (text.trim()) void add();
-      }}
-    >
-      <textarea
-        value={text}
-        rows={2}
-        disabled={!shared || adding}
-        placeholder={shared ? "Leave a note of your own: what's wrong, and where…" : "Share the script for review to leave notes."}
-        onChange={(event) => setText(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim()) {
-            event.preventDefault();
-            void add();
-          }
-        }}
-      />
-      <button type="submit" className="secondary sm" disabled={!shared || adding || busy || !text.trim()}>
-        {adding ? "Adding…" : "Add note"}
-      </button>
-    </form>
-  );
-}
-
 export function FeedbackPanel({
   status,
   id,
@@ -211,7 +167,6 @@ export function FeedbackPanel({
   busy,
   canPull,
   onFeedback,
-  onNotes,
   onStep,
   onError,
 }: {
@@ -226,8 +181,6 @@ export function FeedbackPanel({
   busy: boolean;
   canPull: boolean;
   onFeedback: (feedback: Feedback) => void;
-  /** Asks for the review's notes again. */
-  onNotes: () => void;
   onStep: (step: LearnStep) => void;
   onError: (error: string) => void;
 }) {
@@ -293,7 +246,6 @@ export function FeedbackPanel({
   const used = feedback?.items.filter((found) => !found.skip).length ?? 0;
   const edited = !!feedback && lesson.trim() !== feedback.lesson.trim();
   const keptThis = !!feedback && kept.some((found) => found.script === id && found.pulledAt === feedback.pulledAt);
-  const addNote = <AddNote id={id} shared={shared} busy={busy} onAdded={onNotes} onError={onError} />;
   // Notes left since the feedback was read: reading again brings them in.
   const newer = feedback ? top.filter((note) => (note.createdAt ?? 0) > feedback.pulledAt).length : 0;
 
@@ -302,10 +254,10 @@ export function FeedbackPanel({
       {status && <div className="fb-status">{status}</div>}
       {!feedback ? (
         <div className="empty">
+          <h3 className="fb-teach-title">Teach Writer from these comments</h3>
           <p>
-            The feedback is the notes on the script's review page: what reviewers left there, and notes you leave here. Opus makes an
-            answer key by applying them, then writes a lesson from them in general terms. In each round a fresh Opus gets only the script
-            and the lesson, finds the problems itself and fixes them, and is graded against the notes.
+            Opus makes an answer key by applying the comments above, then writes a lesson from them in general terms. In each round a fresh
+            Opus gets only the script and the lesson, finds the problems itself and fixes them, and is graded against the comments.
           </p>
           <p className="hint">Run rounds until the match is high, then keep the lesson so every later script reads it. Each round takes about 15 minutes.</p>
           {!canPull ? (
@@ -314,22 +266,8 @@ export function FeedbackPanel({
             <p className="hint">Share the script for review (Share, at the top): its notes are the feedback.</p>
           ) : (
             <>
-              {top.length > 0 && (
-                <ul className="fb-notes">
-                  {top.map((note) => (
-                    <li key={note.id}>
-                      {note.anchor?.quote && <blockquote>{note.anchor.quote}</blockquote>}
-                      <p>
-                        <strong>{note.fromApp ? "Writer" : note.author}: </strong>
-                        {note.text}
-                      </p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {addNote}
               <button type="button" className="sm" disabled={pulling || busy || top.length === 0} onClick={() => void pull()}>
-                {pulling ? "Reading…" : top.length ? `Teach from ${top.length} ${top.length === 1 ? "note" : "notes"}` : "No notes yet"}
+                {pulling ? "Reading…" : top.length ? `Teach from ${top.length} ${top.length === 1 ? "comment" : "comments"}` : "No comments yet"}
               </button>
             </>
           )}
@@ -344,7 +282,7 @@ export function FeedbackPanel({
               {pulling ? "Reading…" : newer ? `Read again (${newer} new)` : "Read again"}
             </button>
           </div>
-          {shared && addNote}
+
           {feedback.problems.length > 0 && (
             <ul className="fb-problems faint">
               {feedback.problems.map((problem, index) => (

@@ -297,23 +297,115 @@ pub fn refresh(data: &Path) -> Result<bool, String> {
     poll(data)
 }
 
-/// A note left from Writer on the script's review (feedback.spheceo.com): on
-/// its latest version, about the whole script. It shows on the page as
-/// Writer's, and is feedback like any reviewer's.
-pub fn add_note(data: &Path, id: &str, text: &str) -> Result<(), String> {
+/// What a note from Writer says beyond its text: the words it's on (a
+/// `{kind: "text", blockId, start, end, quote}` anchor in the shared
+/// version's block text, as the review page anchors one), its intent, and a
+/// suggestion's replacement words.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteDetails {
+    #[serde(default)]
+    pub anchor: Option<Value>,
+    #[serde(default)]
+    pub intent: Option<String>,
+    #[serde(default)]
+    pub replacement: Option<String>,
+}
+
+/// A note left from Writer on the script's review (feedback.spheceo.com), on
+/// its latest version: the same note a reviewer leaves there, on the words
+/// it names or the whole script, shown on the page as Writer's and fixed on
+/// Ready for changes like any other.
+pub fn add_note(data: &Path, id: &str, text: &str, details: &NoteDetails) -> Result<(), String> {
     let text = text.trim();
-    if text.is_empty() {
+    let suggestion = details.intent.as_deref() == Some("suggestion");
+    if text.is_empty() && !suggestion {
         return Err("Write the note first.".into());
     }
     let script = store::read(&store::script_dir(data, id)?)?;
-    let link = script.review.ok_or("Share the script for review first: notes live on its review page.")?;
-    cloud::call(data, "mutation", "reviews:note", json!({ "reviewId": link.review_id, "version": link.version, "text": text }))?;
+    let link = script.review.clone().ok_or("Share the script for review first: notes live on its review page.")?;
+    let mut args = json!({ "reviewId": link.review_id, "version": link.version, "text": text });
+    if let Some(anchor) = &details.anchor {
+        let dir = store::script_dir(data, id)?;
+        shared_text_from_cloud(data, &dir, id, &link);
+        args["anchor"] = shared_anchor(&dir, &link, script.revision, anchor)?;
+    }
+    if let Some(intent) = details.intent.as_deref().filter(|intent| !intent.is_empty()) {
+        args["intent"] = json!(intent);
+    }
+    if let Some(replacement) = &details.replacement {
+        args["replacement"] = json!(replacement);
+    }
+    cloud::call(data, "mutation", "reviews:note", args)?;
     let _ = poll(data);
     Ok(())
 }
 
+/// The text each block was last shared with (share_next), beside the script.
+const SHARED_TEXT: &str = "review-text.json";
+
+/// The shared text for a version shared before Writer kept it: read from the
+/// snapshot each share puts up (`writer/reviews/<id>/v<n>/script.json`).
+fn shared_text_from_cloud(data: &Path, dir: &Path, id: &str, link: &Link) {
+    let kept: Value = std::fs::read(dir.join(SHARED_TEXT)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+    if kept["version"].as_u64() == Some(u64::from(link.version)) {
+        return;
+    }
+    let Ok(Some(bytes)) = cloud::get_bytes(data, &format!("writer/reviews/{id}/v{}/script.json", link.version)) else { return };
+    let Ok(snapshot) = serde_json::from_slice::<crate::model::Script>(&bytes) else { return };
+    let texts: BTreeMap<String, String> = blocks::of(&snapshot).into_iter().map(|block| (block.id, block.text)).collect();
+    let _ = std::fs::write(dir.join(SHARED_TEXT), serde_json::to_vec(&json!({ "version": link.version, "blocks": texts })).unwrap_or_default());
+}
+
+/// A comment's words named in the shared version's text, as the review page
+/// anchors them: where Writer picked them when that text still reads so,
+/// else where the same words are found once in the block as shared. Words
+/// written since the share aren't on the review page yet.
+fn shared_anchor(dir: &Path, link: &Link, revision: u32, anchor: &Value) -> Result<Value, String> {
+    let block = anchor["blockId"].as_str().unwrap_or_default();
+    let quote = anchor["quote"].as_str().unwrap_or_default();
+    let (start, end) = (anchor["start"].as_u64().unwrap_or(0) as usize, anchor["end"].as_u64().unwrap_or(0) as usize);
+    let shared: Value = std::fs::read(dir.join(SHARED_TEXT)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or(Value::Null);
+    let Some(text) = shared["blocks"][block].as_str().filter(|_| shared["version"].as_u64() == Some(u64::from(link.version))) else {
+        // Shared before Writer kept the text: only the script as it was shared can be named.
+        return if revision == link.revision { Ok(anchor.clone()) } else { Err(format!("Share again to comment on these words: v{} on the review page is from before the script's latest edits.", link.version)) };
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let wanted: Vec<u16> = quote.encode_utf16().collect();
+    let at = |from: usize| units.get(from..from + wanted.len()) == Some(&wanted[..]);
+    let found = if end == start + wanted.len() && at(start) {
+        Some(start)
+    } else {
+        let hits: Vec<usize> = (0..=units.len().saturating_sub(wanted.len())).filter(|from| at(*from)).collect();
+        (hits.len() == 1).then(|| hits[0])
+    };
+    match found {
+        Some(from) if !wanted.is_empty() => Ok(json!({ "kind": "text", "blockId": block, "start": from, "end": from + wanted.len(), "quote": quote })),
+        _ => Err(format!("Those words aren't on the review page as v{} reads. Share again to comment on them.", link.version)),
+    }
+}
+
+/// Writer's own reply, signed Writer (a fix's account of what it did).
 pub fn reply(data: &Path, note_id: &str, text: &str) -> Result<(), String> {
-    cloud::call(data, "mutation", "reviews:reply", json!({ "noteId": note_id, "text": text, "author": "Writer" }))?;
+    reply_as(data, note_id, text, "Writer")
+}
+
+/// A reply under a note, signed with `author`: shown on the page under the
+/// note, as a reviewer's reply is.
+pub fn reply_as(data: &Path, note_id: &str, text: &str, author: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Write the reply first.".into());
+    }
+    cloud::call(data, "mutation", "reviews:reply", json!({ "noteId": note_id, "text": text, "author": author }))?;
+    let _ = poll(data);
+    Ok(())
+}
+
+/// Deletes a note left from Writer (never a reviewer's), with its replies.
+pub fn delete_note(data: &Path, note_id: &str) -> Result<(), String> {
+    cloud::call(data, "mutation", "reviews:deleteNote", json!({ "noteId": note_id }))?;
+    let _ = poll(data);
     Ok(())
 }
 
@@ -373,6 +465,8 @@ pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, S
     let key = format!("writer/reviews/{id}/v{next}/script.json");
     cloud::put_bytes(data, &key, &body, "application/json")?;
     let found_count = found.len();
+    // The text each block is shared with: a comment left from Writer names its words there.
+    let texts: BTreeMap<String, String> = found.iter().map(|block| (block.id.clone(), block.text.clone())).collect();
     let meta = meta_of(data, id, &script, found)?;
     let size = serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0);
     let published = publish(data, id, &script.title, &key, meta, script.revision).inspect_err(|error| crate::log::error("review", format!("{}: couldn't share: {error}", crate::log::named(id, &script.title))))?;
@@ -386,6 +480,7 @@ pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, S
         shared_at: now_ms(),
     });
     store::write(&dir, &script)?;
+    let _ = std::fs::write(dir.join(SHARED_TEXT), serde_json::to_vec(&json!({ "version": published.version, "blocks": texts })).unwrap_or_default());
     remember_link(data, &published.review_id, id);
     // A commentary's review page plays its clips from stretches put up beside it (footage.rs).
     if script.commentary.is_some() {
@@ -829,5 +924,23 @@ mod tests {
         assert!(!Note { not_fixed_at: Some(5), ..retry.clone() }.untaken());
         assert_eq!(Approval::from(&json!({ "version": 3.0, "by": "Writer on Mac", "at": 7.0 })), Some(Approval { version: 3, by: "Writer on Mac".into(), at: 7 }));
         assert_eq!(Approval::from(&Value::Null), None);
+    }
+
+    #[test]
+    fn names_a_comments_words_in_the_shared_text() {
+        let dir = std::env::temp_dir().join(format!("writer-anchor-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join(SHARED_TEXT), r#"{"version":2,"blocks":{"p1":"He’s streamed with Kanye West, and more."}}"#).unwrap();
+        let link = Link { review_id: "r".into(), token: "t".into(), url: "u".into(), version: 2, revision: 1, shared_at: 0 };
+        // Where it was picked (the curly quote is one UTF-16 unit).
+        let picked = serde_json::json!({ "kind": "text", "blockId": "p1", "start": 19, "end": 29, "quote": "Kanye West" });
+        assert_eq!(shared_anchor(&dir, &link, 6, &picked).unwrap()["start"], 19);
+        // Edited since: the same words, found again in the shared text.
+        let moved = serde_json::json!({ "kind": "text", "blockId": "p1", "start": 40, "end": 50, "quote": "Kanye West" });
+        assert_eq!(shared_anchor(&dir, &link, 6, &moved).unwrap()["start"], 19);
+        // Words written since the share aren't on the page.
+        let new = serde_json::json!({ "kind": "text", "blockId": "p1", "start": 0, "end": 5, "quote": "Drake" });
+        assert!(shared_anchor(&dir, &link, 6, &new).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

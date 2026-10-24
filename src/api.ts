@@ -135,9 +135,20 @@ export const getFinds = (id: string) =>
 export const pullFeedback = (id: string) =>
   inTauri() ? invoke<Feedback>("pull_feedback", { id }) : http<Feedback>(`/api/scripts/${id}/feedback`, json({}));
 
-/** Leaves a note on the script's review page from Writer: feedback like a reviewer's. */
-export const addReviewNote = (id: string, text: string) =>
-  inTauri() ? invoke<void>("add_review_note", { id, text }) : http<void>(`/api/scripts/${id}/review/notes`, json({ text }));
+/** What a note from Writer says beyond its text: the words it's on, its intent, a suggestion's new words. */
+export type NoteDetails = { anchor?: { kind: "text"; blockId: string; start: number; end: number; quote: string }; intent?: string; replacement?: string };
+
+/** Leaves a note on the script's review page from Writer: the same note a reviewer leaves there. */
+export const addReviewNote = (id: string, text: string, details?: NoteDetails) =>
+  inTauri() ? invoke<void>("add_review_note", { id, text, details }) : http<void>(`/api/scripts/${id}/review/notes`, json({ text, details }));
+
+/** A reply under a note on the review page, signed with the signed-in person's name. */
+export const replyReviewNote = (id: string, noteId: string, text: string) =>
+  inTauri() ? invoke<void>("reply_review_note", { id, noteId, text }) : http<void>(`/api/scripts/${id}/review/notes/${noteId}/replies`, json({ text }));
+
+/** Deletes a note left from Writer (never a reviewer's), with its replies. */
+export const deleteReviewNote = (id: string, noteId: string) =>
+  inTauri() ? invoke<void>("delete_review_note", { id, noteId }) : http<void>(`/api/scripts/${id}/review/notes/${noteId}`, { method: "DELETE" });
 
 export const getFeedback = (id: string) =>
   inTauri() ? invoke<Feedback | null>("get_feedback", { id }) : http<Feedback | null>(`/api/scripts/${id}/feedback`);

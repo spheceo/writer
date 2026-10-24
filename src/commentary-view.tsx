@@ -12,9 +12,10 @@ import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayhead
 import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, Footage, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary, ChatTurn } from "./types";
 import { FoundClips } from "./found-clips";
 import { FeedbackPanel } from "./feedback-panel";
+import { CommentsPanel, type Draft as CommentDraft, useLit } from "./comments";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { type Band, BandTip, bandProps, bandsOf, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { type Band, BandTip, bandProps, bandsOf, pieceBands, pieceOffset, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
 import { UpdateButton } from "./update";
 import { CAN, useGrants } from "./can";
@@ -181,7 +182,27 @@ export function CommentaryEditor({
   const openNotes = review.notes.filter((note) => !note.parentId && note.status !== "done").length;
   const [tab, setTab] = useState<"claude" | "sources" | "clips" | "feedback">(() => (script.commentary?.draft ? "claude" : "sources"));
   // Teaching Writer from feedback needs review.lessons: without it there's no Feedback tab.
-  const mayTeach = useGrants().has(CAN.lessons);
+  const grants = useGrants();
+  const mayTeach = grants.has(CAN.lessons);
+  const mayShare = grants.has(CAN.share);
+  // Words picked in the script for a comment (the review page's anchor), and the button offering it.
+  const [commentDraft, setCommentDraft] = useState<CommentDraft | null>(null);
+  const [offer, setOffer] = useState<{ draft: CommentDraft; x: number; y: number } | null>(null);
+  useEffect(() => {
+    if (!offer) return;
+    const away = (event: PointerEvent) => !(event.target as HTMLElement | null)?.closest?.(".comment-offer") && setOffer(null);
+    window.addEventListener("pointerdown", away, true);
+    return () => window.removeEventListener("pointerdown", away, true);
+  }, [offer]);
+  // A comment opened from its words shows its card.
+  const { active: openComment } = useLit();
+  useEffect(() => {
+    if (openComment && review.notes.some((note) => note.id === openComment)) {
+      setAgentShown(true);
+      setTab("feedback");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openComment]);
   const [finds, setFinds] = useState<Finds | null>(null);
   // What the running job is: a build, or a search for clips.
   const [finding, setFinding] = useState(false);
@@ -523,6 +544,22 @@ export function CommentaryEditor({
       </header>
       <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
       {hover.preview}
+      {offer && (
+        <button
+          type="button"
+          className="comment-offer"
+          style={{ left: offer.x, top: offer.y }}
+          onClick={() => {
+            setCommentDraft(offer.draft);
+            setOffer(null);
+            setAgentShown(true);
+            setTab("feedback");
+          }}
+        >
+          <Icon name="note" size={13} />
+          Comment
+        </button>
+      )}
       {error && (
         <div className="notice">
           {error}
@@ -543,6 +580,11 @@ export function CommentaryEditor({
           onHover={(id, cite, element) => (element ? hover.enter(hoverClip(id, cite), element) : hover.leave())}
           onPin={(id, cite, element) => hover.pin(hoverClip(id, cite), element)}
           bands={bands}
+          onWords={
+            script.review && mayShare
+              ? (picked, rect) => setOffer({ draft: picked, x: Math.min(rect.right - 8, window.innerWidth - 120), y: Math.max(56, rect.top - 34) })
+              : undefined
+          }
           stats={draft && times ? `${clock(times.totalMs)} · ${narrationWords(draft).toLocaleString()} words · ${clock(times.clipsMs)} of clips` : ""}
           statsTitle={draft ? commentaryTotal(draft) : ""}
         />
@@ -576,9 +618,9 @@ export function CommentaryEditor({
               <button type="button" role="tab" aria-selected={tab === "clips"} onClick={() => setTab("clips")}>
                 Clips {finds && <small>{finds.clips.length}</small>}
               </button>
-              {mayTeach && (
+              {(mayTeach || script.review) && (
                 <button type="button" role="tab" aria-selected={tab === "feedback"} onClick={() => setTab("feedback")}>
-                  Feedback {feedback && <small>{feedback.items.length}</small>}
+                  Feedback {review.notes.some((note) => !note.parentId) && <small>{review.notes.filter((note) => !note.parentId && note.status !== "done").length || review.notes.filter((note) => !note.parentId).length}</small>}
                 </button>
               )}
             </div>
@@ -589,8 +631,25 @@ export function CommentaryEditor({
               </button>
             )}
           </div>
-          {tab === "feedback" && mayTeach ? (
-            <>
+          {tab === "feedback" ? (
+            <div className="feedback-tab">
+              <CommentsPanel
+                scriptId={script.id}
+                reviewId={script.review?.reviewId}
+                notes={review.notes}
+                version={script.review?.version}
+                shared={!!script.review}
+                canWrite={mayShare}
+                draft={commentDraft}
+                onDraft={setCommentDraft}
+                onJump={(note) => {
+                  const block = note.anchor?.blockId ? document.querySelector<HTMLElement>(`[data-paragraph="${note.anchor.blockId}"]`) : null;
+                  block?.scrollIntoView({ block: "center", behavior: "smooth" });
+                }}
+                onRefresh={review.refresh}
+                onError={setError}
+              />
+              {mayTeach && (
               <FeedbackPanel
                 status={
                   working && learning ? (
@@ -606,11 +665,11 @@ export function CommentaryEditor({
                 busy={busy}
                 canPull={!!draft}
                 onFeedback={setFeedback}
-                onNotes={review.refresh}
                 onStep={(step) => void learn(step)}
                 onError={setError}
               />
-            </>
+              )}
+            </div>
           ) : tab === "clips" ? (
             <>
               {working && finding && <Working stage={stage} since={started} hint="Searching, reading captions and checking frames takes 10 to 20 minutes. You can close this window; it keeps going." />}
@@ -846,6 +905,7 @@ function CommentaryDoc({
   onHover,
   onPin,
   bands,
+  onWords,
 }: {
   draft: Draft | null;
   items: Item[];
@@ -862,6 +922,8 @@ function CommentaryDoc({
   onPin?: (id: string, cite: Cite, element: Element) => void;
   /** Review bands by block (a paragraph's ID, `<id>:heading`, `open`). */
   bands?: Map<string, Band[]>;
+  /** Words selected in narration, named as the review page names them, to comment on. */
+  onWords?: (draft: CommentDraft, rect: DOMRect) => void;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useZoom(zoomKey);
@@ -1068,6 +1130,7 @@ function CommentaryDoc({
                     data-block
                     data-anchor={noteId}
                     data-noted={paragraph.note !== undefined || undefined}
+                    data-paragraph={paragraph.id || undefined}
                     data-state={active === noteId ? "active" : undefined}
                     key={`${s}-${p}-${draft.writtenAt}`}
                     // A paragraph with a note lights its card, as the card lights it (Google Docs' comments).
@@ -1079,7 +1142,21 @@ function CommentaryDoc({
                         ranges(line.cites, `r${index}`)
                       ) : (
                         <div className="said" key={`s${line.index}`} data-anchor={`s${s}-${p}-${line.index}`} data-now={nowId === `s${s}-${p}-${line.index}` || undefined}>
-                          <Grow className="narration" value={line.text} disabled={disabled} bands={banded.get(line.index)} onCommit={(text) => setSay(line.index, text)} />
+                          <Grow
+                            className="narration"
+                            value={line.text}
+                            disabled={disabled}
+                            bands={banded.get(line.index)}
+                            onWords={
+                              onWords && paragraph.id
+                                ? (start, end, rect) => {
+                                    const at = pieceOffset(paragraph, line.index);
+                                    onWords({ blockId: paragraph.id ?? "", start: at + start, end: at + end, quote: line.text.slice(start, end) }, rect);
+                                  }
+                                : undefined
+                            }
+                            onCommit={(text) => setSay(line.index, text)}
+                          />
                         </div>
                       ),
                     )}

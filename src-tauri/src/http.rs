@@ -394,7 +394,15 @@ fn route(
         ("POST", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::pull_feedback_now(&data_dir(&app)?, id)),
         ("POST", ["api", "scripts", id, "review", "notes"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
-            json_result(stream, crate::add_review_note_now(&data_dir(&app)?, id, value["text"].as_str().unwrap_or("")).map(|_| json!({ "ok": true })))
+            let details: crate::reviews::NoteDetails = serde_json::from_value(value["details"].clone()).unwrap_or_default();
+            json_result(stream, crate::add_review_note_now(&data_dir(&app)?, id, value["text"].as_str().unwrap_or(""), &details).map(|_| json!({ "ok": true })))
+        }
+        ("POST", ["api", "scripts", id, "review", "notes", note, "replies"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::reply_review_note_now(&data_dir(&app)?, id, note, value["text"].as_str().unwrap_or("")).map(|_| json!({ "ok": true })))
+        }
+        ("DELETE", ["api", "scripts", id, "review", "notes", note]) => {
+            json_result(stream, crate::delete_review_note_now(&data_dir(&app)?, id, note).map(|_| json!({ "ok": true })))
         }
         ("PUT", ["api", "scripts", id, "feedback", "items", item]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

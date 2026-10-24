@@ -474,6 +474,15 @@ export type ReviewNote = {
   confirmed?: boolean;
   /** Sent back as not fixed (a retry), when. */
   notFixedAt?: number | null;
+  /** When a computer took it to fix (claims last 30 minutes). */
+  attemptAt?: number | null;
+  /** A suggestion's new words ("" deletes the anchored ones), and the words either side of an insertion. */
+  replacement?: string | null;
+  context?: { before: string; after: string } | null;
+  /** One edit across blocks: its notes share this. */
+  group?: string | null;
+  /** A suggestion's end: accepted or rejected. */
+  outcome?: "accepted" | "rejected" | null;
   createdAt: number;
   updatedAt: number;
 };

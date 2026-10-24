@@ -1273,11 +1273,12 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .grow-banded > textarea { position: relative; background: transparent !important; }
 .grow-mirror { position: absolute; inset: 0; white-space: pre-wrap; overflow-wrap: break-word; color: transparent; pointer-events: none; border-style: solid; border-color: transparent; overflow: hidden; }
 .grow-mirror mark { color: transparent; border-radius: 2px; background: color-mix(in srgb, #2fbf71 26%, transparent); }
-.grow-mirror mark[data-kind="open"] { background: color-mix(in srgb, var(--warning) 30%, transparent); }
+.grow-mirror mark[data-kind="open"] { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; }
 .grow-mirror mark.cut { display: inline-block; width: 0; height: 1.1em; vertical-align: text-bottom; border-left: 2px solid #2fbf71; margin-left: -1px; background: none; }
 .grow-mirror mark.cut[data-kind="open"] { border-left-color: #e0a800; }
 [data-band] { border-radius: 2px; background: color-mix(in srgb, #2fbf71 22%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, #2fbf71 22%, transparent); }
-[data-band][data-band-kind="open"] { background: color-mix(in srgb, var(--warning) 26%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 26%, transparent); }
+/* A comment's words: soft yellow at rest, as the review page marks them; brighter when lit (comments.tsx LitStyle). */
+[data-band][data-band-kind="open"] { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; }
 .band-tip { position: fixed; z-index: 60; width: 320px; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0008; font-size: 12.5px; pointer-events: none; }
 .band-tip-note { display: flex; flex-direction: column; gap: 3px; }
 .band-tip-head { display: flex; justify-content: space-between; gap: 8px; }
@@ -1465,3 +1466,58 @@ button.google:hover:not(:disabled) { background: var(--surface); }
 .reset-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 6px; }
 .turn a { color: var(--text); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
 .turn a:hover { text-decoration-color: var(--text); }
+
+/* The review's comments, as feedback.spheceo.com shows them (comments.tsx). */
+.feedback-tab { display: flex; flex-direction: column; min-height: 0; flex: 1; overflow-y: auto; }
+.cm-panel { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; }
+.cm-toolbar { display: flex; align-items: center; gap: 6px; }
+.cm-toolbar .select-sm { max-width: none; flex-shrink: 0; }
+.cm-empty { margin: 8px 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.cm-cards { display: flex; flex-direction: column; gap: 6px; }
+.cm-card { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); transition: background 0.12s, box-shadow 0.12s; }
+.cm-card[data-lit] { background: var(--hover); box-shadow: inset 3px 0 0 #f8d66d, 0 6px 20px #0009; }
+.cm-main { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; cursor: pointer; outline: none; }
+.cm-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; }
+.cm-avatar { display: inline-grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; font-size: 11px; font-weight: 600; }
+.cm-avatar.app { border-radius: 8px; background: #fff; }
+.cm-author { overflow: hidden; color: var(--text); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.cm-ago, .cm-number { flex-shrink: 0; color: var(--faint); font-size: 11.5px; }
+.cm-unread { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: #4c8dff; }
+.cm-head .menu .icon-button { width: 24px; height: 24px; }
+.cm-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.cm-place, .cm-tag { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 22px; padding: 0 8px; border-radius: 99px; background: rgb(255 255 255 / 0.06); color: var(--text-2); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-tag.intent-question, .cm-tag.intent-fyi, .cm-tag.intent-suggestion { background: #b4bcf01c; color: #b4bcf0; }
+.cm-tag.action { background: #ffffff14; color: #ededed; }
+.cm-text { margin: 0; color: var(--text); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cm-suggest { margin: 0; padding: 6px 8px; border-left: 2px solid #b4bcf0; border-radius: 4px; background: rgb(255 255 255 / 0.03); font-size: 13px; line-height: 1.5; }
+.cm-suggest del { margin: 0 3px; background: #ff00331f; color: #f2b8c0; text-decoration: line-through 1.5px #ff5c70; }
+.cm-suggest ins { margin: 0 3px; background: #b4bcf01c; color: #b4bcf0; text-decoration: underline; text-underline-offset: 3px; }
+.cm-legacy { margin: 0; padding: 4px 8px; border-radius: 6px; background: color-mix(in srgb, #7fd18b 12%, transparent); color: #a9e091; font-size: 12.5px; }
+.cm-state { position: relative; display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text-2); font-size: 12px; }
+.cm-state.working, .cm-state.working svg { color: #b4bcf0; }
+.cm-state.left, .cm-state.notFixed, .cm-state.left svg, .cm-state.notFixed svg { color: #f5a05a; }
+.cm-state.done svg, .cm-state.done .cm-summary, .cm-state.done > span:not(.cm-tip) { color: #a9e091; }
+.cm-state.confirmed, .cm-state.applied, .cm-state.confirmed svg, .cm-state.applied svg { color: #7fd18b; }
+.cm-state.answer, .cm-state.notApplied { color: var(--muted); }
+.cm-summary { text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+.cm-tip { position: absolute; left: 18px; bottom: calc(100% + 6px); z-index: 5; max-width: 300px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--active); color: var(--text); font-size: 12.5px; line-height: 1.45; box-shadow: 0 8px 24px #0009; opacity: 0; pointer-events: none; transition: opacity 0.12s 0.12s; }
+.cm-state:hover .cm-tip, .cm-state:focus .cm-tip { opacity: 1; }
+.cm-replies { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0 12px 6px 48px; list-style: none; font-size: 12.5px; line-height: 1.45; }
+.cm-replies li { display: flex; flex-direction: column; gap: 2px; color: var(--text); overflow-wrap: anywhere; }
+.cm-reply-head { display: flex; align-items: center; gap: 6px; }
+.cm-reply-head b { font-weight: 600; }
+.cm-foot { padding: 0 12px 10px 48px; }
+.cm-reply-form, .cm-composer { display: flex; flex-direction: column; gap: 6px; }
+.cm-reply-form textarea, .cm-composer textarea { width: 100%; min-height: 52px; resize: vertical; font-size: 13px; }
+.cm-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.cm-hint { margin-right: auto; font-size: 11.5px; }
+.cm-composer { position: sticky; bottom: 0; margin-top: 6px; padding: 10px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); }
+.cm-composer-bar { display: flex; align-items: center; gap: 6px; }
+.cm-composer-bar .cm-place button { padding: 0 2px; border: 0; background: none; color: var(--muted); height: auto; }
+.cm-type { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 8px; border-radius: 6px; color: var(--text-2); font-size: 12px; }
+.cm-composer-bar .menu-trigger:hover .cm-type { background: var(--hover); color: var(--text); }
+.cm-replacement { height: 32px; font-size: 13px; }
+/* Words picked in the script: the offer to comment on them. */
+.comment-offer { position: fixed; z-index: 70; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--text); font-size: 12.5px; box-shadow: 0 8px 24px #0009; }
+.comment-offer:hover:not(:disabled) { background: var(--hover); }
+.fb-teach-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }

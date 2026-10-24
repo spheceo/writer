@@ -1,4 +1,5 @@
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { hoverNote, openNote } from "./comments";
 import { type Band, showTip } from "./review";
 import { Icon, Select } from "./ui";
 
@@ -208,6 +209,7 @@ export function Grow({
   label,
   oneLine,
   bands,
+  onWords,
   onCommit,
 }: {
   value: string;
@@ -219,6 +221,8 @@ export function Grow({
   oneLine?: boolean;
   /** Review bands on the text (review.tsx): drawn under it, their notes shown on hover. */
   bands?: Band[];
+  /** Words selected (snapped to whole words, as the review page snaps them): where, and where on screen. */
+  onWords?: (start: number, end: number, rect: DOMRect) => void;
   onCommit: (text: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -258,15 +262,45 @@ export function Grow({
       onPointerMove={
         banded
           ? (event) => {
-              const marks = [...(mirror.current?.querySelectorAll<HTMLElement>("mark") ?? [])];
-              const hit = marks.find((mark) => [...mark.getClientRects()].some((box) => event.clientX >= box.left - 2 && event.clientX <= box.right + 2 && event.clientY >= box.top && event.clientY <= box.bottom));
-              showTip(hit ? { ids: (hit.dataset.ids ?? "").split(" ").filter(Boolean), x: event.clientX, y: event.clientY } : null);
+              const ids = markAt(event.clientX, event.clientY);
+              showTip(ids.length ? { ids, x: event.clientX, y: event.clientY } : null);
+              hoverNote(ids[0] ?? null);
             }
           : undefined
       }
-      onPointerLeave={banded ? () => showTip(null) : undefined}
+      onPointerLeave={
+        banded
+          ? () => {
+              showTip(null);
+              hoverNote(null);
+            }
+          : undefined
+      }
+      onMouseUp={(event) => {
+        const node = event.currentTarget;
+        if (node.selectionStart !== node.selectionEnd) return picked(node);
+        // A click on noted words opens their comment, as on the review page.
+        const ids = banded ? markAt(event.clientX, event.clientY) : [];
+        if (ids.length) openNote(ids[0]);
+      }}
+      onKeyUp={(event) => event.shiftKey && picked(event.currentTarget)}
     />
   );
+  function markAt(x: number, y: number) {
+    const marks = [...(mirror.current?.querySelectorAll<HTMLElement>("mark") ?? [])];
+    const hit = marks.find((mark) => [...mark.getClientRects()].some((box) => x >= box.left - 2 && x <= box.right + 2 && y >= box.top && y <= box.bottom));
+    return (hit?.dataset.ids ?? "").split(" ").filter(Boolean);
+  }
+  // Selected words, widened to whole words (the review page's snapToWords).
+  function picked(node: HTMLTextAreaElement) {
+    if (!onWords || node.selectionStart === node.selectionEnd) return;
+    let [start, end] = [node.selectionStart, node.selectionEnd];
+    while (start > 0 && /[\p{L}\p{N}'’-]/u.test(node.value[start - 1])) start -= 1;
+    while (end < node.value.length && /[\p{L}\p{N}'’-]/u.test(node.value[end])) end += 1;
+    while (start < end && /\s/.test(node.value[start])) start += 1;
+    while (end > start && /\s/.test(node.value[end - 1])) end -= 1;
+    if (end > start) onWords(start, end, node.getBoundingClientRect());
+  }
   if (!banded || !bands) return textarea;
   return (
     <div className="grow-banded" data-band-text>

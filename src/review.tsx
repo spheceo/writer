@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { CommentsPanel, hoverNote } from "./comments";
 import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { CAN, useGrants } from "./can";
@@ -107,6 +108,13 @@ export function pieceBands(paragraph: Paragraph, bands: Band[] | undefined): Map
   return out;
 }
 
+/** Where a piece's text starts in its paragraph's block text (each piece on its own line, blocks.rs paragraph_text): a comment's words are named there. */
+export function pieceOffset(paragraph: Paragraph, index: number) {
+  let at = 0;
+  paragraph.pieces.slice(0, index).forEach((piece) => (at += (piece.kind === "say" ? piece.text : citeLine(piece)).length + 1));
+  return at;
+}
+
 /** What an element-wide band carries for the tooltip (a timestamp, a clip, a heading). */
 export function bandProps(bands: Band[] | undefined) {
   if (!bands?.length) return {};
@@ -134,8 +142,11 @@ export function BandTip({ notes }: { notes: ReviewNote[] }) {
     tipListener = setTip;
     const over = (event: PointerEvent) => {
       const target = (event.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-band]");
-      if (target) setTip({ ids: (target.dataset.band ?? "").split(" ").filter(Boolean), x: event.clientX, y: event.clientY });
-      else if ((event.target as HTMLElement | null)?.closest?.("[data-band-text]") == null) setTip(null);
+      if (target) {
+        const ids = (target.dataset.band ?? "").split(" ").filter(Boolean);
+        setTip({ ids, x: event.clientX, y: event.clientY });
+        hoverNote(ids[0] ?? null);
+      } else if ((event.target as HTMLElement | null)?.closest?.("[data-band-text]") == null) setTip(null);
     };
     window.addEventListener("pointermove", over);
     return () => {
@@ -282,10 +293,8 @@ export function ReviewDialog({
   };
 
   const roots = notes.filter((note) => !note.parentId);
-  const replies = (id: string) => notes.filter((note) => note.parentId === id);
   const openNotes = roots.filter((note) => note.status !== "done");
   const waiting = openNotes.length;
-  const ordered = [...openNotes, ...roots.filter((note) => note.status === "done").reverse()];
   const behind = link && link.revision !== script.revision;
 
   return (
@@ -358,42 +367,17 @@ export function ReviewDialog({
             : "When a reviewer clicks Ready for changes, the fixing computer chosen on accounts.spheceo.com fixes the notes and shares the next version."}
         </p>
       )}
-      {link && roots.length === 0 && <p className="faint">No notes yet.</p>}
-      {roots.length > 0 && (
-        <ul className="review-notes">
-          {ordered.map((note) => (
-            <li key={note.id} className="review-note" data-status={note.status}>
-              <span className="review-note-head">
-                <b>{note.author}</b>
-                <span className="faint">
-                  {when(note.createdAt)} · v{note.version}
-                </span>
-                <span className={note.status === "done" ? "chip done" : note.attempted ? "chip" : "chip open"}>
-                  {note.status === "done" ? (note.confirmed ? `Confirmed · v${note.doneInVersion ?? "?"}` : `Fixed in v${note.doneInVersion ?? "?"}`) : note.notFixedAt ? "Not fixed: again" : note.attempted ? "Tried" : "Open"}
-                </span>
-              </span>
-              {note.anchor?.quote && <blockquote>{note.anchor.side ? `${note.anchor.side === "before" ? "Before" : "After"} the clip: ` : ""}{note.anchor.quote}</blockquote>}
-              {(note.intent || note.action || note.scope === "everywhere") && (
-                <span className="review-intent">
-                  {[note.intent, note.action, note.scope === "everywhere" ? "everywhere" : null].filter(Boolean).join(" · ")}
-                </span>
-              )}
-              {note.suggestion && <p className="review-suggestion">→ “{note.suggestion}”</p>}
-              <p>{note.text}</p>
-              {note.fixSummary && (
-                <p className="review-fix">
-                  <span className="faint">Claude: </span>
-                  {note.fixSummary}
-                </p>
-              )}
-              {replies(note.id).map((reply) => (
-                <p key={reply.id} className="review-reply">
-                  <b>{reply.author}</b> {reply.text}
-                </p>
-              ))}
-            </li>
-          ))}
-        </ul>
+      {link && (
+        <CommentsPanel
+          scriptId={script.id}
+          reviewId={link.reviewId}
+          notes={notes}
+          version={link.version}
+          shared
+          canWrite={mayShare && !approved}
+          onRefresh={onRefresh}
+          onError={setProblem}
+        />
       )}
     </Dialog>
   );

@@ -7,6 +7,7 @@ import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
 import { LogsDialog } from "./logs";
 import { SyncDock } from "./sync-dock";
+import { LitStyle } from "./comments";
 import { UpdatePill } from "./update";
 import { SignInScreen, useAccount } from "./account";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
@@ -193,6 +194,7 @@ export function App() {
         />
       )}
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
+      <LitStyle />
       <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
     </>

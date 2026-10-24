@@ -873,16 +873,41 @@ pub fn pull_feedback_now(data: &Path, id: &str) -> Result<feedback::Feedback, St
     feedback::pull(data, id)
 }
 
-/// Leaves a note on the script's review page from Writer.
-pub fn add_review_note_now(data: &Path, id: &str, text: &str) -> Result<(), String> {
+/// Leaves a note on the script's review page from Writer: on words, with an intent or a suggestion, or about the whole script.
+pub fn add_review_note_now(data: &Path, id: &str, text: &str, details: &reviews::NoteDetails) -> Result<(), String> {
     can::require(can::SHARE)?;
     can::require_id(data, id)?;
-    reviews::add_note(data, id, text)
+    reviews::add_note(data, id, text, details)
 }
 
 #[tauri::command]
-async fn add_review_note(app: AppHandle, id: String, text: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || add_review_note_now(&data_dir(&app)?, &id, &text)).await.map_err(|error| error.to_string())?
+async fn add_review_note(app: AppHandle, id: String, text: String, details: Option<reviews::NoteDetails>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || add_review_note_now(&data_dir(&app)?, &id, &text, &details.unwrap_or_default())).await.map_err(|error| error.to_string())?
+}
+
+/// A reply under a note on the review page, signed with the signed-in person's name.
+pub fn reply_review_note_now(data: &Path, id: &str, note_id: &str, text: &str) -> Result<(), String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    let author = account::status().person.map(|person| if person.name.trim().is_empty() { person.email } else { person.name }).unwrap_or_else(|| "Writer".into());
+    reviews::reply_as(data, note_id, text, &author)
+}
+
+#[tauri::command]
+async fn reply_review_note(app: AppHandle, id: String, note_id: String, text: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || reply_review_note_now(&data_dir(&app)?, &id, &note_id, &text)).await.map_err(|error| error.to_string())?
+}
+
+/// Deletes a note left from Writer on the review page.
+pub fn delete_review_note_now(data: &Path, id: &str, note_id: &str) -> Result<(), String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    reviews::delete_note(data, note_id)
+}
+
+#[tauri::command]
+async fn delete_review_note(app: AppHandle, id: String, note_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || delete_review_note_now(&data_dir(&app)?, &id, &note_id)).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1610,6 +1635,8 @@ pub fn run() {
             get_finds,
             pull_feedback,
             add_review_note,
+            reply_review_note,
+            delete_review_note,
             get_feedback,
             set_feedback_item,
             set_lesson,
