@@ -66,7 +66,7 @@ if result.get("measures"):
 
 # ---- J: every row judged on the script ----
 key = KEY.read_text()
-rows = [line for line in key.splitlines() if re.match(r"\| K\d+ ", line)]
+rows = [line for line in key.splitlines() if re.match(r"\| [A-Z]\d+ ", line)]
 if SCOPE == "all":
     rows = [row for row in rows if row.rstrip(" |").split("|")[-1].strip().startswith("all")]
 row_ids = [row.split("|")[1].strip() for row in rows]
