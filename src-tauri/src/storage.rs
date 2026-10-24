@@ -153,6 +153,12 @@ pub fn used(data: &Path, id: &str) {
     }
 }
 
+/// Footage a sync left in the cloud rather than downloading (cloud.rs): kept
+/// in the script's cloud files, as cleared footage is, and fetched only on request.
+pub fn left_in_cloud(data: &Path, id: &str, names: &[String]) {
+    record_purged(data, id, names);
+}
+
 fn forget_purged(data: &Path, id: &str, name: &str) {
     let mut map = purged_map(data);
     if let Some(kept) = map.get_mut(id) {
@@ -411,11 +417,9 @@ pub fn fetch_preview(data: &Path, id: &str) -> Result<PathBuf, String> {
     }
     let (key, size, mtime) = cloud::file_key(data, id, "proxy.mp4").ok_or("This script's preview isn't in the cloud yet. Wait for it to sync, then try again.")?;
     cloud::get_file(data, id, &key, size, &proxy)?;
-    // Dated as the cloud's copy was here, so the sync sees the same file
-    // and doesn't send it all up again as a new one.
-    if mtime > 0 {
-        let _ = fs::File::options().write(true).open(&proxy).and_then(|file| file.set_modified(std::time::UNIX_EPOCH + Duration::from_millis(mtime)));
-    }
+    // Dated as the ledger knows the cloud's copy (0 for one a sync left in
+    // the cloud), so the sync sees the same file and doesn't send it all up again.
+    let _ = fs::File::options().write(true).open(&proxy).and_then(|file| file.set_modified(std::time::UNIX_EPOCH + Duration::from_millis(mtime)));
     used(data, id);
     forget_purged(data, id, "proxy.mp4");
     store::library_changed();

@@ -708,6 +708,8 @@ impl Cloud {
         }
         fs::create_dir_all(&dir).map_err(|error| Problem::said(error.to_string()))?;
         let mut files = BTreeMap::new();
+        // Footage this Mac leaves in the cloud: it plays from there (stream.rs).
+        let mut left_in_cloud = Vec::new();
         for file in row["files"].as_array().into_iter().flatten() {
             let (Some(name), Some(key)) = (file["name"].as_str(), file["key"].as_str()) else { continue };
             let size = file["size"].as_u64().unwrap_or(0);
@@ -728,11 +730,24 @@ impl Cloud {
                 files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: known.as_ref().and_then(|known| known.files.get(name)).map_or(0, |kept| kept.mtime) });
                 continue;
             }
+            // Footage isn't downloaded: the editors play it straight from the
+            // cloud, so a Mac's first sync brings only the scripts, transcripts
+            // and the rest, and the list fills in at once. A copy here that the
+            // cloud has replaced is let go, so the cloud's is what plays.
+            if crate::archive::is_footage(name) && !present {
+                if path.is_file() {
+                    let _ = fs::remove_file(&path);
+                }
+                files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: 0 });
+                left_in_cloud.push(name.to_string());
+                continue;
+            }
             if !present {
                 self.download(&id, name, key, size, &path)?;
             }
             files.insert(name.to_string(), Kept { key: key.to_string(), size, mtime: mtime(&path) });
         }
+        crate::storage::left_in_cloud(data, &id, &left_in_cloud);
         // Saved here while the files came down: that version is kept as a copy, not lost.
         if fs::read(dir.join("script.json")).map(|bytes| hash(&bytes)).ok() != at_start {
             crate::log::warn("cloud", format!("{}: changed here while rev {rev} came down; this Mac's version is kept as a copy", crate::log::named(&id, row["title"].as_str().unwrap_or(""))));

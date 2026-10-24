@@ -198,10 +198,11 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
     let script = store::read(dir)?;
     let wanted = wanted(&script, urls)?;
     let settings = settings::load(data);
-    let base = store::proxy_path(dir);
-    if !base.is_file() {
-        return Err("The compilation's footage isn't on this Mac yet. Wait for it to sync, then try again.".into());
-    }
+    // Joining onto the preview needs the file itself: brought down when it plays from the cloud.
+    let base = match store::proxy_path(dir) {
+        base if base.is_file() => base,
+        _ => crate::storage::fetch_preview(data, &script.id)?,
+    };
     // Kept out of the cloud (a dot folder) until the footage is joined.
     let folder = dir.join(".reuse");
     fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
