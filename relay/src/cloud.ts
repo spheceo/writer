@@ -78,6 +78,9 @@ const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
   "reviews:checkIn": "read",
   "reviews:takeFix": "review.share",
   "reviews:fixProgress": "review.share",
+  // Synced with the review page: a fix checked from Writer, and one review read whole (its notes, fix and computer).
+  "reviews:check": "review.share",
+  "reviews:get": "read",
   "edit:getMedia": "read",
   "edit:putMedia": "any",
 };
