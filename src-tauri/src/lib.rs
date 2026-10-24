@@ -5,6 +5,7 @@ mod activity;
 mod agent;
 mod avatar;
 mod steps;
+mod footage;
 mod archive;
 mod blocks;
 mod chat;
@@ -415,6 +416,14 @@ fn delete_script(app: AppHandle, id: String) -> Result<(), String> {
     store::remove(&data, &id)?;
     store::library_changed();
     Ok(())
+}
+
+/// A commentary's downloaded footage, and how much is still coming (footage.rs).
+#[tauri::command]
+async fn get_footage(app: AppHandle, id: String) -> Result<footage::Footage, String> {
+    let data = data_dir(&app)?;
+    can::require_id(&data, &id)?;
+    tauri::async_runtime::spawn_blocking(move || footage::now(&data, &id)).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1443,6 +1452,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_footage,
             list_scripts,
             get_script,
             import_file,

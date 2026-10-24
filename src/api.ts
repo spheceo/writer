@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -446,3 +446,9 @@ export const checkUpdate = () => (inTauri() ? invoke<UpdateStatus>("check_update
 export const installUpdate = () => (inTauri() ? invoke<void>("install_update") : http<void>("/api/update/install", json({})));
 export const setUpdateChannel = (channel: "nightly" | "stable") =>
   inTauri() ? invoke<UpdateStatus>("set_update_channel", { channel }) : http<UpdateStatus>("/api/update/channel", { ...json({ channel }), method: "PUT" });
+
+/** A commentary's downloaded footage; asking starts what's missing (footage.rs). */
+export const getFootage = (id: string) => (inTauri() ? invoke<Footage>("get_footage", { id }) : http<Footage>(`/api/scripts/${id}/footage`));
+
+/** Where a downloaded stretch plays from: the file itself in the Mac's window, the API on the dev page. */
+export const footageUrl = (id: string, footage: Footage, file: string) => (inTauri() ? convertFileSrc(`${footage.dir}/${file}`) : `/api/scripts/${id}/footage/${encodeURIComponent(file)}`);

@@ -227,6 +227,10 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                         crate::log::info("agent", format!("{name}: done in {} ({what}; ${cost:.2} at API prices): {first}", crate::log::since_start(began)));
                         job.report = Some(report);
                         job.cost_usd = Some(cost);
+                        // A commentary's clips may have changed: their footage comes down now.
+                        if !matches!(work, Work::Restore) {
+                            let _ = crate::footage::now(&data, &id);
+                        }
                     }
                     Err(error) => {
                         crate::log::error("agent", format!("{name}: stopped after {} ({what}): {error}", crate::log::since_start(began)));

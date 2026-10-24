@@ -2,14 +2,14 @@ import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
-import { addSource, buildStatus, findClips, getFeedback, getFinds, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
+import { addSource, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
 import { Monitor } from "./monitor";
 import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
-import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary } from "./types";
+import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, Footage, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary } from "./types";
 import { FoundClips } from "./found-clips";
 import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
@@ -39,6 +39,15 @@ const tokens = (chars: number) => Math.round(chars / 4);
 /** A paragraph of narration takes as long to read as its words, at the app's pace. */
 const readMs = (text: string) => Math.max(1500, Math.round((text.split(/\s+/).filter(Boolean).length * 60_000) / WORDS_PER_MINUTE));
 
+/** In the preview, narration is a card for a moment, then the footage: what's on screen is the point. */
+const CARD_MS = 5000;
+
+/** A YouTube link's video id. */
+const youtubeId = (url: string | undefined) => url?.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/)?.[1];
+
+/** A clip's footage, downloaded: the file and where in it the clip starts. */
+type Played = { src: string; offsetMs: number };
+
 type Shown = { title: string; text: string };
 
 /** How a clip search's stages begin, to tell one from a build after a reload. */
@@ -52,7 +61,7 @@ const FINDER_STAGES = ["Finding clips", "Planning the searches", "Searching YouT
  * from their recordings. A clip whose footage is not in Writer shows as a card
  * with its words. Item IDs match the page's anchors, so the page follows it.
  */
-function previewCut(draft: Draft | null, sources: Source[], srcOf: Map<string, string>) {
+function previewCut(draft: Draft | null, sources: Source[], srcOf: Map<string, string>, downloaded: (cite: Cite) => Played | null, coming: boolean) {
   const items: Item[] = [];
   const cards = new Map<string, Shown>();
   let clips = 0;
@@ -66,10 +75,18 @@ function previewCut(draft: Draft | null, sources: Source[], srcOf: Map<string, s
       items.push({ id, startMs: cite.startMs, endMs: cite.endMs, src });
       return;
     }
+    // A YouTube clip plays from the stretch downloaded beside the script.
+    const played = downloaded(cite);
+    if (played) {
+      playable += 1;
+      items.push({ id, startMs: Math.max(0, cite.startMs - played.offsetMs), endMs: Math.max(1, cite.endMs - played.offsetMs), src: played.src });
+      return;
+    }
     const source = sources.find((item) => item.id === cite.source);
-    items.push({ id, kind: "cut-in", startMs: 0, endMs: Math.max(1000, cite.endMs - cite.startMs) });
+    const youtube = youtubeId(cite.link) ?? youtubeId(source?.origin);
+    items.push({ id, kind: "cut-in", startMs: 0, endMs: Math.min(CARD_MS, Math.max(1000, cite.endMs - cite.startMs)) });
     cards.set(id, {
-      title: `${cite.source} · ${cite.video || source?.title} · not in Writer`,
+      title: `${cite.source} · ${cite.video || source?.title} · ${youtube && coming ? "downloading" : youtube ? "couldn't be downloaded" : "not in Writer"}`,
       text: cite.quote.trim() ? `“${cite.quote.trim()}”` : "No speech. Import the recording into Writer to see it here.",
     });
   };
@@ -80,7 +97,7 @@ function previewCut(draft: Draft | null, sources: Source[], srcOf: Map<string, s
         const id = piece.kind === "clip" ? `c${s}-${p}-${i}` : `s${s}-${p}-${i}`;
         if (piece.kind === "clip") return clip(piece, id);
         if (!piece.text.trim()) return;
-        items.push({ id, kind: "cut-in", startMs: 0, endMs: readMs(piece.text) });
+        items.push({ id, kind: "cut-in", startMs: 0, endMs: Math.min(CARD_MS, readMs(piece.text)) });
         cards.set(id, { title: `Narration · ${section.heading}`, text: piece.text.trim() });
       }),
     ),
@@ -110,6 +127,29 @@ function useSourceVideos(sources: Source[]) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
   return srcOf;
+}
+
+/** The script's YouTube footage, as it downloads: asked again while some is still coming. */
+function useFootage(id: string, draft: Draft | null) {
+  const [footage, setFootage] = useState<Footage | null>(null);
+  useEffect(() => {
+    let live = true;
+    let timer = 0;
+    const ask = () =>
+      void getFootage(id)
+        .then((found) => {
+          if (!live) return;
+          setFootage(found);
+          if (found.pending > 0) timer = window.setTimeout(ask, 5000);
+        })
+        .catch(() => {});
+    ask();
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [id, draft]);
+  return footage;
 }
 
 const VIEWS: { value: View; label: string }[] = [
@@ -162,7 +202,16 @@ export function CommentaryEditor({
 
   // The preview: the script as a cut, played from the recordings Writer has.
   const srcOf = useSourceVideos(sources);
-  const cut = useMemo(() => previewCut(draft, sources, srcOf), [draft, sources, srcOf]);
+  const footage = useFootage(script.id, draft);
+  const downloaded = useCallback(
+    (cite: Cite): Played | null => {
+      const video = youtubeId(cite.link) ?? youtubeId(sources.find((source) => source.id === cite.source)?.origin);
+      const piece = video && footage?.pieces.find((item) => item.video === video && item.fromMs <= cite.startMs && item.toMs >= Math.min(cite.endMs, item.fromMs + 180_000));
+      return piece && footage ? { src: footageUrl(script.id, footage, piece.file), offsetMs: piece.fromMs } : null;
+    },
+    [footage, sources, script.id],
+  );
+  const cut = useMemo(() => previewCut(draft, sources, srcOf, downloaded, (footage?.pending ?? 0) > 0), [draft, sources, srcOf, downloaded, footage]);
   const [{ player, playhead }] = useState(() => {
     const playhead = new Playhead();
     return { playhead, player: new CutPlayer(null, cut.items, playhead) };

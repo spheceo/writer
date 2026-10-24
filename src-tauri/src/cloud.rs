@@ -867,6 +867,10 @@ fn local_files(dir: &Path, script: &Script) -> BTreeMap<String, Kept> {
             if relative == "script.json" || relative == "build.json" {
                 continue;
             }
+            // A commentary's clip footage is each Mac's own (footage.rs): it comes from YouTube.
+            if relative.starts_with("footage/") {
+                continue;
+            }
             let recording = (relative.starts_with("drive/") || relative.starts_with("compilation/")) && !relative.ends_with(".json");
             if recording && path != original {
                 continue;

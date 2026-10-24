@@ -397,6 +397,14 @@ fn route(
         }
         ("GET", ["api", "scripts", id, "finds"]) => json_result(stream, crate::finds_now(&data_dir(&app)?, id)),
         ("GET", ["api", "scripts", id, "finds", "frames", name]) => send_frames(app, stream, id, name),
+        ("GET", ["api", "scripts", id, "footage"]) => json_result(stream, crate::footage::now(&data_dir(&app)?, id)),
+        ("GET", ["api", "scripts", id, "footage", name]) => {
+            let dir = store::script_dir(&data_dir(&app)?, id).map_err(|_| "Unknown script.".to_string())?;
+            match crate::footage::file(&dir, name) {
+                Some(path) => send_file(stream, &path, range),
+                None => write_json(stream, 404, &json!({ "error": "No such footage." })),
+            }
+        }
         ("POST", ["api", "scripts", id, "share"]) => json_result(stream, crate::share_now(&data_dir(&app)?, id)),
         ("PUT", ["api", "reviews", "auto-fix"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
