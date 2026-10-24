@@ -60,7 +60,7 @@ The counts below were measured on v1 with `commentary::measure` (`GET /api/scrip
   - Clips: A CLIP ONLY WHEN IT'S ESSENTIAL, with T2's words.
   - The guide's first lines and WRITER_HEAD now say "where hearing or seeing them is the point".
   - Channel pacing keeps its clip-led measure but says not every line leads into a clip.
-- **Check.** The share of sentences that lead straight into a clip. It flags over 10% for documentary pacing (v1: 8%; the Doc-reviewed draft: 12%) and over 20% for channel pacing (the MrBeast holdouts: 18–19%). The documentary check on paragraphs ending in a clip (over 30%) stays.
+- **Check.** The share of sentences that lead straight into a clip. It flags over 10% in either pacing (v1: 8%; the Doc-reviewed draft: 12%; the MrBeast holdouts: 18–19%), and over 30% of paragraphs ending on a clip, also in either pacing. The user decided on Oct 24 that the team's note holds for the channel's own pacing too, and channel pacing was rewritten to match.
 
 ### 4. Quote pop-ups instead of clips (T2; earlier K7)
 - **Code.** A new element on a paragraph, `quotes`: the words as the narration says them (`on`), who said them, and the source, recording and times, checked like a clip's quote. Writer refuses a pop-up whose words the source doesn't hold, or that the narration doesn't say.
@@ -89,5 +89,5 @@ The Review dialog lists everything the checks flag above Share ("Share anyway"),
 - F5–F8: the reviewer's own intro clips: the 1:44:14 / 1:44:12 reorder, him with Kanye, Iggy praising him, and the Steiny Megan Fox clip. These are production choices; teach-1's "reviewer's choices" source is how Writer carries them.
 
 ## Open questions for the user
-- Channel pacing is clip-led by measurement (30–35% narration), while T2 asks for clips "only if it is freaking mandatory". I kept channel pacing and made the clip check looser for it (20%). Should the team's note change the channel's own pacing too?
+- Answered Oct 24: channel pacing follows the team's note too (a clip only when it's essential).
 - v2 (the four fixes) was never shared. Share it, or rebuild from the taught writer?

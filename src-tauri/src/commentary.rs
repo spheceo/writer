@@ -245,7 +245,7 @@ const DOCUMENTARY_CLIPS_PER_10_MIN: f64 = 22.0;
 impl Pacing {
     fn instructions(self) -> &'static str {
         match self {
-            Pacing::Channel => "CHANNEL PACING, as in the channel's own videos. The narration sets up and the people tell it: where hearing someone is the point, a line or two of narration (about 10 seconds) leads into their clip, and clips often run 20 seconds to a minute, longer when someone tells their own story best. Clips together usually run about twice as long as the narration. Still, not every line leads into a clip: what narration explains well, or what only matters for its words (a quote pop-up), stays in the narration.",
+            Pacing::Channel => "CHANNEL PACING, the channel's own videos. The narration carries the story and a clip comes in only when it's essential: when hearing the person, or seeing the moment, is the point. Then a line of setup leads into it, and it may run 20 seconds to a minute when someone tells their own story best. Everything else is told in the narration, and what only matters for its words is quoted, as a quote pop-up. The team: \"only use a clip if it is freaking mandatory. Most can be explained by text.\" Most paragraphs end on narration, not a clip.",
             Pacing::Documentary => "DOCUMENTARY PACING, as in Turkey Tom's documentaries. This script follows it, not the channel's usual clip-led pacing; the voice is still the channel's. The narrator tells the story and the clips punctuate it: narration is about three quarters of the video. Let the narration run, usually 20 seconds to a minute between clips and sometimes two minutes. A clip comes in only when hearing it beats describing it: the person's own words, or the moment itself. That's about one clip per 30 to 40 seconds of narration, mostly 8 to 20 seconds long and rarely over 30. Set each up with a line that ends on a hook (\"he gave the performance of a lifetime here…\"). Footage, screenshots, posts and articles that only illustrate what the narration says play silently under it: put them in that paragraph's note as \"Show: …\", never as a clip. THE COLD OPEN IS A HOOK, NOT A MONTAGE: no run of clips before the first word. Open on the person at their worst in the public's eyes, said as bluntly as the internet said it (hated, not merely mocked); in one breath, the two or three worst things they did; then the turn, a short line of its own, where it paid off against the odds; what's strange about where they are now; the machine behind it; then end the intro on two or three sharp questions the video will answer, with no channel line. Short paragraphs, often one line each. Ask for the visuals the open names (\"Find: …\" notes). Clips are rare in a documentary: most paragraphs end on narration, and a clip comes in only when it adds a lot. Few or no on-screen chapter cards are needed.",
         }
     }
@@ -1738,7 +1738,8 @@ pub fn measure(draft: &Draft) -> Measures {
 fn clip_sentence_share(pacing: Pacing) -> f64 {
     match pacing {
         Pacing::Documentary => 0.10,
-        Pacing::Channel => 0.20,
+        // The channel's own pacing too (the user, Oct 24 2026: "only use a clip if it is freaking mandatory" holds for it).
+        Pacing::Channel => 0.10,
     }
 }
 
@@ -1819,7 +1820,7 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
     let share = measured.sentences_into_clips as f64 / measured.sentences.max(1) as f64;
     if measured.sentences >= 40 && share > clip_sentence_share(pacing) {
         flags.push(format!(
-            "{} of {} sentences lead straight into a clip ({}%; at most {}% for this pacing). The team: \"it doesn't need to put a clip at the end of every sentence… only use a clip if it is freaking mandatory. Most can be explained by text.\" Keep the clips where hearing or seeing it is the point; tell the rest in narration, and where only the words matter, quote them as a quote pop-up instead of playing the clip.",
+            "{} of {} sentences lead straight into a clip ({}%; at most {}%). The team: \"it doesn't need to put a clip at the end of every sentence… only use a clip if it is freaking mandatory. Most can be explained by text.\" Keep the clips where hearing or seeing it is the point; tell the rest in narration, and where only the words matter, quote them as a quote pop-up instead of playing the clip.",
             measured.sentences_into_clips,
             measured.sentences,
             (share * 100.0).round(),
@@ -1834,12 +1835,12 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
             measured.whole_paragraph_notes.iter().take(3).cloned().collect::<Vec<_>>().join("; ")
         ));
     }
-    if pacing == Pacing::Documentary {
-        // CLIPS ARE RARE: "you dont need to add a clip at every end. It should be a rare thing for a script like this."
+    {
+        // CLIPS ARE RARE, in either pacing: "you dont need to add a clip at every end. It should be a rare thing for a script like this."
         let paragraphs: Vec<&Paragraph> = draft.sections.iter().flat_map(|section| &section.paragraphs).collect();
         let ending = paragraphs.iter().filter(|paragraph| matches!(paragraph.pieces.last(), Some(Piece::Clip(_)))).count();
         if paragraphs.len() >= 10 && ending * 100 / paragraphs.len() > 30 {
-            flags.push(format!("{ending} of {} paragraphs end on a clip. In a documentary-paced script a clip is rare and earned: keep the ones where hearing the person adds a lot, tell the rest in narration, and put footage that only illustrates a line in the note as \"Show: …\".", paragraphs.len()));
+            flags.push(format!("{ending} of {} paragraphs end on a clip. A clip is rare and earned: keep the ones where hearing the person adds a lot, tell the rest in narration, and put footage that only illustrates a line in the note as \"Show: …\".", paragraphs.len()));
         }
     }
     // NO HEDGE ON WHAT'S DOCUMENTED: "no need to say by his own account."
@@ -2359,10 +2360,10 @@ mod tests {
         assert!(flagged[0].contains("Kettle Kate's video 1 time") && flagged[1].contains("remember"));
         // A creator the video is about isn't flagged; a podcast host never is.
         assert!(audit(&draft(vec![say("Kettle Kate says she started in 2012.")]), &sources, "Kettle Kate Was Right", Pacing::Channel).is_empty());
-        // Clip endings count only in a documentary.
+        // Clip endings count in either pacing.
         let clip = Cite { source: "S3".into(), video: "v".into(), link: None, start_ms: 1_000, end_ms: 4_000, quote: "hi".into(), verify: None };
         let ending: Vec<Paragraph> = (0..10).map(|_| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: "She went live.".into() }, Piece::Clip(clip.clone())], note: None, marks: Vec::new() }).collect();
-        assert!(audit(&draft(ending.clone()), &sources, "t", Pacing::Channel).is_empty());
+        assert!(audit(&draft(ending.clone()), &sources, "t", Pacing::Channel)[0].contains("10 of 10 paragraphs end on a clip"));
         assert!(audit(&draft(ending), &sources, "t", Pacing::Documentary)[0].contains("10 of 10 paragraphs end on a clip"));
     }
 
