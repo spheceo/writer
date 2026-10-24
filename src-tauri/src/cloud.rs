@@ -250,6 +250,12 @@ pub fn get_file(data: &Path, script: &str, key: &str, size: u64, path: &Path) ->
     cloud.download(script, &name, key, size, path).map_err(|problem| problem.message)
 }
 
+/// A presigned address to read what is at a key (good for an hour).
+pub fn get_url(data: &Path, key: &str) -> Result<String, String> {
+    let cloud = Cloud::new(data).ok_or(OFF)?;
+    cloud.url(key, "GET").map_err(|problem| problem.message)
+}
+
 /// A script file's key and size in the cloud, as this Mac last synced it,
 /// and the modified time this Mac knew it by.
 pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64, u64)> {

@@ -1,8 +1,7 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
-import { addSource, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
+import { addSource, previewSrc, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
@@ -115,10 +114,9 @@ function useSourceVideos(sources: Source[]) {
     void Promise.all(
       writer.map(async (source) => {
         const id = source.origin.slice("writer:".length);
-        if (!inTauri()) return [source.id, `/api/scripts/${id}/proxy`] as const;
-        // The Mac's window plays the file itself, so it needs the file's place.
+        // From this Mac or straight from the cloud (stream.rs); a script that's gone has none.
         const script = await getScript(id).catch(() => null);
-        return script?.proxyPath ? ([source.id, convertFileSrc(script.proxyPath)] as const) : null;
+        return script ? ([source.id, previewSrc(id, script.durationMs)] as const) : null;
       }),
     ).then((found) => live && setSrcOf(new Map(found.filter((item): item is readonly [string, string] => !!item))));
     return () => {

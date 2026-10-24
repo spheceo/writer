@@ -93,7 +93,7 @@ When an import goes wrong it stops in a state you can act on, as in Repack:
 - Claude busy or overloaded gets one more try a minute later; a plan it sends wrong, or no plan, gets up to two repair turns on the same session. Nothing is saved to the script until a plan passes.
 - Settings checks the setup: Claude Code signed in, ffmpeg and ffprobe, Writer's yt-dlp, and the relay with transcription, Drive and the proxy.
 
-Every import makes a 480p preview (a joined folder's footage is that preview) and is transcribed through the relay.
+Every import makes a 480p preview (a joined folder's footage is that preview) and is transcribed through the relay. The editors play it as Repack plays its footage, never waiting on a download: `preview://localhost/<id>` (`src-tauri/src/stream.rs`) answers each range from the file on this Mac when it's here, otherwise from the cloud's copy through a presigned URL (kept, and asked again after 40 minutes), at most 4 MB an answer; the local API's `/api/scripts/<id>/proxy` does the same. Previews are made with the index first (`+faststart`), so playing starts after the first range and a jump is one more.
 
 `just dev` listens on this Mac only (127.0.0.1:1420), since the page proxies the whole API. To open it from another machine on the tailnet, run `tailscale serve 1420` here. The Writer window must stay open on this Mac, since it serves the API that Vite proxies; port 1421 itself only listens on localhost, and answers only its own address and the dev page. Opening a file from that browser takes a path on this Mac. The file dialog only runs in the Writer window.
 

@@ -497,15 +497,18 @@ fn send_proxy(app: AppHandle, stream: &mut TcpStream, id: &str, range: Option<&s
     let data = app.path().app_data_dir().map_err(|error| error.to_string())?;
     let dir = store::script_dir(&data, id).map_err(|_| "Unknown script.".to_string())?;
     let path = store::proxy_path(&dir);
-    if !path.is_file() {
-        // Cleared from this Mac once verified in the cloud: fetch it back
-        // as cache. Offline, say so plainly instead of "no preview".
-        match crate::storage::fetch_preview(&data, id) {
-            Ok(_) => {}
-            Err(error) => return write_json(stream, 503, &json!({ "error": format!("The preview is in the cloud and can't be fetched now: {error}") })),
-        }
+    if path.is_file() {
+        return send_file(stream, &path, range);
     }
-    send_file(stream, &path, range)
+    // Not on this Mac: played from the cloud, a range at a time (stream.rs).
+    match crate::stream::part(&data, id, range) {
+        Ok(part) if part.status == 416 => write_bytes(stream, 416, &[("content-range", &format!("bytes */{}", part.total))], b""),
+        Ok(part) => {
+            let content_range = format!("bytes {}-{}/{}", part.start, part.end, part.total);
+            write_bytes(stream, part.status, &[("content-type", "video/mp4"), ("accept-ranges", "bytes"), ("content-range", &content_range)], &part.bytes)
+        }
+        Err(error) => write_json(stream, 503, &json!({ "error": format!("The preview is in the cloud and can't be reached now: {error}") })),
+    }
 }
 
 /// A clip's frames, as the last clip search looked at them.
@@ -679,7 +682,7 @@ fn send_file(stream: &mut TcpStream, path: &PathBuf, range: Option<&str>) -> Res
 }
 
 /// One `bytes=` range. The end is inclusive.
-fn parse_range(header: &str, size: u64) -> Option<(u64, u64)> {
+pub(crate) fn parse_range(header: &str, size: u64) -> Option<(u64, u64)> {
     let spec = header.trim().strip_prefix("bytes=")?;
     if spec.contains(',') || size == 0 {
         return None;

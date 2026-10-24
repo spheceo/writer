@@ -41,6 +41,7 @@ mod revise;
 mod settings;
 mod speakers;
 mod storage;
+mod stream;
 mod store;
 mod tidy;
 mod tools;
@@ -1462,6 +1463,14 @@ pub(crate) fn check_clips(clips: Vec<Clip>, duration_ms: u64) -> Result<Vec<Clip
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // preview://localhost/<id>: a script's preview from this Mac or the cloud (stream.rs).
+        .register_asynchronous_uri_scheme_protocol("preview", |context, request, responder| {
+            let app = context.app_handle().clone();
+            std::thread::spawn(move || match app.path().app_data_dir() {
+                Ok(data) => responder.respond(stream::respond(&data, &request)),
+                Err(_) => responder.respond(tauri::http::Response::builder().status(503).body(Vec::new()).unwrap_or_default()),
+            });
+        })
         .setup(|app| {
             if let Ok(dir) = app.path().app_data_dir() {
                 log::init(&dir);

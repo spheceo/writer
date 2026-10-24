@@ -1,7 +1,6 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Asked, ChatLog, Composer, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, inTauri, message, restorePreview, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, message, previewSrc, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { useGrants } from "./can";
@@ -160,7 +159,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
-  const [fetching, setFetching] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
@@ -195,7 +193,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const labels = useMemo(() => purposes(script), [script]);
   const cueCount = clips.filter(isCutIn).length;
   // The footage's length in the address: a reused case joined onto it is a new file at the same path.
-  const src = !script.proxyPath ? "" : `${inTauri() ? convertFileSrc(script.proxyPath) : `/api/scripts/${script.id}/proxy`}?v=${script.durationMs}`;
+  // Played from this Mac or straight from the cloud, never waiting on a download (stream.rs).
+  const src = script.proxyPath || script.status === "ready" ? previewSrc(script.id, script.durationMs) : "";
   // Claude (or a restore) is at work; an archived script is read-only as well.
   const working = started !== null;
   const archived = !!script.archive;
@@ -655,27 +654,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           expanded={expanded}
           onExpand={view === "video" ? setExpanded : undefined}
           onVideo={onVideo}
-          empty={
-            script.status === "ready" && !archived ? (
-              fetching ? (
-                <span>Downloading the preview… a long video's takes a few minutes.</span>
-              ) : (
-                <span>
-                  Preview is in the cloud.{" "}
-                  <button
-                    type="button"
-                    className="link-button"
-                    onClick={() => {
-                      setFetching(true);
-                      void change(() => restorePreview(script.id)).finally(() => setFetching(false));
-                    }}
-                  >
-                    Download preview
-                  </button>
-                </span>
-              )
-            ) : undefined
-          }
         />
         <section className="panel bin" aria-label="Media">
           <header className="panel-head">

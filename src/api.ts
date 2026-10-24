@@ -303,6 +303,14 @@ export const storageReport = () =>
 export const clearStorage = () =>
   inTauri() ? invoke<StorageCleared>("clear_storage") : http<StorageCleared>("/api/storage/clear", { method: "POST" });
 
+/**
+ * Where a script's preview plays from: the file on this Mac when it's here,
+ * otherwise the cloud's copy a range at a time (stream.rs), as Repack plays
+ * its footage. `v` changes the address when the footage does.
+ */
+export const previewSrc = (id: string, v: number | string) =>
+  inTauri() ? `preview://localhost/${id}?v=${v}` : `/api/scripts/${id}/proxy?v=${v}`;
+
 /** A cleared preview back from the cloud, so the script plays here again. */
 export const restorePreview = (id: string) =>
   inTauri() ? invoke<Script>("restore_preview", { id }) : http<Script>(`/api/scripts/${id}/preview`, { method: "POST" });
