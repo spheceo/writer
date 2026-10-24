@@ -539,6 +539,8 @@ pub(crate) fn team_flags(script: &Script, format: &Format, clips: &[Clip]) -> Ve
                 "transition" => Role::CaseIntro,
                 // The When opening's hook comes between its intro clips.
                 "hook" if role == Role::Opening => Role::Opening,
+                // A hidden compilation's intro is followed by more teasers before the case opens.
+                "intro" => Role::CaseIntro,
                 _ => Role::Body,
             };
             cue += 1;

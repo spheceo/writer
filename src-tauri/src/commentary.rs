@@ -945,7 +945,7 @@ const WRITER_PLAN: &str = r#"The answer:
 - Each section's paragraphs are pieces in reading order: {"kind":"say","text":"…"} is narration; {"kind":"clip",…} plays a clip at that point. A clip usually follows narration ending in "…", inside the same paragraph.
 - A clip: source is the ID of the source whose text holds the quote. video names the recording as the editor will find it, including which version when there are several ("Exams Be Like (uncut, archive.org)", "Exams Be Like (current YouTube upload)"). link is that recording's URL exactly as a source writes it, or leave it out. start and end are times in that recording, as the source gives them, written m:ss or h:mm:ss (round to the second; end after start). quote is the exact words spoken in the clip, copied from the source text: leave words out with "…" but never change, add or reorder one; empty only for a clip without speech. verify says what someone must confirm by ear or eye before the clip is used (the speaker, a misheard word), when the source gives reason to doubt it.
 - notes (optional, per paragraph): notes for the editor, each one or two sentences (what to show on screen, what to find, blur or bleep, the mood from here), each "on" the words of the paragraph's narration it goes under, copied exactly: the phrase or sentence it's about, never the whole paragraph.
-- quotes (optional, per paragraph): quote pop-ups. Where someone's words carry the point but playing the clip isn't needed, the narration quotes them ("He said it himself: \"I'm the most hated streamer alive.\"") and the card types them out on screen. on is those words as the narration says them; who is who said them; source, video, link, start, end and quote are where they said it, checked against the source as a clip is.
+- quotes (optional, per paragraph): quote pop-ups, a few in the whole video (about one every two or three minutes of narration), each a whole line of someone's own words. Where someone's words carry the point but playing the clip isn't needed, the narration quotes them ("He said it himself: \"I'm the most hated streamer alive.\"") and the card types them out on screen. on is those words as the narration says them; who is who said them; source, video, link, start, end and quote are where they said it, checked against the source as a clip is.
 - checks: everything to confirm before recording, one line each, naming the clip or claim.
 - report: for the producer, two to four short sentences, under 100 words: where the evidence didn't support the brief, what you left out and why, anything you needed and couldn't find.
 Narration never uses an em dash. The app checks every quote against its source and every link against the sources; a plan that fails comes back to you to correct."#;
@@ -995,7 +995,7 @@ fn quotes_schema() -> Value {
     quote["properties"]["who"] = json!({ "type": "string", "description": "Who said it, as the card names them." });
     quote["properties"]["quote"] = json!({ "type": "string", "description": "Their exact words, copied from the source: what the card types out." });
     quote["required"] = json!(["on", "who", "source", "video", "start", "end", "quote"]);
-    json!({ "type": "array", "maxItems": 4, "items": quote })
+    json!({ "type": "array", "maxItems": 2, "items": quote })
 }
 
 fn plan_schema() -> String {
@@ -1619,6 +1619,24 @@ pub struct Measures {
     pub whole_paragraph_notes: Vec<String>,
     pub notes: usize,
     pub quote_popups: usize,
+    /// Quote pop-ups too short to be a line on a card ("Worse.").
+    pub fragment_popups: Vec<String>,
+}
+
+/// Text with what's inside quotation marks left out.
+fn unquoted(text: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for c in text.chars() {
+        match c {
+            '\u{201c}' => inside = true,
+            '\u{201d}' => inside = false,
+            '"' => inside = !inside,
+            c if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The counts behind the audit.
@@ -1663,7 +1681,8 @@ pub fn measure(draft: &Draft) -> Measures {
                 Piece::Clip(_) => out.clips += 1,
                 Piece::Say { text } => {
                     out.words += text.split_whitespace().count();
-                    out.and_then += text.to_lowercase().matches("and then").count();
+                    // The narrator's own words: what's inside quotation marks is someone else's.
+                    out.and_then += unquoted(text).to_lowercase().matches("and then").count();
                     let sentences = split(text);
                     if matches!(paragraph.pieces.get(index + 1), Some(Piece::Clip(_))) && !sentences.is_empty() {
                         out.sentences_into_clips += 1;
@@ -1698,6 +1717,7 @@ pub fn measure(draft: &Draft) -> Measures {
         let narration: usize = paragraph.said().map(|(_, text)| text.split_whitespace().count()).sum();
         let live: Vec<(&Mark, (usize, usize, usize))> = paragraph.live_marks().collect();
         out.quote_popups += live.iter().filter(|(mark, _)| mark.quote.is_some()).count();
+        out.fragment_popups.extend(live.iter().filter_map(|(mark, _)| mark.quote.as_ref()).filter(|popup| popup.said.quote.split_whitespace().count() < 4).map(|popup| format!("\"{}\"", popup.said.quote.trim())));
         for line in lines {
             let marked = live.iter().find(|(mark, _)| mark.line.trim() == line).map(|(mark, _)| mark.on.split_whitespace().count());
             let whole = match marked {
@@ -1721,6 +1741,9 @@ fn clip_sentence_share(pacing: Pacing) -> f64 {
         Pacing::Channel => 0.20,
     }
 }
+
+/// Quote pop-ups per 1,000 words of narration, at most: one every two or three minutes.
+const POPUPS_PER_1000: f64 = 1.5;
 
 /// Named attributions allowed per 1,000 words of narration: "It is okay to
 /// say according to someone sometimes … We dont have to do the according to
@@ -1845,6 +1868,18 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
     }
     // HIS OWN WORDS ON SCREEN: "sometimes do the exact quote. Then add a note to editor … a cool 'quote' pop up effect."
     let reported = said.iter().filter(|sentence| [" said ", " says ", " told ", " claimed ", " claims ", " admitted ", " bragged "].iter().any(|verb| sentence.contains(verb))).count();
+    // QUOTE IT INSTEAD, but "a cool quote pop up" is a moment, not every other line.
+    let most = (measured.words as f64 / 1_000.0 * POPUPS_PER_1000).max(4.0).floor() as usize;
+    if measured.quote_popups > most || !measured.fragment_popups.is_empty() {
+        let mut found = Vec::new();
+        if measured.quote_popups > most {
+            found.push(format!("{} quote pop-ups (at most {most} here)", measured.quote_popups));
+        }
+        if !measured.fragment_popups.is_empty() {
+            found.push(format!("{} too short to be a line on a card ({})", measured.fragment_popups.len(), measured.fragment_popups.iter().take(3).cloned().collect::<Vec<_>>().join(", ")));
+        }
+        flags.push(format!("Quote pop-ups are for the few lines that hit hardest: {}. Keep the strongest, each a whole line of their own words (four words or more); let the rest be told, or quoted, in the narration without a card.", found.join("; ")));
+    }
     if reported >= 8 && measured.quote_popups == 0 {
         flags.push(format!("The narration reports what people said {reported} times and never puts their exact words on screen. In a few of the strongest places, quote them in the narration and add a quote pop-up (quotes: the words, who, and where they said them), so the editor types them out instead of playing a clip."));
     }
@@ -2527,6 +2562,7 @@ mod tests {
         let measured = measure(&draft(vec![say("He went live. He insulted a guest. He got banned. Later, he came back. A week later, he did it again. And then it got worse.")]));
         assert_eq!(measured.sequence_openers, 3);
         assert_eq!(measured.and_then, 1);
+        assert_eq!(measure(&draft(vec![say("Sneako said: \u{201c}He called and then went to gamble.\u{201d}")])).and_then, 0);
         assert_eq!(measured.recital_runs.len(), 2, "{:?}", measured.recital_runs);
         // A note on no words, or on all of a long paragraph, is on the whole paragraph.
         let long = "This paragraph runs on for a while about one thing and then another so that it has well over twenty five words in it to measure the share.";
