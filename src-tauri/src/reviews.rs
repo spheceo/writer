@@ -7,7 +7,7 @@
 //! sharing again publishes the next version under the same link. While
 //! Writer runs it asks for changed notes every 45 seconds and keeps them in
 //! `reviews/notes.json` beside `scripts/` (each Mac its own copy, so two
-//! Macs never conflict over it). Two minutes after a script's last new note,
+//! Macs never conflict over it). Five minutes after a script's last new note,
 //! its open notes are fixed by Claude (fixing.rs), unless that's turned off.
 
 use std::collections::BTreeMap;
@@ -26,7 +26,7 @@ use crate::{cloud, import, jobs, settings, store};
 
 const POLL: Duration = Duration::from_secs(45);
 /// A sitting's notes are fixed together: this long after the last one.
-pub const QUIET_MS: i64 = 2 * 60_000;
+pub const QUIET_MS: i64 = 5 * 60_000;
 /// Runs a note gets by itself; after that, only the producer fixes it, by hand.
 const MAX_ATTEMPTS: u32 = 2;
 
@@ -665,7 +665,7 @@ fn poll(data: &Path) -> Result<bool, String> {
     Ok(changed)
 }
 
-/// Starts a fix on each script whose reviewer has been quiet for two
+/// Starts a fix on each script whose reviewer has been quiet for five
 /// minutes, with open notes nobody has taken: one run per script, never
 /// during a build or an import, and not at all when turned off.
 fn start_fixes(app: &AppHandle, data: &Path) {
@@ -697,7 +697,7 @@ fn start_fixes(app: &AppHandle, data: &Path) {
             continue;
         }
         let ids: Vec<String> = notes.iter().map(|note| note.id.clone()).collect();
-        crate::log::info("review", format!("script {}: {} new {} quiet for two minutes; fixing them", &script[..8.min(script.len())], ids.len(), if ids.len() == 1 { "note" } else { "notes" }));
+        crate::log::info("review", format!("script {}: {} new {} quiet for five minutes; fixing them", &script[..8.min(script.len())], ids.len(), if ids.len() == 1 { "note" } else { "notes" }));
         mark_tried(data, &ids);
         let _ = jobs::start(app.clone(), script, jobs::Work::Review { notes: ids });
     }

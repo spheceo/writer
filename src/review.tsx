@@ -354,7 +354,7 @@ export function ReviewDialog({
       {mayShare && link && autoFix !== null && !approved && (
         <label className="toggle review-auto">
           <input type="checkbox" checked={autoFix} onChange={(event) => void setAutoFix(event.target.checked).then((counts) => setAuto(counts.autoFix), (cause) => setProblem(message(cause)))} />
-          Claude fixes new notes by itself, two minutes after a reviewer's last one, while Writer is open
+          Claude fixes new notes by itself, five minutes after a reviewer's last one, while Writer is open
         </label>
       )}
       {link && roots.length === 0 && <p className="faint">No notes yet.</p>}
