@@ -875,35 +875,6 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .page .narration::selection { background: #3b82f6; color: #fff; }
 .page .block[data-state] .narration:first-of-type { background: #fdf1c7; }
 /* Paragraph tools wait in the right margin, at the size the screen shows them. */
-.block-tools {
-  position: absolute;
-  top: 0;
-  right: -88px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  transform: scale(var(--inverse, 1));
-  transform-origin: top right;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s;
-}
-.block:hover > .block-tools, .block:focus-within > .block-tools { opacity: 1; pointer-events: auto; }
-.block-tools button {
-  height: 24px;
-  padding: 0 8px;
-  gap: 5px;
-  border: 1px solid #2b2b2b;
-  border-radius: 999px;
-  background: #151515;
-  color: var(--text-2);
-  font-family: var(--font-sans);
-  font-size: 11.5px;
-  box-shadow: 0 4px 12px #0006;
-}
-.block-tools button:hover:not(:disabled) { background: #1c1c1c; color: var(--text); }
-.block-tools .danger-text { color: var(--danger); }
 .page .doc-total { margin: 24pt 0 0; }
 .page .doc-empty { color: #858585; }
 /* Comments sit outside the paper and scale with it. */

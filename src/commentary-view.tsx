@@ -1037,17 +1037,6 @@ function CommentaryDoc({
                         </div>
                       ),
                     )}
-                    <div className="block-tools">
-                      {paragraph.note === undefined && (
-                        <button type="button" disabled={disabled} title="Add a note for the editor" onClick={() => onParagraph(s, p, { ...paragraph, note: "" })}>
-                          <Icon name="note" size={14} />
-                          Note
-                        </button>
-                      )}
-                      <button type="button" className="danger-text" disabled={disabled} title="Remove this paragraph" onClick={() => onParagraph(s, p, null)}>
-                        Remove
-                      </button>
-                    </div>
                   </div>
                 );
               })}
