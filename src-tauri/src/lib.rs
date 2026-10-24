@@ -1243,7 +1243,6 @@ pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value,
 
 /// A teaching step on a given draft: `apply` carries out `request` on it
 /// (what the last round still missed, fixed directly), as a revision.
-#[cfg(debug_assertions)]
 /// What a reviewer would flag on the script as it is (or on a draft
 /// given), with the counts behind it: shown before sharing.
 pub fn audit_now(data: &Path, id: &str, draft: Option<commentary::Draft>) -> Result<serde_json::Value, String> {
@@ -1257,6 +1256,7 @@ pub fn audit_now(data: &Path, id: &str, draft: Option<commentary::Draft>) -> Res
     Ok(serde_json::json!({ "measures": null, "flags": claude::audit(&script) }))
 }
 
+#[cfg(debug_assertions)]
 pub fn teach_with(data: &Path, id: &str, mode: &str, draft: Option<commentary::Draft>, request: &str) -> Result<serde_json::Value, String> {
     const REVIEW: &str = "The team read this script and sent it back with a round of notes. You don't get the notes: review the whole script the way the team would, find everything they would flag, and fix it across the script, the house way (the guide). Keep what they wouldn't flag as it is. Send the complete script. In the report, a short list of what you found and what you changed.";
     let dir = store::script_dir(data, id)?;
