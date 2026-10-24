@@ -884,8 +884,11 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .page .narration:focus { outline: none; }
 .page .narration::selection { background: #3b82f6; color: #fff; }
 /* A paragraph with a note for the editor is marked as a commented passage is: soft yellow at rest, stronger when it or its card is hovered or selected. */
-.page .block[data-noted] .narration:first-of-type { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; transition: background 0.12s, box-shadow 0.12s; }
-.page .block[data-state] .narration:first-of-type { background: #f8d66d; box-shadow: 0 0 0 2px #f8d66d; }
+.page .block[data-noted="whole"] .narration:first-of-type { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; transition: background 0.12s, box-shadow 0.12s; }
+.page .block[data-noted="whole"][data-state] .narration:first-of-type { background: #f8d66d; box-shadow: 0 0 0 2px #f8d66d; }
+/* A note on some words marks only those. */
+.grow-mirror mark[data-kind="note"] { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; transition: background 0.12s, box-shadow 0.12s; }
+.page .block[data-state] .grow-mirror mark[data-kind="note"] { background: #f8d66d; box-shadow: 0 0 0 2px #f8d66d; }
 /* Paragraph tools wait in the right margin, at the size the screen shows them. */
 .page .doc-total { margin: 24pt 0 0; }
 .page .doc-empty { color: #858585; }
@@ -1533,3 +1536,7 @@ button.danger-soft:hover:not(:disabled) { background: color-mix(in srgb, var(--d
 .cm-ready.failed svg, .cm-ready.failed .cm-ready-text { color: #f5a05a; }
 .cm-ready-bar { position: relative; flex-basis: 100%; height: 3px; border-radius: 2px; background: var(--line-strong); overflow: hidden; }
 .cm-ready-bar i { position: absolute; inset: 0 auto 0 0; background: #b4bcf0; transition: width 0.4s; }
+/* What the checks flag before a script is shared. */
+.review-flags { margin-bottom: 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warning) 8%, transparent); font-size: 12.5px; line-height: 1.45; }
+.review-flags ul { margin: 6px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.review-flags li + li { margin-top: 4px; }

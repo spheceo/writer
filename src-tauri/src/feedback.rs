@@ -1110,7 +1110,7 @@ mod tests {
             open: vec![Cite { source: "S2".into(), video: "Stream".into(), link: None, start_ms: 0, end_ms: 4_000, quote: "Get him off the stage".into(), verify: None }],
             sections: vec![Section {
                 heading: "1. The Rise".into(),
-                paragraphs: paragraphs.iter().map(|text| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: text.to_string() }], note: None }).collect(),
+                paragraphs: paragraphs.iter().map(|text| Paragraph { id: String::new(), pieces: vec![Piece::Say { text: text.to_string() }], note: None, marks: Vec::new() }).collect(),
             }],
             checks: vec!["Check the voice.".into()],
             report: String::new(),
@@ -1142,12 +1142,13 @@ mod tests {
 
     #[test]
     fn a_lesson_that_points_at_the_script_is_caught() {
-        let script = draft(&["Then Kanye called him up for a stream, and Kanye stayed for an hour. Same kid. Same chat. And Mark said hi to Mark."]);
-        assert!(leaks("## Clips that repeat\nWhen a point is made, cut the second clip that makes it again. Same as before: mark the place.", &script).is_empty());
-        let found = leaks("Don't write lines like then kanye called him up for a stream. Kanye and Mark.", &script);
+        // The guide says "mark" now (the team's "Only mark the part…"), so the name and the verb are Rob's.
+        let script = draft(&["Then Kanye called him up for a stream, and Kanye stayed for an hour. Same kid. Same chat. And Rob said hi to Rob."]);
+        assert!(leaks("## Clips that repeat\nWhen a point is made, cut the second clip that makes it again. A repeat would rob the point.", &script).is_empty());
+        let found = leaks("Don't write lines like then kanye called him up for a stream. Kanye and Rob.", &script);
         assert!(found.iter().any(|leak| leak.contains("called him up for a stream")));
         assert!(found.iter().any(|leak| leak == "the name \"Kanye\""));
-        assert!(found.iter().any(|leak| leak == "the name \"Mark\""));
+        assert!(found.iter().any(|leak| leak == "the name \"Rob\""));
     }
 
     #[test]

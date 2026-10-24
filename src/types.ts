@@ -349,7 +349,13 @@ export type Cite = {
 export type Piece = { kind: "say"; text: string } | ({ kind: "clip" } & Cite);
 
 /** `id` is given when the script is first shared, and kept: review notes anchor to it. */
-export type Paragraph = { id?: string; pieces: Piece[]; note?: string };
+/**
+ * What one line of a paragraph's note is on: the narration words it's about (commentary.rs Mark).
+ * A quote pop-up's words are what someone said, typed out on screen instead of a clip.
+ */
+export type NoteMark = { line: string; on: string; quote?: { who: string; said: Cite } };
+
+export type Paragraph = { id?: string; pieces: Piece[]; note?: string; marks?: NoteMark[] };
 
 export type Section = { heading: string; paragraphs: Paragraph[] };
 
@@ -457,6 +463,8 @@ export type ReviewBlock = {
   readMs?: number;
   durationMs?: number;
   editNotes?: string[];
+  /** The words an edit note is on (note: its index in editNotes); a note with none is on the whole block. */
+  editMarks?: { note: number; start: number; end: number; quote: string; popup?: { who: string; words: string; video: string; link?: string; startMs: number; endMs: number } }[];
 };
 export type ReviewAnchor = { kind?: string; blockId?: string; start?: number; end?: number; quote?: string; side?: "before" | "after" };
 /** A reviewer's note, or a reply to one, with what the fix changed once it's done. */

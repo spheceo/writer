@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { CommentsPanel, hoverNote } from "./comments";
-import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, shareScript } from "./api";
+import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, scriptAudit, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
@@ -57,7 +57,7 @@ export function useReview(id: string, revision: number) {
 }
 
 /** Part of a block's text a band covers: a fix's change, or an open note's words. */
-export type Band = { start: number; end: number; notes: string[]; kind: "fix" | "open" };
+export type Band = { start: number; end: number; notes: string[]; kind: "fix" | "open" | "note" };
 
 /** Bands by block: each done note's changed ranges, and each open note's anchor. */
 export function bandsOf(notes: ReviewNote[]): Map<string, Band[]> {
@@ -240,12 +240,18 @@ export function ReviewDialog({
   const [fixesHere, setFixesHere] = useState<boolean | null>(null);
   // Sharing, approving and fixing need review.share; reading the notes doesn't.
   const mayShare = useGrants().has(CAN.share);
+  // What a reviewer would flag, checked before it's shared, as Edit's audit is before an export.
+  const [flags, setFlags] = useState<string[]>([]);
   useEffect(() => {
     if (!open) return;
     setProblem(null);
     onRefresh();
     void reviewCounts().then((counts) => setFixesHere(counts.fixesHere), () => {});
   }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    void scriptAudit(script.id).then((found) => setFlags(found.flags), () => setFlags([]));
+  }, [open, script.id, script.revision]);
 
   const link = script.review;
   const share = async () => {
@@ -325,12 +331,22 @@ export function ReviewDialog({
           )}
           {mayShare && (
             <button type="button" className={link && !behind ? "ghost" : "primary"} disabled={sharing || busy} onClick={() => void share()}>
-              {sharing ? "Sharing…" : link ? `Share again as v${link.version + 1}` : "Share"}
+              {sharing ? "Sharing…" : `${link ? `Share again as v${link.version + 1}` : "Share"}${flags.length ? " anyway" : ""}`}
             </button>
           )}
         </>
       }
     >
+      {mayShare && flags.length > 0 && !approved && (
+        <div className="review-flags">
+          <strong>Before sharing: {flags.length === 1 ? "one thing" : `${flags.length} things`} the team would flag</strong>
+          <ul>
+            {flags.map((flag, index) => (
+              <li key={index}>{flag}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {link && (
         <div className="review-link">
           <input readOnly value={link.url} aria-label="Review link" onFocus={(event) => event.currentTarget.select()} />

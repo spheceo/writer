@@ -1,5 +1,5 @@
 import { clock } from "./clips";
-import type { Cite, Draft, Piece, Source } from "./types";
+import type { Cite, Draft, NoteMark, Paragraph, Piece, Source } from "./types";
 
 /** Narration is read at about this pace, as the app estimates it. */
 export const WORDS_PER_MINUTE = 150;
@@ -77,3 +77,69 @@ export function commentaryDocument(_title: string, draft: Draft, _sources: Sourc
 
   return `${out.join("\n\n")}\n`;
 }
+
+/** A character as marks are matched (commentary.rs find_words): case, curly quotes and spaces aside. */
+function canon(c: string) {
+  if (c === "\u2018" || c === "\u2019" || c === "\u02bc") return "'";
+  if (c === "\u201c" || c === "\u201d") return '"';
+  if (/\s/.test(c)) return " ";
+  return c.toLowerCase();
+}
+
+/** Where `words` are in `text` ([start, end) in its UTF-16 units), matched as commentary.rs find_words matches them. */
+export function findWords(text: string, words: string): [number, number] | null {
+  const trimmed = words.trim().replace(/^["“”'‘’\s]+|["“”'‘’\s]+$/g, "");
+  const wanted: string[] = [];
+  for (const c of trimmed) {
+    const k = canon(c);
+    if (!(k === " " && wanted[wanted.length - 1] === " ")) wanted.push(k);
+  }
+  if (wanted.filter((c) => /[\p{L}\p{N}]/u.test(c)).length < 2) return null;
+  const have: [number, string][] = [];
+  let at = 0;
+  for (const c of text) {
+    const k = canon(c);
+    if (!(k === " " && have[have.length - 1]?.[1] === " ")) have.push([at, k]);
+    at += c.length;
+  }
+  const search = (want: string[]): [number, number] | null => {
+    const word = (c: string | undefined) => c !== undefined && /[\p{L}\p{N}]/u.test(c);
+    for (let from = 0; from + want.length <= have.length; from++) {
+      // Whole words only: "lied" isn't in "applied".
+      const bounded = (!word(have[from - 1]?.[1]) || !word(want[0])) && (!word(have[from + want.length]?.[1]) || !word(want[want.length - 1]));
+      if (bounded && want.every((c, i) => have[from + i][1] === c)) {
+        const [last] = have[from + want.length - 1];
+        return [have[from][0], last + (text.codePointAt(last)! > 0xffff ? 2 : 1)];
+      }
+    }
+    return null;
+  };
+  const found = search(wanted);
+  if (found) return found;
+  let end = wanted.length;
+  while (end > 0 && !/[\p{L}\p{N}]/u.test(wanted[end - 1])) end -= 1;
+  return end > 0 && end < wanted.length ? search(wanted.slice(0, end)) : null;
+}
+
+/** A paragraph's note lines, trimmed, in order. */
+export const noteLines = (paragraph: Paragraph) => (paragraph.note ?? "").split("\n").map((line) => line.trim()).filter(Boolean);
+
+/** The marks still on their words: the narration piece, its span there and the note line's index. */
+export function liveMarks(paragraph: Paragraph) {
+  const lines = noteLines(paragraph);
+  const out: { mark: NoteMark; piece: number; start: number; end: number; line: number }[] = [];
+  for (const mark of paragraph.marks ?? []) {
+    const line = lines.indexOf(mark.line.trim());
+    if (line < 0) continue;
+    for (const [piece, item] of paragraph.pieces.entries()) {
+      if (item.kind !== "say") continue;
+      const span = findWords(item.text, mark.on);
+      if (span) {
+        out.push({ mark, piece, start: span[0], end: span[1], line });
+        break;
+      }
+    }
+  }
+  return out;
+}
+

@@ -3,7 +3,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { ChatLog, Composer, Elapsed, ResetAsk, Said, Working } from "./agent";
 import { addSource, getChat, previewSrc, resetScript, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
-import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
+import { commentaryDocument, liveMarks, narrationWords, noteLines, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
 import { Monitor } from "./monitor";
 import { type HoverClip, useHoverPreview } from "./hover-preview";
@@ -1111,6 +1111,10 @@ function CommentaryDoc({
                 // Clips that follow one another share a line, joined with "+".
                 const lines: ({ kind: "say"; text: string; index: number } | { kind: "clips"; cites: { cite: Cite; id: string; band?: Band[] }[] })[] = [];
                 const banded = pieceBands(paragraph, paragraph.id ? bands?.get(paragraph.id) : undefined);
+                const noteId = `n${s}-${p}`;
+                // A note on some words lights those, as a comment does; one on none lights the paragraph's first lines.
+                const marks = liveMarks(paragraph);
+                for (const { piece, start, end } of marks) banded.set(piece, [...(banded.get(piece) ?? []), { start, end, notes: [], kind: "note" }]);
                 paragraph.pieces.forEach((piece, i) => {
                   if (piece.kind === "say") return lines.push({ kind: "say", text: piece.text, index: i });
                   const last = lines[lines.length - 1];
@@ -1118,7 +1122,6 @@ function CommentaryDoc({
                   if (last?.kind === "clips") last.cites.push(item);
                   else lines.push({ kind: "clips", cites: [item] });
                 });
-                const noteId = `n${s}-${p}`;
                 const setSay = (index: number, text: string) =>
                   onParagraph(s, p, {
                     ...paragraph,
@@ -1129,7 +1132,7 @@ function CommentaryDoc({
                     className="block"
                     data-block
                     data-anchor={noteId}
-                    data-noted={paragraph.note !== undefined || undefined}
+                    data-noted={paragraph.note !== undefined ? (marks.length && marks.length === noteLines(paragraph).length ? "words" : "whole") : undefined}
                     data-paragraph={paragraph.id || undefined}
                     data-state={active === noteId ? "active" : undefined}
                     key={`${s}-${p}-${draft.writtenAt}`}

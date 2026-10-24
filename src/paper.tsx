@@ -333,7 +333,7 @@ function marked(text: string, bands: Band[]) {
     const piece = text.slice(at, next);
     out.push(
       over.length ? (
-        <mark key={at} data-ids={over.flatMap((band) => band.notes).join(" ")} data-kind={over.some((band) => band.kind === "fix") ? "fix" : "open"}>
+        <mark key={at} data-ids={over.flatMap((band) => band.notes).join(" ")} data-kind={over.some((band) => band.kind === "fix") ? "fix" : over.some((band) => band.kind === "open") ? "open" : "note"}>
           {piece}
         </mark>
       ) : (

@@ -188,6 +188,13 @@ fn route(
         }
         // Debug builds only: a commentary written from scratch, or the written
         // one reviewed blind, saved nowhere (scripts/teach, the teaching loop).
+        // The checks on a draft given (a teaching round's), as the share would run them.
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "audit"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let draft = serde_json::from_value(value["draft"].clone()).ok();
+            json_result(stream, crate::audit_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), draft))
+        }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "teach"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
@@ -390,6 +397,7 @@ fn route(
             let data = data_dir(&app)?;
             json_result(stream, crate::start_find_clips_now(app, &data, (*id).to_string()))
         }
+        ("GET", ["api", "scripts", id, "audit"]) => json_result(stream, crate::audit_now(&data_dir(&app)?, id, None)),
         ("GET", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::feedback_now(&data_dir(&app)?, id)),
         ("POST", ["api", "scripts", id, "feedback"]) => json_result(stream, crate::pull_feedback_now(&data_dir(&app)?, id)),
         ("POST", ["api", "scripts", id, "review", "notes"]) => {

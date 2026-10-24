@@ -905,6 +905,11 @@ pub fn review_fix_now(data: &Path, id: &str) -> Result<serde_json::Value, String
 }
 
 #[tauri::command]
+async fn script_audit(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || audit_now(&data_dir(&app)?, &id, None)).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn review_fix(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || review_fix_now(&data_dir(&app)?, &id)).await.map_err(|error| error.to_string())?
 }
@@ -1239,6 +1244,19 @@ pub fn teach_now(data: &Path, id: &str, mode: &str) -> Result<serde_json::Value,
 /// A teaching step on a given draft: `apply` carries out `request` on it
 /// (what the last round still missed, fixed directly), as a revision.
 #[cfg(debug_assertions)]
+/// What a reviewer would flag on the script as it is (or on a draft
+/// given), with the counts behind it: shown before sharing.
+pub fn audit_now(data: &Path, id: &str, draft: Option<commentary::Draft>) -> Result<serde_json::Value, String> {
+    let dir = store::script_dir(data, id)?;
+    let script = store::read(&dir)?;
+    can::require_script(&script)?;
+    if script.commentary.is_some() {
+        let (measures, flags) = commentary::checks(&dir, &script, draft.as_ref())?;
+        return Ok(serde_json::json!({ "measures": measures, "flags": flags }));
+    }
+    Ok(serde_json::json!({ "measures": null, "flags": Vec::<String>::new() }))
+}
+
 pub fn teach_with(data: &Path, id: &str, mode: &str, draft: Option<commentary::Draft>, request: &str) -> Result<serde_json::Value, String> {
     const REVIEW: &str = "The team read this script and sent it back with a round of notes. You don't get the notes: review the whole script the way the team would, find everything they would flag, and fix it across the script, the house way (the guide). Keep what they wouldn't flag as it is. Send the complete script. In the report, a short list of what you found and what you changed.";
     let dir = store::script_dir(data, id)?;
@@ -1260,9 +1278,12 @@ pub fn teach_with(data: &Path, id: &str, mode: &str, draft: Option<commentary::D
         }
         _ => return Err("Ask for mode build, review or apply.".into()),
     };
+    let (measures, flags) = commentary::checks(&dir, &script, Some(&built.draft))?;
     Ok(serde_json::json!({
         "id": id,
         "mode": mode,
+        "measures": measures,
+        "flags": flags,
         "draft": built.draft,
         "text": feedback::script_text(&built.draft),
         "report": built.report,
@@ -1666,6 +1687,7 @@ pub fn run() {
             reply_review_note,
             check_review_note,
             review_fix,
+            script_audit,
             delete_review_note,
             get_feedback,
             set_feedback_item,

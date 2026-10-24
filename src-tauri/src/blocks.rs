@@ -43,6 +43,39 @@ pub struct Block {
     /// Notes for the video editor on it ("edit: …").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub edit_notes: Vec<String>,
+    /// The words an edit note is on, when it's on some of the block rather
+    /// than all of it: `note` is its index in `edit_notes`. A note with no
+    /// mark is on the whole block.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edit_marks: Vec<EditMark>,
+}
+
+/// An edit note's words, as a review anchor names them: UTF-16 offsets into
+/// the block's text and the words there.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditMark {
+    pub note: usize,
+    pub start: usize,
+    pub end: usize,
+    pub quote: String,
+    /// A quote pop-up: the words go up on screen, typed out, instead of a clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popup: Option<Popup>,
+}
+
+/// A quote pop-up's card for Edit and the review page: who said it, their
+/// words as the card types them, and where they said them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Popup {
+    pub who: String,
+    pub words: String,
+    pub video: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    pub start_ms: u64,
+    pub end_ms: u64,
 }
 
 /// Part of a block's text a fix changed. Empty (`start == end`) marks where
@@ -177,11 +210,41 @@ fn commentary_blocks(draft: &crate::commentary::Draft) -> Vec<Block> {
                 read_ms: Some(read),
                 duration_ms: Some(read + clips),
                 edit_notes: editor_lines(paragraph.note.iter().map(String::as_str)),
+                edit_marks: edit_marks(paragraph),
                 ..Default::default()
             });
         }
     }
     out
+}
+
+/// Where in a paragraph's block text each of its marked notes is (its
+/// lines are `edit_notes` in order).
+pub fn edit_marks(paragraph: &Paragraph) -> Vec<EditMark> {
+    let lines = paragraph.note_lines();
+    let spans = piece_spans(paragraph);
+    paragraph
+        .live_marks()
+        .filter_map(|(mark, (piece, start, end))| {
+            let Piece::Say { text } = &paragraph.pieces[piece] else { return None };
+            let at = spans[piece].0;
+            let units = |bytes: usize| text[..bytes].encode_utf16().count();
+            Some(EditMark {
+                note: lines.iter().position(|line| *line == mark.line.trim())?,
+                start: at + units(start),
+                end: at + units(end),
+                quote: text[start..end].to_string(),
+                popup: mark.quote.as_ref().map(|popup| Popup {
+                    who: popup.who.clone(),
+                    words: popup.said.quote.trim().to_string(),
+                    video: popup.said.video.clone(),
+                    link: popup.said.link.clone(),
+                    start_ms: popup.said.start_ms,
+                    end_ms: popup.said.end_ms,
+                }),
+            })
+        })
+        .collect()
 }
 
 /// A paragraph's pieces with their UTF-16 spans in its block text (each on its own line).
@@ -498,9 +561,38 @@ mod tests {
                 Piece::Say { text: "Then this one.".into() },
             ],
             note: None,
+            marks: Vec::new(),
         };
         // test/review.test.ts holds the same paragraph and these offsets.
         assert_eq!(paragraph_text(&paragraph), "He lied.\n[Stream 1:05–1:10] \"no\"\nThen this one.");
+    }
+
+    #[test]
+    fn marks_each_note_on_its_words_in_the_block_text() {
+        use crate::commentary::{Cite, Mark, Popup as Card};
+        let said = Cite { source: "S1".into(), video: "Stream".into(), link: None, start_ms: 65_400, end_ms: 70_900, quote: "I lied".into(), verify: None };
+        let paragraph = Paragraph {
+            id: "p1".into(),
+            pieces: vec![
+                Piece::Say { text: "He lied.".into() },
+                Piece::Clip(said.clone()),
+                Piece::Say { text: "Then 😀 he said: I lied.".into() },
+            ],
+            note: Some("Show: the 😀 post.\nQuote it.\nFind: the stream.".into()),
+            marks: vec![
+                Mark { line: "Quote it.".into(), on: "I lied".into(), quote: Some(Card { who: "Him".into(), said }) },
+                Mark { line: "Show: the 😀 post.".into(), on: "He lied.".into(), quote: None },
+                // Its words are gone from the paragraph: on the whole block.
+                Mark { line: "Find: the stream.".into(), on: "gone words".into(), quote: None },
+            ],
+        };
+        let text = paragraph_text(&paragraph);
+        let marks = edit_marks(&paragraph);
+        assert_eq!(marks.len(), 2);
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let words = |mark: &EditMark| String::from_utf16(&units[mark.start..mark.end]).unwrap();
+        assert_eq!((marks[0].note, words(&marks[0]).as_str(), marks[0].popup.as_ref().map(|card| card.words.as_str())), (1, "I lied", Some("I lied")));
+        assert_eq!((marks[1].note, words(&marks[1]).as_str()), (0, "He lied."));
     }
 
     #[test]

@@ -524,6 +524,11 @@ pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, S
     let size = serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0);
     let published = publish(data, id, &script.title, &key, meta, script.revision).inspect_err(|error| crate::log::error("review", format!("{}: couldn't share: {error}", crate::log::named(id, &script.title))))?;
     crate::log::info("review", format!("{}: shared as v{} ({} blocks, {} of page data) at {}", crate::log::named(id, &script.title), published.version, found_count, crate::log::size(size as u64), published.url));
+    // What the team would flag, said where a share by the fixing computer is seen.
+    if let Some(flags) = crate::audit_now(data, id, None).ok().and_then(|found| found["flags"].as_array().cloned()).filter(|flags| !flags.is_empty()) {
+        let said: Vec<String> = flags.iter().filter_map(|flag| flag.as_str()).map(|flag| flag.chars().take(160).collect()).collect();
+        crate::log::warn("review", format!("{}: v{} shared with {} things the team would flag: {}", crate::log::named(id, &script.title), published.version, said.len(), said.join(" | ")));
+    }
     script.review = Some(Link {
         review_id: published.review_id.clone(),
         token: published.token,

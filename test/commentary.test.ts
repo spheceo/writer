@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { commentaryDocument, timing, totalLine } from "../src/commentary";
+import { commentaryDocument, findWords, timing, totalLine } from "../src/commentary";
 import type { Draft, Source } from "../src/types";
 
 const clip = { source: "S2", video: "Exams Be Like (uncut)", link: "https://archive.org/x", startMs: 6_000, endMs: 19_000, quote: "Exams are like judgment day" };
@@ -46,4 +46,14 @@ test("times narration at 150 words a minute plus every clip", () => {
   expect(narrationMs).toBe(Math.round((9 * 60_000) / 150));
   expect(clipsMs).toBe(3_000 + 13_000);
   expect(totalLine(draft)).toBe("Total time = 0min vo + 16s = 0min");
+});
+
+test("finds a note's words as commentary.rs does: case, curly quotes and spaces aside, whole words only", () => {
+  const text = "He said it live. “I’m the most hated streamer,”  he told the room.";
+  const [a, b] = findWords(text, "\"I'm the most hated streamer\"")!;
+  expect(text.slice(a, b)).toBe("I’m the most hated streamer");
+  expect(findWords(text, "streamer,” he told")).not.toBeNull();
+  expect(findWords("It went live on Friday", "It went live on Friday.")).not.toBeNull();
+  expect(findWords(text, "he told the class")).toBeNull();
+  expect(findWords("He applied twice.", "lied twice")).toBeNull();
 });

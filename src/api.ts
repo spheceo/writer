@@ -164,6 +164,10 @@ export type ReviewFix = {
   stale: boolean;
   updatedAt: number;
 };
+/** What a reviewer would flag that a count can find (commentary::audit, claude::team_flags), shown before sharing. */
+export const scriptAudit = (id: string) =>
+  inTauri() ? invoke<{ flags: string[] }>("script_audit", { id }) : http<{ flags: string[] }>(`/api/scripts/${id}/audit`);
+
 export const reviewFix = (id: string) =>
   inTauri()
     ? invoke<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null }>("review_fix", { id })

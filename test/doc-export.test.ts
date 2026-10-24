@@ -209,3 +209,34 @@ test("a reused case's footage opens the video linked to its own video, never lis
   expect(content.text).toContain("(0:05‑0:08)");
   expect(content.styles.filter((style) => style.url).map((style) => style.url)).toContain(`${old}?t=5`);
 });
+
+test("a commentary note sits on the words it's about, and a quote pop-up goes to Edit as an edit: note", () => {
+  const said = { source: "S1", video: "Stream", startMs: 130_000, endMs: 134_000, quote: "I want a Lambo." };
+  const draft: Draft = {
+    open: [],
+    sections: [
+      {
+        heading: "Intro",
+        paragraphs: [
+          {
+            pieces: [{ kind: "say", text: "  He wanted a car. He said it himself: I want a Lambo. Then he went quiet." }],
+            note: "Show: the dealership photo.\nQuote pop-up (typewriter): “I want a Lambo.” (Him, Stream 2:10-2:14)\nTense music from here.",
+            marks: [
+              { line: "Show: the dealership photo.", on: "He wanted a car." },
+              { line: "Quote pop-up (typewriter): “I want a Lambo.” (Him, Stream 2:10-2:14)", on: "I want a Lambo.", quote: { who: "Him", said } },
+            ],
+          },
+        ],
+      },
+    ],
+    checks: [],
+    report: "",
+    writtenAt: 0,
+  };
+  const content = commentaryContent("Title", draft, []);
+  const notes = content.notes.map((note) => [content.text.slice(note.start - 1, note.end - 1), note.text]);
+  expect(notes).toContainEqual(["He wanted a car.", "For editor: Show: the dealership photo."]);
+  expect(notes).toContainEqual(["I want a Lambo.", "edit: Quote pop-up (typewriter): “I want a Lambo.” (Him, Stream 2:10-2:14)"]);
+  // The line on no words stays on the paragraph's first words.
+  expect(notes.find(([, text]) => text.includes("Tense music"))?.[1]).toBe("For editor: Tense music from here.");
+});

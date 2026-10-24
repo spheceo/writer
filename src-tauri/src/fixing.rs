@@ -337,8 +337,34 @@ fn differs(before: &crate::model::Script, after: &crate::model::Script) -> bool 
     of(before) != of(after)
 }
 
-/// Blocks whose notes for the editor changed (an "edit:" note added), whole.
+/// Where notes for the editor changed (an "edit:" note added): a
+/// commentary note's words when it's on some, else the whole block.
 fn noted(before: &crate::model::Script, after: &crate::model::Script) -> Vec<blocks::Range> {
+    if let (Some(old), Some(new)) = (before.commentary.as_ref().and_then(|commentary| commentary.draft.as_ref()), after.commentary.as_ref().and_then(|commentary| commentary.draft.as_ref())) {
+        let found = blocks::of(after);
+        let mut out = Vec::new();
+        for paragraph in new.sections.iter().flat_map(|section| section.paragraphs.iter()) {
+            let Some(kept) = old.sections.iter().flat_map(|section| section.paragraphs.iter()).find(|other| other.id == paragraph.id) else { continue };
+            let had = kept.note_lines();
+            let added: Vec<usize> = paragraph.note_lines().iter().enumerate().filter(|(_, line)| !had.contains(line)).map(|(index, _)| index).collect();
+            if added.is_empty() && paragraph.note_lines().len() == had.len() {
+                continue;
+            }
+            let marks = blocks::edit_marks(paragraph);
+            let whole = || found.iter().find(|block| block.id == paragraph.id).map(|block| blocks::Range { block_id: paragraph.id.clone(), start: 0, end: block.text.encode_utf16().count() });
+            if added.is_empty() {
+                out.extend(whole());
+            }
+            for index in added {
+                match marks.iter().find(|mark| mark.note == index) {
+                    Some(mark) => out.push(blocks::Range { block_id: paragraph.id.clone(), start: mark.start, end: mark.end }),
+                    None => out.extend(whole()),
+                }
+            }
+        }
+        out.dedup();
+        return out;
+    }
     let notes_of = |script: &crate::model::Script| -> Vec<(String, String)> {
         match script.commentary.as_ref().and_then(|commentary| commentary.draft.as_ref()) {
             Some(draft) => draft.sections.iter().flat_map(|section| section.paragraphs.iter()).map(|paragraph| (paragraph.id.clone(), paragraph.note.clone().unwrap_or_default())).collect(),
@@ -776,10 +802,8 @@ fn editor_note(script: &Script, note: &Note) -> Option<(Script, String)> {
     if let Some(draft) = out.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()) {
         let id = block.strip_suffix(":heading").unwrap_or(block);
         let paragraph = draft.sections.iter_mut().flat_map(|section| section.paragraphs.iter_mut()).find(|paragraph| paragraph.id == id)?;
-        paragraph.note = Some(match paragraph.note.take().filter(|kept| !kept.trim().is_empty()) {
-            Some(kept) => format!("{}\n{text}", kept.trim_end()),
-            None => text.clone(),
-        });
+        // On the words the reviewer chose, as the page shows the note.
+        crate::commentary::add_note(paragraph, &text, note.anchor["quote"].as_str().unwrap_or(""));
         return Some((out, format!("Added for the editor: \"{text}\".")));
     }
     let at = out.clips.iter().position(|clip| clip.id == block)?;

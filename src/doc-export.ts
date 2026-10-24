@@ -1,5 +1,5 @@
 import { blocks, clipRange, clock, duration, heading, isCutIn, keptMs, partAt } from "./clips";
-import { isClip, totalLine } from "./commentary";
+import { isClip, liveMarks, noteLines, totalLine } from "./commentary";
 import type { DocContent } from "./docx";
 import type { Cite, Clip, Draft, Script, Source, Word } from "./types";
 
@@ -233,6 +233,8 @@ export function commentaryContent(_title: string, draft: Draft, _sources: Source
     for (const paragraph of section.paragraphs) {
       const start = here();
       const said: [number, number][] = [];
+      // Where each narration piece starts in the Doc, less what trimming took off its front.
+      const pieceAt = new Map<number, number>();
       for (const [position, piece] of paragraph.pieces.entries()) {
         if (position) append(isClip(piece) && isClip(paragraph.pieces[position - 1]) ? " + " : " ");
         if (isClip(piece)) {
@@ -241,14 +243,24 @@ export function commentaryContent(_title: string, draft: Draft, _sources: Source
         }
         const text = piece.text.trim();
         const from = here();
+        pieceAt.set(position, from - (piece.text.length - piece.text.trimStart().length));
         for (const [a, b] of blurSpans(text, true)) note(from + a, from + b, CENSOR_NOTE);
         append(text);
         said.push([from, here()]);
       }
-      // The editor's note sits on the paragraph's first words, as a comment.
-      if (paragraph.note?.trim()) {
+      // Each note on the words it's about; a quote pop-up as an edit: note, which Edit's agent carries out.
+      const marked = new Set<number>();
+      for (const { mark, piece, start: a, end: b, line } of liveMarks(paragraph)) {
+        const at = pieceAt.get(piece);
+        if (at === undefined) continue;
+        marked.add(line);
+        note(at + a, at + b, mark.quote ? `edit: ${mark.line.trim()}` : `For editor: ${mark.line.trim()}`);
+      }
+      // The rest sit on the paragraph's first words, as a comment.
+      const rest = noteLines(paragraph).filter((_, index) => !marked.has(index));
+      if (rest.length) {
         const [a, b] = said[0] ?? [start, here()];
-        note(a, b, `For editor: ${paragraph.note.trim()}`);
+        note(a, b, `For editor: ${rest.join("\n")}`);
       }
       append("\n");
     }
