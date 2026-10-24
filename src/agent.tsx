@@ -76,26 +76,35 @@ function linked(text: string): ReactNode[] {
 }
 
 /**
- * Claude asking to start the script over, answered here: nothing is cleared
- * until the producer accepts.
+ * Claude asking to start the script over, answered here as Edit asks: a
+ * line saying it waits for you, then the card. Nothing is cleared until the
+ * producer accepts.
  */
 export function ResetAsk({ state, busy, onAnswer }: { state: "pending" | "accepted" | "declined"; busy: boolean; onAnswer: (accept: boolean) => void }) {
-  if (state !== "pending") {
-    return <p className="reset-settled faint">{state === "accepted" ? "Started over. The script as it was is in Versions." : "Kept the script as it is."}</p>;
-  }
   return (
-    <div className="reset-ask" role="alertdialog" aria-label="Start the script over?">
-      <b>Start the script over?</b>
-      <p>Every clip and cut-in goes. The transcript, speakers, sources and research stay, and Versions keeps the script as it is now.</p>
-      <div className="reset-actions">
-        <button type="button" className="ghost sm" disabled={busy} onClick={() => onAnswer(false)}>
-          Reject
-        </button>
-        <button type="button" className="danger-fill sm" disabled={busy} onClick={() => onAnswer(true)}>
-          Start over
-        </button>
-      </div>
-    </div>
+    <>
+      <p className="reset-status">
+        {state === "pending" ? <span className="reset-spinner" aria-hidden="true" /> : <Icon name={state === "accepted" ? "check" : "minus"} size={14} />}
+        Reset the script · {state === "pending" ? "waiting for you" : state === "accepted" ? "done" : "rejected"}
+      </p>
+      {state === "pending" && (
+        <div className="reset-ask" role="alertdialog" aria-label="Reset the script?">
+          <b>
+            <Icon name="reset" size={16} />
+            Reset the script?
+          </b>
+          <p>Every clip and cut-in goes, and the script is laid out again as the import left it. The transcript, speakers, sources and research stay. The script before is kept in Versions.</p>
+          <div className="reset-actions">
+            <button type="button" className="ghost" disabled={busy} onClick={() => onAnswer(false)}>
+              Reject
+            </button>
+            <button type="button" className="primary" disabled={busy} onClick={() => onAnswer(true)}>
+              Accept and reset
+            </button>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

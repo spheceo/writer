@@ -634,8 +634,8 @@ export function CommentaryEditor({
                   </div>
                 ) : (
                   <>
-                    {said && !(working && !draft) && <Said text={said} costUsd={report && !working ? report.costUsd : 0} />}
-                    {reset && !working && (
+                    {said && !(working && !draft) && !(reset === "pending" && !working) && <Said text={said} costUsd={report && !working ? report.costUsd : 0} />}
+                    {reset === "pending" && !working && (
                       <ResetAsk
                         state={reset}
                         busy={busy}

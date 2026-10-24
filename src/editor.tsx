@@ -805,7 +805,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                 <Asked key={`${turn.at}-${index}`} text={turn.text} />
               ) : (
                 <Fragment key={`${turn.at}-${index}`}>
-                  <Said text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />
+                  {/* A reset asks with its own line and card, as Edit does, not a reply. */}
+                  {!turn.reset && <Said text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />}
                   {turn.reset && (
                     <ResetAsk
                       state={turn.reset}
