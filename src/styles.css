@@ -883,7 +883,9 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .page .narration:last-of-type { margin-bottom: 0; }
 .page .narration:focus { outline: none; }
 .page .narration::selection { background: #3b82f6; color: #fff; }
-.page .block[data-state] .narration:first-of-type { background: #fdf1c7; }
+/* A paragraph with a note for the editor is marked as a commented passage is: soft yellow at rest, stronger when it or its card is hovered or selected. */
+.page .block[data-noted] .narration:first-of-type { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; transition: background 0.12s, box-shadow 0.12s; }
+.page .block[data-state] .narration:first-of-type { background: #f8d66d; box-shadow: 0 0 0 2px #f8d66d; }
 /* Paragraph tools wait in the right margin, at the size the screen shows them. */
 .page .doc-total { margin: 24pt 0 0; }
 .page .doc-empty { color: #858585; }
@@ -905,7 +907,7 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
   line-height: 18px;
   transition: top 0.48s cubic-bezier(0.32, 0.72, 0, 1), background 0.2s ease, border-color 0.2s ease, box-shadow 0.3s ease;
 }
-.comment[data-state] { z-index: 1; border-color: var(--line-strong); background: var(--hover); box-shadow: 0 6px 20px #0009; }
+.comment[data-state] { z-index: 1; border-color: var(--line-strong); background: var(--hover); box-shadow: inset 3px 0 0 #f8d66d, 0 6px 20px #0009; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .avatar { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--line-strong); color: var(--muted); font-size: 11px; font-weight: 600; }
 .comment-author { flex: 1; min-width: 0; overflow: hidden; color: var(--text); font-size: 12.5px; font-weight: 600; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1284,8 +1286,6 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .band-tip-fix { color: var(--text-2); }
 
 /* A note for the video editor ("edit: …"): Edit's agent follows it in that section. */
-.comment[data-edit] { border-left: 3px solid var(--cut-in); }
-.comment[data-edit] .avatar { background: var(--cut-in); color: #000; }
 /* An approved review: done, the link closed to notes. */
 .review-button.approved { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); }
 .approved-mark { height: 22px; border-color: transparent; background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ok); }

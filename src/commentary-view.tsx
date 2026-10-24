@@ -14,7 +14,7 @@ import { FoundClips } from "./found-clips";
 import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { type Band, BandTip, bandProps, bandsOf, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
 import { UpdateButton } from "./update";
 import { CAN, useGrants } from "./can";
@@ -875,6 +875,8 @@ function CommentaryDoc({
   const [page, setPage] = useState(1);
   const [pages, setPages] = useState(1);
   const [active, setActive] = useState<string | null>(null);
+  // A note being written keeps its passage lit until the field is left.
+  const editing = useRef(false);
   const nowId = usePlayheadValue(playhead, (p) => (follow ? (editedPosition(items, p.ms)?.clip.id ?? null) : null));
 
   // The playing timestamp's red line fills as its clip runs out.
@@ -979,14 +981,22 @@ function CommentaryDoc({
             className="comment human"
             key={card.id}
             data-card={card.id}
-            data-edit={isEditNote(card.paragraph.note) || undefined}
             data-state={active === card.id ? "active" : undefined}
             onMouseEnter={() => setActive(card.id)}
-            onMouseLeave={() => setActive(null)}
+            onMouseLeave={() => setActive((now) => (now === card.id && !editing.current ? null : now))}
+            onFocus={() => {
+              editing.current = true;
+              setActive(card.id);
+            }}
+            onBlur={() => {
+              editing.current = false;
+              setActive(null);
+            }}
           >
+            {/* Every note for the editor goes to Edit's agent, the only editor: one kind of card. */}
             <span className="card-head">
               <span className="avatar"><Icon name="note" size={12} /></span>
-              <span className="comment-author">{isEditNote(card.paragraph.note) ? "For editor · edit: lines go to Edit's agent" : "For editor"}</span>
+              <span className="comment-author">For the editor</span>
             </span>
             <Grow
               className="card-field"
@@ -1053,7 +1063,17 @@ function CommentaryDoc({
                     pieces: paragraph.pieces.map((piece, at) => (at === index && piece.kind === "say" ? { ...piece, text } : piece)),
                   });
                 return (
-                  <div className="block" data-block data-anchor={noteId} data-state={active === noteId ? "active" : undefined} key={`${s}-${p}-${draft.writtenAt}`}>
+                  <div
+                    className="block"
+                    data-block
+                    data-anchor={noteId}
+                    data-noted={paragraph.note !== undefined || undefined}
+                    data-state={active === noteId ? "active" : undefined}
+                    key={`${s}-${p}-${draft.writtenAt}`}
+                    // A paragraph with a note lights its card, as the card lights it (Google Docs' comments).
+                    onMouseEnter={paragraph.note !== undefined ? () => setActive(noteId) : undefined}
+                    onMouseLeave={paragraph.note !== undefined ? () => setActive((now) => (now === noteId ? null : now)) : undefined}
+                  >
                     {lines.map((line, index) =>
                       line.kind === "clips" ? (
                         ranges(line.cites, `r${index}`)

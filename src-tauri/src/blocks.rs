@@ -60,6 +60,18 @@ pub fn read_ms(text: &str) -> u64 {
     text.split_whitespace().count() as u64 * 60_000 / crate::commentary::WORDS_PER_MINUTE as u64
 }
 
+/// A commentary paragraph's note, every line of it, for Edit's agent (the
+/// only editor): a line that doesn't say "edit:" gets it, so Edit reads it
+/// as its own.
+pub fn editor_lines<'a>(notes: impl Iterator<Item = &'a str>) -> Vec<String> {
+    notes
+        .flat_map(str::lines)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| if line.to_lowercase().starts_with("edit:") { line.to_string() } else { format!("edit: {line}") })
+        .collect()
+}
+
 /// The `edit:` lines of a note or notes.
 pub fn edit_lines<'a>(notes: impl Iterator<Item = &'a str>) -> Vec<String> {
     notes.flat_map(str::lines).map(str::trim).filter(|line| line.to_lowercase().starts_with("edit:")).map(str::to_string).collect()
@@ -164,7 +176,7 @@ fn commentary_blocks(draft: &crate::commentary::Draft) -> Vec<Block> {
                 text: paragraph_text(paragraph),
                 read_ms: Some(read),
                 duration_ms: Some(read + clips),
-                edit_notes: edit_lines(paragraph.note.iter().map(String::as_str)),
+                edit_notes: editor_lines(paragraph.note.iter().map(String::as_str)),
                 ..Default::default()
             });
         }
@@ -500,5 +512,11 @@ mod tests {
         assert_eq!(range(5_400, 20_900, &[]), "0:05–0:20");
         assert_eq!(range(65_000, 90_000, &parts), "Audio 0:05–0:30");
         assert_eq!(range(3_725_000, 3_730_000, &[]), "1:02:05–1:02:10");
+    }
+
+    #[test]
+    fn every_note_for_the_editor_goes_to_edit() {
+        let note = "Find, under 'streamed with Kanye West': clip of him introducing Kanye\nedit: a blue waveform under the call\n";
+        assert_eq!(editor_lines(std::iter::once(note)), vec!["edit: Find, under 'streamed with Kanye West': clip of him introducing Kanye", "edit: a blue waveform under the call"]);
     }
 }
