@@ -7,6 +7,7 @@ import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
 import { Monitor } from "./monitor";
+import { type HoverClip, useHoverPreview } from "./hover-preview";
 import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
 import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, Footage, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary } from "./types";
@@ -152,10 +153,9 @@ function useFootage(id: string, draft: Draft | null) {
   return footage;
 }
 
-const VIEWS: { value: View; label: string }[] = [
-  { value: "script", label: "Script" },
-  { value: "split", label: "Split" },
-];
+// A commentary has no split view: its clips play where they're mentioned,
+// in a preview over the script (hover-preview.tsx). Footage scripts keep Split.
+const VIEWS: { value: View; label: string }[] = [{ value: "script", label: "Script" }];
 
 export function CommentaryEditor({
   script,
@@ -193,7 +193,8 @@ export function CommentaryEditor({
   // What was asked of the build that is running, shown as the producer's message.
   const [sent, setSent] = useState<string | null>(null);
   const [savedView, setView] = useView("commentary", "script");
-  const view: View = savedView === "video" ? "split" : savedView;
+  const view = "script" as View;
+  void savedView;
   const [agentShown, setAgentShown] = useState(() => window.localStorage.getItem("writer.agent") !== "closed");
   useEffect(() => window.localStorage.setItem("writer.agent", agentShown ? "open" : "closed"), [agentShown]);
   const split = useSplit();
@@ -212,6 +213,17 @@ export function CommentaryEditor({
     [footage, sources, script.id],
   );
   const cut = useMemo(() => previewCut(draft, sources, srcOf, downloaded, (footage?.pending ?? 0) > 0), [draft, sources, srcOf, downloaded, footage]);
+  // A clip mentioned in the script, previewed where it's mentioned.
+  const hover = useHoverPreview();
+  const hoverClip = (id: string, cite: Cite): HoverClip => {
+    const item = cut.items.find((found) => found.id === id && !found.kind);
+    const source = sources.find((found) => found.id === cite.source);
+    const title = cite.video || source?.title || cite.source;
+    if (item?.src) return { id, title, quote: cite.quote.trim(), src: item.src, startMs: item.startMs, endMs: item.endMs, atMs: cite.startMs, toMs: cite.endMs };
+    const youtube = youtubeId(cite.link) ?? youtubeId(source?.origin);
+    const waiting = youtube ? ((footage?.pending ?? 0) > 0 ? "Downloading this stretch…" : "This stretch couldn't be downloaded.") : "This recording isn't in Writer.";
+    return { id, title, quote: cite.quote.trim(), startMs: 0, endMs: 0, atMs: cite.startMs, toMs: cite.endMs, waiting };
+  };
   const [{ player, playhead }] = useState(() => {
     const playhead = new Playhead();
     return { playhead, player: new CutPlayer(null, cut.items, playhead) };
@@ -478,7 +490,7 @@ export function CommentaryEditor({
               {finding ? "Finding clips" : learning ? "Learning from feedback" : "Claude writing"} · <Elapsed since={started} />
             </span>
           )}
-          <ViewTabs view={view} views={VIEWS} onChange={setView} />
+          {VIEWS.length > 1 && <ViewTabs view={view} views={VIEWS} onChange={setView} />}
           <Shortcuts groups={COMMENTARY_SHORTCUTS} />
           <button type="button" className="icon-tool" disabled={!draft} aria-label="Copy script" title="Copy the script in the channel's Doc layout" onClick={() => void copy()}>
             <Icon name={copied ? "check" : "copy"} />
@@ -501,6 +513,7 @@ export function CommentaryEditor({
         </div>
       </header>
       <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
+      {hover.preview}
       {error && (
         <div className="notice">
           {error}
@@ -518,6 +531,8 @@ export function CommentaryEditor({
           disabled={saving === "saving" || busy}
           onParagraph={editParagraph}
           onPreview={preview}
+          onHover={(id, cite, element) => (element ? hover.enter(hoverClip(id, cite), element) : hover.leave())}
+          onPin={(id, cite, element) => hover.pin(hoverClip(id, cite), element)}
           bands={bands}
           stats={draft && times ? `${clock(times.totalMs)} · ${narrationWords(draft).toLocaleString()} words · ${clock(times.clipsMs)} of clips` : ""}
           statsTitle={draft ? commentaryTotal(draft) : ""}
@@ -807,6 +822,8 @@ function CommentaryDoc({
   statsTitle,
   onParagraph,
   onPreview,
+  onHover,
+  onPin,
   bands,
 }: {
   draft: Draft | null;
@@ -819,6 +836,9 @@ function CommentaryDoc({
   statsTitle: string;
   onParagraph: (section: number, index: number, next: Paragraph | null) => void;
   onPreview: (id: string) => void;
+  /** A clip's time hovered (an element) or left (null), and clicked to keep its preview open. */
+  onHover?: (id: string, cite: Cite, element: Element | null) => void;
+  onPin?: (id: string, cite: Cite, element: Element) => void;
   /** Review bands by block (a paragraph's ID, `<id>:heading`, `open`). */
   bands?: Map<string, Band[]>;
 }) {
@@ -868,7 +888,7 @@ function CommentaryDoc({
 
   const range = (cite: Cite, id: string, band?: Band[]) => {
     const times = `${clock(cite.startMs)}-${clock(cite.endMs)}`;
-    const title = [cite.video, cite.quote ? `“${cite.quote}”` : "", cite.verify ? `Verify: ${cite.verify}` : "", "Click to play it"].filter(Boolean).join("\n");
+    const title = cite.verify ? `Verify: ${cite.verify}` : "";
     return (
       <span
         className="range"
@@ -879,11 +899,17 @@ function CommentaryDoc({
         data-plain={comments ? undefined : ""}
         title={title}
         {...bandProps(band)}
-        onMouseEnter={() => setActive(id)}
-        onMouseLeave={() => setActive(null)}
+        onMouseEnter={(event) => {
+          setActive(id);
+          onHover?.(id, cite, event.currentTarget);
+        }}
+        onMouseLeave={() => {
+          setActive(null);
+          onHover?.(id, cite, null);
+        }}
       >
         (
-        <button type="button" onClick={() => onPreview(id)}>
+        <button type="button" onClick={(event) => (onPin ? onPin(id, cite, event.currentTarget) : onPreview(id))}>
           {times}
         </button>
         )
@@ -910,9 +936,15 @@ function CommentaryDoc({
             key={card.id}
             data-card={card.id}
             data-state={active === card.id ? "active" : undefined}
-            onMouseEnter={() => setActive(card.id)}
-            onMouseLeave={() => setActive(null)}
-            onClick={() => onPreview(card.id)}
+            onMouseEnter={(event) => {
+              setActive(card.id);
+              onHover?.(card.id, card.cite, event.currentTarget);
+            }}
+            onMouseLeave={() => {
+              setActive(null);
+              onHover?.(card.id, card.cite, null);
+            }}
+            onClick={(event) => (onPin ? onPin(card.id, card.cite, event.currentTarget) : onPreview(card.id))}
           >
             <span className="card-head">
               <span className="avatar mono">{card.cite.source.replace(/^S/, "")}</span>
