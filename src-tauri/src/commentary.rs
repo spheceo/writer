@@ -933,7 +933,7 @@ pub struct Built {
     pub cost_usd: f64,
 }
 
-/// Opus writes the whole script in one turn, with up to two repair turns on
+/// Opus writes the whole script in one turn, with up to three repair turns on
 /// the same session for a plan the checks refuse. `lessons` are what past
 /// reviews taught (feedback.rs), read with the guide.
 pub fn build(dir: &Path, script: &Script, note: &str, lessons: &str) -> Result<Built, String> {
@@ -1001,7 +1001,8 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
     cost += spent;
     let mut repairs = 0;
     let mut audited = false;
-    let mut edited = false;
+    // The story editor reads the draft up to twice: once as written, once after its fixes.
+    let mut edits = 0;
     loop {
         let refusal = match &plan {
             Some(plan) => match compile(plan, &corpus) {
@@ -1010,8 +1011,8 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
                         // What a reviewer would flag goes back once; what's still flagged after is said in the report.
                         let mut flags = audit(&draft, &sources, &script.title, pacing);
                         // Then the story editor's read, once: what doesn't serve the question, and turns left unpaid.
-                        if flags.is_empty() && !edited && repairs < 2 && session.is_some() {
-                            edited = true;
+                        if flags.is_empty() && edits < 2 && repairs < 3 && session.is_some() {
+                            edits += 1;
                             match story_check(&draft, &sources, &script.title) {
                                 Ok((found, spent)) => {
                                     cost += spent;
@@ -1023,7 +1024,7 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
                                 Err(error) => crate::log::warn("agent", format!("{}: the story check didn't run: {error}", crate::log::named(&script.id, &script.title))),
                             }
                         }
-                        if flags.is_empty() || audited || repairs == 2 || session.is_none() {
+                        if flags.is_empty() || audited || repairs == 3 || session.is_none() {
                             let mut report = summary(&draft);
                             if !flags.is_empty() {
                                 report.push_str(&format!("\n\nStill flagged: {}", flags.join(" ")));
@@ -1034,7 +1035,7 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
                         format!("The app sent that script back: a reviewer would flag these.\n- {}\nFix each one wherever it occurs in the script, and keep everything else as it is. Send the corrected complete script.", flags.join("\n- "))
                     }
                     // Out of tries: the script is kept, and the report says how far off it is.
-                    Some(off) if repairs == 2 || session.is_none() => {
+                    Some(off) if repairs == 3 || session.is_none() => {
                         let report = format!("{}\n\n{off}", summary(&draft));
                         return Ok(Built { draft, report, cost_usd: cost });
                     }
@@ -1044,7 +1045,7 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
             },
             None => "Your answer carried no script. Send the complete script as the structured answer.".into(),
         };
-        if repairs == 2 || session.is_none() {
+        if repairs == 3 || session.is_none() {
             return Err(match plan {
                 Some(_) => format!("Claude's script was refused again. {}", refusal.trim_start_matches("The app refused that script: ")),
                 None => "Claude did not send a script. Write it again; nothing was changed.".into(),
