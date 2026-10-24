@@ -1347,7 +1347,7 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
     // EVERY LINE EARNS ITS PLACE: "Remember that phrase. He uses it a lot." / "Just remove this".
     let cues: Vec<&String> = said.iter().filter(|sentence| {
         let lower = sentence.to_lowercase();
-        ["remember that", "remember this", "keep that in mind", "keep this in mind", "hold on to that", "hold onto that"].iter().any(|cue| lower.contains(cue))
+        lower.starts_with("remember ") || ["remember that", "remember this", "remember what", "remember when", "remember how", "keep that in mind", "keep this in mind", "hold on to that", "hold onto that", "as we saw", "you'll recognise", "you'll recognize", "you've already heard"].iter().any(|cue| lower.contains(cue))
     }).collect();
     if let Some(first) = cues.first() {
         flags.push(format!("Lines that only tell the viewer to remember something (\"{}\"): cut them, and let the callback land on its own.", clipped(first)));
@@ -1401,9 +1401,12 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
     flags
 }
 
-const STORY_EDITOR: &str = r#"You are the story editor for a commentary channel (investigative video essays read by one narrator, with clips). You read a finished draft against its brief and flag only two kinds of problem, the two the channel's reviewers flag most:
+const STORY_EDITOR: &str = r#"You are the story editor for a commentary channel (investigative video essays read by one narrator, with clips). You read a finished draft against its brief and flag only these kinds of problem, the ones the channel's reviewers flag most:
 1. OFF THE QUESTION. A paragraph, or a run of them, that doesn't serve the video's question (the one the intro asks and the ending answers): trivia (a score in a game, a side remark, a stat that proves nothing), a detour into how a side incident played out when the incident itself isn't the story, or an incident that only repeats what a stronger one already showed. True and on video isn't enough; the brief listing it isn't enough either, when it doesn't move the question. Say to cut it, or to fold it into one sentence.
-2. A TURN LEFT UNPAID. A relationship the script opens (someone who warned the subject, helped them, bet against them, fell out with them, or was used by them) where the sources show how it turned out, and the script never says it: who was proven right, who was dropped, what it cost. Say what the payoff is, from the sources.
+2. A TURN LEFT UNPAID. A relationship the script opens (someone who warned the subject, helped them, bet against them, fell out with them, or was used by them) that the script never resolves: who was proven right, who was dropped, what it cost. You see only the draft: flag it, and the writer, who has the sources, pays it off or cuts the thread.
+3. SOMEONE DROPPED IN. A person (or channel) named with no word on who they are at their first mention, even inside a list.
+4. A PILE-UP. A paragraph that runs through several incidents one after another, each in a clause, instead of the two or three that prove the point.
+5. A TURNING POINT TOLD FLAT. The mechanism or moment that changed the subject's path (a tactic, a deal, a person) mentioned in passing instead of set up as the moment it happened, explained in a sentence or two, with its scale.
 Name each by its place in square brackets as the draft gives it ([2. The Rise ¶3]) and quote a few of its words. Flag only real problems a reviewer would mark; an empty list is a fine answer. Never ask for anything the sources don't hold."#;
 
 /// The story editor's read of a draft: what doesn't serve the question, and
@@ -1413,8 +1416,11 @@ fn story_check(draft: &Draft, sources: &[(Source, String)], title: &str) -> Resu
     let schema = json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["offQuestion", "unpaid"],
+        "required": ["offQuestion", "unpaid", "unintroduced", "pileUps", "flatTurns"],
         "properties": {
+            "unintroduced": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "name"], "properties": { "place": { "type": "string" }, "name": { "type": "string" } } } },
+            "pileUps": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "words"], "properties": { "place": { "type": "string" }, "words": { "type": "string" } } } },
+            "flatTurns": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "turn"], "properties": { "place": { "type": "string" }, "turn": { "type": "string" } } } },
             "offQuestion": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "words", "why"], "properties": { "place": { "type": "string" }, "words": { "type": "string" }, "why": { "type": "string" } } } },
             "unpaid": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "thread", "payoff"], "properties": { "place": { "type": "string" }, "thread": { "type": "string" }, "payoff": { "type": "string" } } } }
         }
@@ -1429,7 +1435,20 @@ fn story_check(draft: &Draft, sources: &[(Source, String)], title: &str) -> Resu
     }
     let unpaid: Vec<String> = plan["unpaid"].as_array().into_iter().flatten().map(|item| format!("{} {}: {}", item["place"].as_str().unwrap_or(""), item["thread"].as_str().unwrap_or(""), item["payoff"].as_str().unwrap_or(""))).collect();
     if !unpaid.is_empty() {
-        flags.push(format!("These relationships are opened and never paid off, though the sources show how they turned out: {}. Say the payoff plainly where the story reaches it (who was proven right, who was dropped, what it cost).", unpaid.join("; ")));
+        flags.push(format!("These relationships are opened and never resolved: {}. Where the sources show how it turned out, say the payoff plainly where the story reaches it (who was proven right, who was dropped, what it cost); where they don't, cut the thread.", unpaid.join("; ")));
+    }
+    let list = |field: &str, a: &str, b: &str| plan[field].as_array().into_iter().flatten().map(|item| format!("{} {}", item[a].as_str().unwrap_or(""), item[b].as_str().unwrap_or(""))).collect::<Vec<_>>();
+    let unintroduced = list("unintroduced", "place", "name");
+    if !unintroduced.is_empty() {
+        flags.push(format!("These people are named with no word on who they are at their first mention: {}. Say who each is in a few words there (\"the YouTuber and podcast host\", \"her agent\"), or leave them out.", unintroduced.join("; ")));
+    }
+    let piles = list("pileUps", "place", "words");
+    if !piles.is_empty() {
+        flags.push(format!("These paragraphs pile incidents up one after another: {}. Keep the two or three that prove the point, told properly; cut the rest.", piles.join("; ")));
+    }
+    let flat = list("flatTurns", "place", "turn");
+    if !flat.is_empty() {
+        flags.push(format!("These turning points are told in passing: {}. Set each up as the moment it happened (\"And it was here that…\"), explain it in a sentence or two, and give its scale with a check on the number.", flat.join("; ")));
     }
     Ok((flags, turn.cost_usd))
 }
