@@ -66,6 +66,34 @@ pub struct Item {
     /// Left out of the key, the lesson and the grading.
     #[serde(default)]
     pub skip: bool,
+    /// The review note it is (feedback.spheceo.com), as Repack keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_id: Option<String>,
+    /// The version of the script it was left on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// Its words' block (blocks.rs) and their UTF-16 offsets in that block's
+    /// text as the version was shared: the review page's anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<usize>,
+    /// What the reviewer meant it to change (wording, fact, cut, editor, suggestion…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
+    /// A suggestion's words, as typed: "" deletes the anchored ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    /// `open` or `done` on the page when pulled, and the version a fix landed in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_in: Option<u32>,
+    /// When it was left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// One paragraph (or montage clip, heading or check) that changed.
@@ -340,16 +368,30 @@ pub fn forget(data: &Path, lesson: &str) -> Result<Vec<Lesson>, String> {
 pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
-    let draft = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("Write the script before teaching from feedback on it.")?;
+    let current = script.commentary.as_ref().and_then(|commentary| commentary.draft.clone()).ok_or("Write the script before teaching from feedback on it.")?;
     let link = script.review.clone().ok_or("Share the script for review first: its notes are the feedback.")?;
     // The notes as the review page has them now, not as of the last poll.
     let _ = crate::reviews::refresh(data);
     let notes = crate::reviews::notes_of(data, id);
-    let blocks = blocks(&draft);
     let mut problems = Vec::new();
-    if link.revision != script.revision {
-        problems.push("The script changed after it was last shared. The notes are matched against the script as it is now.".into());
-    }
+    // The script as the reviewers read it: the version their notes are on, as it was shared.
+    let version = notes.iter().filter(|note| note.is_root() && !note.deleted).map(|note| note.version).max().unwrap_or(link.version);
+    let (draft, revision) = match reviewed(data, id, version) {
+        Some((draft, revision)) => {
+            if revision != script.revision {
+                problems.push(format!("The notes are on v{version} as it was shared; the script has changed since. Rounds start from v{version}, so using a round's script replaces the later edits."));
+            }
+            (draft, revision)
+        }
+        None => {
+            if link.revision != script.revision {
+                problems.push(format!("v{version} as it was shared couldn't be read from the cloud, and the script changed after it was shared. The notes are matched against the script as it is now."));
+            }
+            (current, script.revision)
+        }
+    };
+    let blocks = blocks(&draft);
+    let places = places(&draft);
     let mut items: Vec<Item> = notes
         .iter()
         .filter(|note| note.parent_id.is_none() && !note.deleted)
@@ -363,17 +405,33 @@ pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
                 Some(words) => format!("{} (Replace with: {words})", note.text.trim()),
                 None => note.text.trim().to_string(),
             };
+            let offset = |key: &str| note.anchor[key].as_u64().map(|at| at as usize);
             Item {
                 id: String::new(),
                 kind: Kind::Comment,
                 quote,
                 comment,
                 author: if note.from_app { "Writer".into() } else { note.author.clone() },
-                replies: crate::reviews::replies(data, &note.id).into_iter().filter(|reply| !reply.from_app).map(|reply| reply.text.trim().to_string()).filter(|text| !text.is_empty()).collect(),
+                // Each reply signed, as the page shows it; Writer's own accounts of a fix are left out.
+                replies: crate::reviews::replies(data, &note.id)
+                    .into_iter()
+                    .filter(|reply| !reply.from_app && !reply.deleted && !reply.text.trim().is_empty())
+                    .map(|reply| format!("{}: {}", reply.author, reply.text.trim()))
+                    .collect(),
                 color: None,
                 place: None,
                 note: String::new(),
                 skip: false,
+                note_id: Some(note.id.clone()),
+                version: Some(note.version),
+                block_id: note.anchor["blockId"].as_str().filter(|block| !block.is_empty()).map(str::to_string),
+                start: offset("start"),
+                end: offset("end"),
+                intent: note.intent.clone(),
+                replacement: note.replacement.clone(),
+                status: Some(note.status.clone()),
+                done_in: note.done_in_version,
+                at: Some(note.created_at),
             }
         })
         .collect();
@@ -383,7 +441,8 @@ pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
     items.truncate(MAX_ITEMS);
     for (index, item) in items.iter_mut().enumerate() {
         item.id = format!("F{}", index + 1);
-        item.place = locate(&item.quote, &blocks);
+        // The block it's on, else wherever its words are.
+        item.place = item.block_id.as_ref().and_then(|block| places.get(block).cloned()).or_else(|| locate(&item.quote, &blocks));
     }
     let missing = items.iter().filter(|item| item.place.is_none() && !item.quote.is_empty()).count();
     if missing > 0 {
@@ -396,7 +455,7 @@ pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
         doc: link.review_id.clone(),
         doc_url: link.url.clone(),
         pulled_at: now_ms(),
-        revision: script.revision,
+        revision,
         items,
         key: None,
         title: String::new(),
@@ -409,6 +468,34 @@ pub fn pull(data: &Path, id: &str) -> Result<Feedback, String> {
     Ok(feedback)
 }
 
+/// The draft a version of the script was shared as, and its revision: the
+/// snapshot each share puts up beside the review (reviews.rs).
+fn reviewed(data: &Path, id: &str, version: u32) -> Option<(Draft, u32)> {
+    let bytes = crate::cloud::get_bytes(data, &format!("writer/reviews/{id}/v{version}/script.json")).ok()??;
+    let script: crate::model::Script = serde_json::from_slice(&bytes).ok()?;
+    let draft = script.commentary?.draft?;
+    Some((draft, script.revision))
+}
+
+/// Each review block's place, as `blocks` names it: the montage, a heading
+/// (`<first paragraph>:heading`) and every paragraph by its ID.
+fn places(draft: &Draft) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    if !draft.open.is_empty() {
+        out.insert("open".to_string(), "Montage clip 1".to_string());
+    }
+    for section in &draft.sections {
+        if let Some(first) = section.paragraphs.first() {
+            out.insert(format!("{}:heading", first.id), section.heading.clone());
+        }
+        for (index, paragraph) in section.paragraphs.iter().enumerate() {
+            if !paragraph.id.is_empty() {
+                out.insert(paragraph.id.clone(), format!("{} ¶{}", section.heading, index + 1));
+            }
+        }
+    }
+    out
+}
 
 /// A piece of the script a reviewer can point at: a montage clip, a heading,
 /// a paragraph (with its clips and note), or a check.
@@ -615,6 +702,9 @@ fn item_text(item: &Item) -> String {
     }
     if let Some(place) = &item.place {
         out.push_str(&format!(" · in {place}"));
+    }
+    if let Some(version) = item.version {
+        out.push_str(&format!(" · on v{version}"));
     }
     if !item.quote.is_empty() {
         out.push_str(&format!("\nOn: \"{}\"", item.quote));

@@ -266,6 +266,19 @@ export type FeedbackItem = {
   place?: string;
   note: string;
   skip: boolean;
+  /** The review note it is, the version it was left on, and its words' block and UTF-16 offsets as that version was shared. */
+  noteId?: string;
+  version?: number;
+  blockId?: string;
+  start?: number;
+  end?: number;
+  intent?: string;
+  /** A suggestion's words as typed ("" deletes the anchored ones). */
+  replacement?: string;
+  /** "open" or "done" on the page when pulled, and the version a fix landed in. */
+  status?: string;
+  doneIn?: number;
+  at?: number;
 };
 
 /** A paragraph (or montage clip, heading or check) that changed between two versions of the script. */

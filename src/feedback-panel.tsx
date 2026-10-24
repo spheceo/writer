@@ -36,9 +36,14 @@ function ItemRow({ item, busy, onChange }: { item: FeedbackItem; busy: boolean; 
           {item.kind === "highlight" && <span className="fb-swatch" style={{ background: item.color }} />}
           {item.kind === "comment" ? "Comment" : "Highlight"}
         </span>
-        <span className="faint fb-place">{item.place ?? "Not found in the script"}</span>
+        <span className="faint fb-place">
+          {item.place ?? "Not found in the script"}
+          {item.version ? ` · v${item.version}` : ""}
+          {item.status === "done" ? ` · done${item.doneIn ? ` in v${item.doneIn}` : ""}` : ""}
+        </span>
       </div>
       {item.quote && <blockquote>{item.quote}</blockquote>}
+      {item.replacement !== undefined && <p className="fb-after">{item.replacement ? `Suggests: ${item.replacement}` : "Suggests deleting these words."}</p>}
       {item.comment && (
         <p>
           {item.author && <strong>{item.author}: </strong>}
