@@ -117,6 +117,23 @@ export function splitTitle(title: string) {
 
 const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc", compilation: "stack" };
 
+/** What the library can be narrowed to: a footage script by its kind, or a compilation, or a commentary. */
+type ScriptType = "interrogation" | "foia" | "courtroom" | "compilation" | "commentary";
+
+const TYPES: { value: ScriptType; label: string }[] = [
+  { value: "interrogation", label: "Interrogation" },
+  { value: "foia", label: "FOIA" },
+  { value: "courtroom", label: "Courtroom" },
+  { value: "compilation", label: "Compilation" },
+  { value: "commentary", label: "Commentary" },
+];
+
+function typeOf(script: Summary): ScriptType {
+  if (script.sourceKind === "commentary") return "commentary";
+  if (script.compilation) return "compilation";
+  return script.kind ?? "interrogation";
+}
+
 export function Library({
   scripts,
   claude,
@@ -145,6 +162,11 @@ export function Library({
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const next = useRef(0);
   const [query, setQuery] = useState("");
+  const [type, setTypeNow] = useState<ScriptType | "">(() => (localStorage.getItem("writer.libraryType") as ScriptType | null) ?? "");
+  const setType = (next: ScriptType | "") => {
+    setTypeNow(next);
+    localStorage.setItem("writer.libraryType", next);
+  };
   const search = useRef<HTMLInputElement>(null);
   // "/" finds a script from anywhere on the page, as in Repack's lists.
   useEffect(() => {
@@ -167,8 +189,12 @@ export function Library({
   const empty = scripts.length === 0 && !importing.length;
   // Newest first, under a divider for each stretch of time, as Repack lists them.
   const needle = query.trim().toLowerCase();
+  // Only the types the library has are offered; a saved one it no longer has shows everything.
+  const types = TYPES.filter((option) => scripts.some((script) => typeOf(script) === option.value));
+  const typed = types.some((option) => option.value === type) ? type : "";
   const rows = [...scripts]
     .sort((a, b) => b.createdAt - a.createdAt)
+    .filter((script) => !typed || typeOf(script) === typed)
     .filter((script) => !needle || script.title.toLowerCase().includes(needle));
   const open = (script: Summary) => (stuck(script) ? setRecovering(script) : onOpen(script.id));
 
@@ -181,6 +207,16 @@ export function Library({
         </span>
         <span className="spacer" data-tauri-drag-region />
         <div className="heading-actions">
+          {!empty && types.length > 1 && (
+            <select className="field-select list-type" value={typed} aria-label="Show scripts of one type" onChange={(event) => setType(event.target.value as ScriptType | "")}>
+              <option value="">All types</option>
+              {types.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label} ({scripts.filter((script) => typeOf(script) === option.value).length})
+                </option>
+              ))}
+            </select>
+          )}
           {!empty && (
             <label className="list-search">
               <Icon name="search" size={14} />
@@ -331,11 +367,18 @@ export function Library({
                 </Fragment>
               );
             })}
-            {needle && rows.length === 0 && (
+            {(needle || typed) && rows.length === 0 && (
               <tr className="table-row empty-row">
                 <td className="cell" colSpan={4}>
-                  Nothing matches “{query.trim()}”.{" "}
-                  <button type="button" className="link-button" onClick={() => setQuery("")}>
+                  {needle ? `Nothing matches “${query.trim()}”${typed ? ` in ${TYPES.find((option) => option.value === typed)?.label}` : ""}.` : "Nothing of this type."}{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => {
+                      setQuery("");
+                      setType("");
+                    }}
+                  >
                     Show all
                   </button>
                 </td>

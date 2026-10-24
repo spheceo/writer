@@ -20,7 +20,15 @@ use sha2::{Digest, Sha256};
 use crate::release;
 
 const RELEASES: &str = "https://api.github.com/repos/spheceo/writer/releases";
-const EVERY: Duration = Duration::from_secs(3_600);
+/// A new build shows up within this long. Each look reads the releases'
+/// Atom feed, which GitHub's API limit (60 anonymous asks an hour, shared
+/// by every Mac behind one address) doesn't cover; the API is asked only
+/// when the feed's tags change, as Edit does.
+const FEED: &str = "https://github.com/spheceo/writer/releases.atom";
+const EVERY: Duration = Duration::from_secs(60);
+/// The API is asked again after this long even with the feed unchanged (a
+/// release whose builds were still uploading when it was last asked).
+const ASK_ANYWAY: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -53,6 +61,8 @@ pub struct Status {
     pub phase: String,
     pub error: Option<String>,
     pub checked_at: Option<i64>,
+    /// Why the last look for updates failed, until one works.
+    pub check_error: Option<String>,
 }
 
 struct State {
@@ -60,9 +70,13 @@ struct State {
     phase: String,
     error: Option<String>,
     checked_at: Option<i64>,
+    check_error: Option<String>,
 }
 
-static STATE: Mutex<State> = Mutex::new(State { offer: None, phase: String::new(), error: None, checked_at: None });
+static STATE: Mutex<State> = Mutex::new(State { offer: None, phase: String::new(), error: None, checked_at: None, check_error: None });
+
+/// The feed's tags and the channel when the API last answered, and when.
+static ASKED: Mutex<Option<(Channel, String, Instant)>> = Mutex::new(None);
 
 fn channel_path(data: &Path) -> PathBuf {
     data.join("update.json")
@@ -81,8 +95,8 @@ pub fn set_channel(data: &Path, channel: Channel) -> Result<Status, String> {
 
 pub fn status(data: &Path) -> Status {
     let state = STATE.lock();
-    let (offer, phase, error, checked_at) = state.map(|state| (state.offer.clone(), state.phase.clone(), state.error.clone(), state.checked_at)).unwrap_or((None, String::new(), None, None));
-    Status { name: release::name(), channel: channel(data), enabled: enabled(), offer, phase: if phase.is_empty() { "idle".into() } else { phase }, error, checked_at }
+    let (offer, phase, error, checked_at, check_error) = state.map(|state| (state.offer.clone(), state.phase.clone(), state.error.clone(), state.checked_at, state.check_error.clone())).unwrap_or((None, String::new(), None, None, None));
+    Status { name: release::name(), channel: channel(data), enabled: enabled(), offer, phase: if phase.is_empty() { "idle".into() } else { phase }, error, checked_at, check_error }
 }
 
 /// Release builds inside Writer.app update themselves; dev builds never do.
@@ -154,8 +168,53 @@ fn get_json(url: &str) -> Result<Option<Value>, String> {
     }
 }
 
-/// Asks GitHub what's on offer now.
+/// Every tag in the releases' feed, sorted and joined: it changes when a
+/// build is published or taken down (drafts aren't in it).
+pub fn feed_tags(feed: &str) -> String {
+    let mut tags: Vec<&str> = feed.split("/releases/tag/").skip(1).filter_map(|rest| rest.split(['"', '<', ' ', '\n']).next()).filter(|tag| !tag.is_empty()).collect();
+    tags.sort_unstable();
+    tags.dedup();
+    tags.join(" ")
+}
+
+fn read_feed() -> Result<String, String> {
+    let response = agent().get(FEED).set("accept", "application/atom+xml").call().map_err(|error| format!("couldn't read the releases feed ({error})"))?;
+    response.into_string().map(|body| feed_tags(&body)).map_err(|error| error.to_string())
+}
+
+/// The minute's look: the feed first, and GitHub's API only when it changed
+/// (or the channel did, or half an hour went by). A feed that can't be read
+/// falls back to asking the API.
+pub fn poll(data: &Path) -> Result<Option<Offer>, String> {
+    let channel = channel(data);
+    let tags = read_feed().ok();
+    let unchanged = match (&tags, ASKED.lock().ok().and_then(|asked| asked.clone())) {
+        (Some(tags), Some((was, known, at))) => was == channel && &known == tags && at.elapsed() < ASK_ANYWAY,
+        _ => false,
+    };
+    if unchanged {
+        let Ok(mut state) = STATE.lock() else { return Ok(None) };
+        state.checked_at = Some(crate::model::now_ms());
+        state.check_error = None;
+        return Ok(state.offer.clone());
+    }
+    let offer = check(data)?;
+    if let (Some(tags), Ok(mut asked)) = (tags, ASKED.lock()) {
+        *asked = Some((channel, tags, Instant::now()));
+    }
+    Ok(offer)
+}
+
+/// Asks GitHub's API what's on offer now (Setup's Check again, a channel change).
 pub fn check(data: &Path) -> Result<Option<Offer>, String> {
+    let answer = ask(data);
+    if let Ok(mut state) = STATE.lock() {
+        state.check_error = answer.as_ref().err().cloned();
+    }
+    answer
+}
+
+fn ask(data: &Path) -> Result<Option<Offer>, String> {
     let channel = channel(data);
     let releases: Vec<Value> = match channel {
         Channel::Stable => get_json(&format!("{RELEASES}/latest"))?.into_iter().collect(),
@@ -222,17 +281,26 @@ fn download(offer: &Offer, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Checks on start and every hour, for as long as Writer runs (release builds only).
+/// Looks on start and every minute, for as long as Writer runs (release
+/// builds only). A failure is logged once until a look works again.
 pub fn start(data: PathBuf) {
     if !enabled() {
         return;
     }
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(30));
-        if let Err(error) = check(&data) {
-            crate::log::warn("update", format!("couldn't check for updates: {error}"));
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(10));
+        let mut failing = false;
+        loop {
+            match poll(&data) {
+                Ok(_) => failing = false,
+                Err(error) if !failing => {
+                    failing = true;
+                    crate::log::warn("update", format!("couldn't check for updates: {error}"));
+                }
+                Err(_) => {}
+            }
+            std::thread::sleep(EVERY);
         }
-        std::thread::sleep(EVERY);
     });
 }
 
@@ -352,6 +420,15 @@ mod tests {
         assert_eq!(tag(pick(&releases(), Channel::Stable, "-1.0.0", None, target)), None);
         // Nothing for an Intel Mac among these.
         assert!(pick(&releases(), Channel::Nightly, "0.0.0", Some(1), "x86_64-apple-darwin").is_none());
+    }
+
+    #[test]
+    fn reads_the_feeds_tags() {
+        let feed = r#"<entry><link rel="alternate" type="text/html" href="https://github.com/spheceo/writer/releases/tag/nightly-22"/></entry>
+<entry><link rel="alternate" type="text/html" href="https://github.com/spheceo/writer/releases/tag/nightly-21"/><id>tag:github.com,2008:Repository/1/nightly-21</id></entry>
+<entry><link href="https://github.com/spheceo/writer/releases/tag/v0.0.0"/></entry>"#;
+        assert_eq!(feed_tags(feed), "nightly-21 nightly-22 v0.0.0");
+        assert_eq!(feed_tags("<feed></feed>"), "");
     }
 
     #[test]

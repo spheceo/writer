@@ -443,6 +443,8 @@ export type UpdateStatus = {
   phase: "idle" | "downloading" | "installing" | "restarting";
   error: string | null;
   checkedAt: number | null;
+  /** Why the last look for updates failed, until one works. */
+  checkError: string | null;
 };
 export const updateStatus = () => (inTauri() ? invoke<UpdateStatus>("update_status") : http<UpdateStatus>("/api/update"));
 export const checkUpdate = () => (inTauri() ? invoke<UpdateStatus>("check_update") : http<UpdateStatus>("/api/update/check", json({})));

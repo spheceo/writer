@@ -1049,6 +1049,7 @@ button.comment:hover:not(:disabled) { background: var(--hover); border-color: va
   color: var(--faint);
   transition: border-color 0.12s;
 }
+.list-type { height: 34px; margin-right: 6px; font-size: 13px; }
 .list-search:focus-within { border-color: var(--line-strong); color: var(--muted); }
 .list-search input { height: 30px; padding: 0; border: 0; background: none; font-size: 13px; }
 .list-search input:focus { border: 0; }

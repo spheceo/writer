@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { type About, clearStorage, doctor, getAbout, getSettings, message, saveYoutubeSignIn, setEngine, setUpdateChannel, storageReport, updateStatus, type UpdateStatus, youtubeSignIn } from "./api";
+import { type About, checkUpdate, clearStorage, doctor, getAbout, getSettings, message, saveYoutubeSignIn, setEngine, setUpdateChannel, storageReport, updateStatus, type UpdateStatus, youtubeSignIn } from "./api";
 import type { Check, StorageReport } from "./types";
 import { Dialog } from "./ui";
 import { AccountRow } from "./account";
@@ -59,7 +59,15 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           )}
           {about && <span className="faint" title={about.release ? "Built by the release workflow" : "A dev build: it never updates itself"}>{about.name}</span>}
           <span className="spacer" />
-          <button type="button" className="ghost" disabled={busy} onClick={run}>
+          <button
+            type="button"
+            className="ghost"
+            disabled={busy}
+            onClick={() => {
+              run();
+              void checkUpdate().then(setUpdate, () => {});
+            }}
+          >
             {busy ? "Checking…" : "Check again"}
           </button>
           <button type="button" className="primary" onClick={onClose}>Done</button>
@@ -163,7 +171,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
             <option value="stable">Stable: releases only</option>
           </select>
           <span className="faint">
-            {!update.enabled ? "This is a dev build: it never updates itself." : update.offer ? `${update.offer.tag} is ready to install.` : "Up to date."}
+            {!update.enabled ? "This is a dev build: it never updates itself." : update.offer ? `${update.offer.tag} is ready to install.` : update.checkError ? `Couldn't check: ${update.checkError}` : "Up to date."}
           </span>
         </div>
       )}
