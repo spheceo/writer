@@ -4,6 +4,7 @@ import {
   checkVideos,
   createCommentary,
   deleteScript,
+  getProgress,
   importDrive,
   importFile,
   importCompilation,
@@ -439,6 +440,7 @@ export function Library({
           toast(<span className="bad">{reason}</span>);
         }}
         onOpenNow={(script) => onOpen(script.id)}
+        onImporting={onOpen}
       />
       <RenameDialog
         script={renaming}
@@ -767,6 +769,7 @@ function ImportDialog({
   onFinished,
   onFailed,
   onOpenNow,
+  onImporting,
 }: {
   open: boolean;
   onClose: () => void;
@@ -774,6 +777,8 @@ function ImportDialog({
   onFinished: (script: Script) => void;
   onFailed: (reason: string) => void;
   onOpenNow: (script: Script) => void;
+  /** An import started: open its project, where its progress shows. */
+  onImporting: (id: string) => void;
 }) {
   // Only the kinds of script this person may start (can.ts; the app refuses the rest too).
   const grants = useGrants();
@@ -957,6 +962,8 @@ function ImportDialog({
     if (source === "compilation" && blocked) return setError(blocked);
     setBusy(true);
     setError(null);
+    // Imports already under way, so the new one is the one that appears.
+    const before = new Set((await getProgress().catch(() => [])).map((item) => item.id));
     const work =
       source === "compilation"
         ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
@@ -969,7 +976,16 @@ function ImportDialog({
       (script) => ({ kind: "done" as const, script }),
       (cause: unknown) => ({ kind: "failed" as const, cause }),
     );
-    const first = await Promise.race([outcome, wait(2500).then(() => ({ kind: "running" as const }))]);
+    // The import's own script appears in the progress list within moments; it opens there.
+    const appeared = (async () => {
+      for (let tries = 0; tries < 40; tries++) {
+        await wait(400);
+        const found = (await getProgress().catch(() => [])).find((item) => !before.has(item.id));
+        if (found) return { kind: "running" as const, id: found.id };
+      }
+      return { kind: "running" as const, id: null };
+    })();
+    const first = await Promise.race([outcome, appeared]);
     if (first.kind === "failed" && !(first.cause instanceof TypeError)) {
       setError(message(first.cause));
       setBusy(false);
@@ -986,6 +1002,9 @@ function ImportDialog({
     setOneCase(false);
     onClose();
     onStarted();
+    // Straight to the project: the import shows there, and the producer can leave it.
+    const opened = first.kind === "done" ? first.script.id : first.kind === "running" ? first.id : null;
+    if (opened) onImporting(opened);
     void outcome.then((result) => {
       if (result.kind === "done") onFinished(result.script);
       else if (!(result.cause instanceof TypeError)) onFailed(message(result.cause));

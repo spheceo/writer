@@ -1540,3 +1540,21 @@ button.danger-soft:hover:not(:disabled) { background: color-mix(in srgb, var(--d
 .review-flags { margin-bottom: 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent); border-radius: 8px; background: color-mix(in srgb, var(--warning) 8%, transparent); font-size: 12.5px; line-height: 1.45; }
 .review-flags ul { margin: 6px 0 0; padding-left: 18px; max-height: 220px; overflow: auto; }
 .review-flags li + li { margin-top: 4px; }
+/* An import, over its project: the meter, then each step. */
+.import-screen { display: grid; gap: 22px; padding: 6px 0 4px; }
+.import-meter-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+.import-meter-head strong { font-size: 34px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.import-meter-head span { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-bar { height: 8px; border-radius: 4px; background: var(--hover); overflow: hidden; }
+.import-bar i { display: block; height: 100%; border-radius: 4px; background: var(--text); transition: width 0.6s ease; }
+.import-steps { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.import-steps li { display: grid; grid-template-columns: 18px 1fr auto; align-items: start; gap: 12px; padding: 10px 12px; border-radius: 8px; }
+.import-steps li[data-state="now"] { background: var(--hover); }
+.import-steps strong { font-size: 14px; font-weight: 600; }
+.import-steps p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.import-steps li[data-state="later"] strong { color: var(--muted); }
+.import-dot { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; border: 1.5px solid var(--line-strong, #555); }
+.import-steps li[data-state="done"] .import-dot { border-color: var(--ok); background: var(--ok); }
+.import-steps li[data-state="now"] .import-dot { border-color: var(--text); background: var(--text); animation: pulse 1.4s ease-in-out infinite; }
+.import-time { font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
+

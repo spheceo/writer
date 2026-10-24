@@ -9,6 +9,7 @@ import { LogsDialog } from "./logs";
 import { SyncDock } from "./sync-dock";
 import { LitStyle } from "./comments";
 import { UpdatePill } from "./update";
+import { ImportScreen } from "./import-screen";
 import { SignInScreen, useAccount } from "./account";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
 
@@ -156,6 +157,23 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [grantsKey]);
   const opened = route.name === "script" && open && open.id === route.id ? open : null;
+  // The open script still importing: its progress shows over the project, which loads when it's done.
+  const importing = route.name === "script" ? (progress.find((item) => item.id === route.id) ?? null) : null;
+  const wasImporting = useRef(false);
+  useEffect(() => {
+    if (route.name !== "script" || !ready) return;
+    if (importing) {
+      wasImporting.current = true;
+      // Its script.json may not be there for the first moments.
+      if (!opened) void getScript(route.id).then(setOpen).catch(() => {});
+      return;
+    }
+    if (wasImporting.current) {
+      wasImporting.current = false;
+      void getScript(route.id).then(setOpen).catch((cause) => setError(message(cause)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!importing, importing?.stage, route, ready]);
   // Signed out, the whole window is the sign-in.
   if (account && !account.signedIn) {
     return (
@@ -193,6 +211,7 @@ export function App() {
           onChanged={refresh}
         />
       )}
+      <ImportScreen item={importing} onLeave={home} />
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <LitStyle />
       <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />
