@@ -972,13 +972,28 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
     cost += spent;
     let mut repairs = 0;
     let mut audited = false;
+    let mut edited = false;
     loop {
         let refusal = match &plan {
             Some(plan) => match compile(plan, &corpus) {
                 Ok(draft) => match pacing.off(&draft) {
                     None => {
                         // What a reviewer would flag goes back once; what's still flagged after is said in the report.
-                        let flags = audit(&draft, &sources, &script.title, pacing);
+                        let mut flags = audit(&draft, &sources, &script.title, pacing);
+                        // Then the story editor's read, once: what doesn't serve the question, and turns left unpaid.
+                        if flags.is_empty() && !edited && repairs < 2 && session.is_some() {
+                            edited = true;
+                            match story_check(&draft, &sources, &script.title) {
+                                Ok((found, spent)) => {
+                                    cost += spent;
+                                    if !found.is_empty() {
+                                        audited = false;
+                                        flags = found;
+                                    }
+                                }
+                                Err(error) => crate::log::warn("agent", format!("{}: the story check didn't run: {error}", crate::log::named(&script.id, &script.title))),
+                            }
+                        }
                         if flags.is_empty() || audited || repairs == 2 || session.is_none() {
                             let mut report = summary(&draft);
                             if !flags.is_empty() {
@@ -1384,6 +1399,39 @@ pub(crate) fn audit(draft: &Draft, sources: &[(Source, String)], title: &str, pa
         flags.push(format!("The narration reports what people said {reported} times and never puts their exact words on screen. In a few of the strongest places, give the exact quote in the narration and add a note for the editor to type it out on screen as a quote pop-up."));
     }
     flags
+}
+
+const STORY_EDITOR: &str = r#"You are the story editor for a commentary channel (investigative video essays read by one narrator, with clips). You read a finished draft against its brief and flag only two kinds of problem, the two the channel's reviewers flag most:
+1. OFF THE QUESTION. A paragraph, or a run of them, that doesn't serve the video's question (the one the intro asks and the ending answers): trivia (a score in a game, a side remark, a stat that proves nothing), a detour into how a side incident played out when the incident itself isn't the story, or an incident that only repeats what a stronger one already showed. True and on video isn't enough; the brief listing it isn't enough either, when it doesn't move the question. Say to cut it, or to fold it into one sentence.
+2. A TURN LEFT UNPAID. A relationship the script opens (someone who warned the subject, helped them, bet against them, fell out with them, or was used by them) where the sources show how it turned out, and the script never says it: who was proven right, who was dropped, what it cost. Say what the payoff is, from the sources.
+Name each by its place in square brackets as the draft gives it ([2. The Rise ¶3]) and quote a few of its words. Flag only real problems a reviewer would mark; an empty list is a fine answer. Never ask for anything the sources don't hold."#;
+
+/// The story editor's read of a draft: what doesn't serve the question, and
+/// relationships left without their payoff. Each comes back as one flag.
+fn story_check(draft: &Draft, sources: &[(Source, String)], title: &str) -> Result<(Vec<String>, f64), String> {
+    let brief: String = sources.iter().filter(|(source, _)| source.role == Role::Brief).map(|(_, text)| text.chars().take(6_000).collect::<String>()).collect::<Vec<_>>().join("\n\n");
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["offQuestion", "unpaid"],
+        "properties": {
+            "offQuestion": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "words", "why"], "properties": { "place": { "type": "string" }, "words": { "type": "string" }, "why": { "type": "string" } } } },
+            "unpaid": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["place", "thread", "payoff"], "properties": { "place": { "type": "string" }, "thread": { "type": "string" }, "payoff": { "type": "string" } } } }
+        }
+    });
+    let prompt = format!("THE VIDEO: {title}\n\nTHE BRIEF\n{brief}\n\nTHE DRAFT\n{}", crate::feedback::script_text(draft));
+    let turn = crate::claude::ask_model_patiently("opus", STORY_EDITOR, &schema.to_string(), &prompt, None)?;
+    let plan = turn.plan.unwrap_or(Value::Null);
+    let mut flags = Vec::new();
+    let off: Vec<String> = plan["offQuestion"].as_array().into_iter().flatten().map(|item| format!("{} (\"{}\"): {}", item["place"].as_str().unwrap_or(""), item["words"].as_str().unwrap_or(""), item["why"].as_str().unwrap_or(""))).collect();
+    if !off.is_empty() {
+        flags.push(format!("The story editor marks these as off the video's question: {}. Cut each, or fold it into one sentence where it still matters; keep the rest as it is.", off.join("; ")));
+    }
+    let unpaid: Vec<String> = plan["unpaid"].as_array().into_iter().flatten().map(|item| format!("{} {}: {}", item["place"].as_str().unwrap_or(""), item["thread"].as_str().unwrap_or(""), item["payoff"].as_str().unwrap_or(""))).collect();
+    if !unpaid.is_empty() {
+        flags.push(format!("These relationships are opened and never paid off, though the sources show how they turned out: {}. Say the payoff plainly where the story reaches it (who was proven right, who was dropped, what it cost).", unpaid.join("; ")));
+    }
+    Ok((flags, turn.cost_usd))
 }
 
 /// The report the producer reads after a build: Claude's, then the length.
