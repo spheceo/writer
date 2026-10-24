@@ -352,7 +352,8 @@ export type Pacing = "channel" | "documentary";
 export type Commentary = { pacing?: Pacing; sources: Source[]; draft?: Draft };
 
 export type Adding =
-  | { kind: "link"; url: string }
+  | { kind: "link"
+  | { kind: "reviewer"; author: string; choices: { reference: string; text: string }[] }; url: string }
   | { kind: "file"; path: string }
   | { kind: "text"; title: string; text: string }
   | { kind: "writer"; id: string };

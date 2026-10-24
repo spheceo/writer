@@ -307,8 +307,9 @@ pub fn create(data: &Path, title: &str, links: &[String], settings: &Settings) -
     Ok(store::detail(script, &dir))
 }
 
-/// What the producer adds: a link, a text file on this Mac, pasted text, or
-/// the transcript of a script already in Writer.
+/// What the producer adds: a link, a text file on this Mac, pasted text, the
+/// transcript of a script already in Writer, or a reviewer's choices for this
+/// video (taken from their review, as production inputs: never a lesson).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Adding {
@@ -316,6 +317,20 @@ pub enum Adding {
     File { path: String },
     Text { title: String, text: String },
     Writer { id: String },
+    Reviewer { author: String, choices: Vec<Choice> },
+}
+
+/// One decision a reviewer made for this video ("F23": use a compilation of…).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Choice {
+    /// Where it came from in the review (the Doc's F23, a note's id).
+    pub reference: String,
+    pub text: String,
+}
+
+/// A source holding a reviewer's choices: its origin is `reviewer:<who>`.
+pub fn reviewer_source(source: &Source) -> Option<&str> {
+    source.origin.strip_prefix("reviewer:")
 }
 
 pub fn add(data: &Path, id: &str, adding: Adding, role: Role, settings: &Settings) -> Result<ScriptDetail, String> {
@@ -334,6 +349,16 @@ pub fn add(data: &Path, id: &str, adding: Adding, role: Role, settings: &Setting
             let title = title.trim();
             let name = if title.is_empty() { "Pasted text".to_string() } else { title.chars().take(180).collect() };
             (name, "pasted".to_string(), text, false)
+        }
+        Adding::Reviewer { author, choices } => {
+            let author = author.trim();
+            if author.is_empty() || choices.is_empty() {
+                return Err("Say whose review it is and what they chose.".into());
+            }
+            let listed = choices.iter().map(|choice| format!("- [{}] {}", choice.reference.trim(), choice.text.trim())).collect::<Vec<_>>().join("\n");
+            let text = format!("THE REVIEWER'S CHOICES FOR THIS VIDEO, from {author}'s review of an earlier draft. These are {author}'s own decisions for this script, supplied by the producer: follow each as written. They are about this video only.\n\n{listed}");
+            crate::log::info("commentary", format!("{}: {} reviewer-supplied choices from {author} added as production inputs: {}", crate::log::named(id, ""), choices.len(), choices.iter().map(|choice| choice.reference.trim().to_string()).collect::<Vec<_>>().join(", ")));
+            (format!("Reviewer's choices · {author}"), format!("reviewer:{author}"), text, false)
         }
         Adding::Writer { id: other } => {
             if other == id {
@@ -891,7 +916,7 @@ fn evidence(sources: &[(Source, String)]) -> String {
             format!(
                 "=== {} · {} · \"{}\" (from {}) ===\n{}\n=== END {} ===",
                 source.id,
-                role_label(source.role),
+                if reviewer_source(source).is_some() { "REVIEWER'S CHOICES (decisions for this video, supplied by the producer: follow them)" } else { role_label(source.role) },
                 source.title,
                 if source.origin.starts_with("writer:") { "a transcript in Writer" } else { source.origin.as_str() },
                 text.trim(),
@@ -953,6 +978,10 @@ pub(crate) fn write(dir: &Path, script: &Script, writing: &Writing) -> Result<Bu
         return Err("Add the brief or some evidence first.".into());
     }
     let mut system = system_prompt(&script.title, commentary.pacing);
+    let reviewers: Vec<&str> = commentary.sources.iter().filter_map(reviewer_source).collect();
+    if !reviewers.is_empty() {
+        crate::log::info("commentary", format!("{}: writing with reviewer-supplied choices from {} (production inputs, not lessons)", crate::log::named(&script.id, &script.title), reviewers.join(", ")));
+    }
     if !writing.lessons.trim().is_empty() {
         system.push_str(&format!("\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n{}", writing.lessons.trim()));
     }

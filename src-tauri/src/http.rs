@@ -194,6 +194,15 @@ fn route(
             let draft = serde_json::from_value(value["draft"].clone()).ok();
             json_result(stream, crate::teach_with(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["mode"].as_str().unwrap_or("build"), draft, value["request"].as_str().unwrap_or("")))
         }
+        // Debug builds only: a reviewer's choices added to a commentary as production inputs (a Reviewer source).
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "reviewer-choices"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let adding: crate::commentary::Adding = serde_json::from_value(json!({ "kind": "reviewer", "author": value["author"], "choices": value["choices"] })).map_err(|error| error.to_string())?;
+            let data = data_dir(&app)?;
+            let settings = crate::settings::load(&data);
+            json_result(stream, crate::commentary::add(&data, value["id"].as_str().unwrap_or(""), adding, crate::commentary::Role::Brief, &settings).map(|_| json!({ "ok": true })))
+        }
         // Debug builds only: research a commentary's names and correct its machine-heard sources (spelling.rs).
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "spelling"]) => {
