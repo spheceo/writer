@@ -20,9 +20,6 @@ fn built_relay() -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub relay_url: String,
-    /// Claude fixes new review notes by itself while Writer runs (reviews.rs).
-    #[serde(default = "on")]
-    pub auto_fix: bool,
     /// How Writer reaches Claude: `sdk` (the Agent SDK through writer-agent,
     /// as Edit; a script built in steps with Writer's tools), everyone's
     /// since Oct 24 2026, or `cli` (one `claude -p` answer per question),
@@ -45,15 +42,10 @@ fn engine_now() -> Engine {
     if std::env::var("WRITER_ENGINE").is_ok_and(|value| value == "cli") { Engine::Cli } else { Engine::Sdk }
 }
 
-fn on() -> bool {
-    true
-}
-
 impl Default for Settings {
     fn default() -> Self {
         Self {
             relay_url: built_relay(),
-            auto_fix: true,
             engine: engine_now(),
         }
     }
@@ -70,7 +62,6 @@ pub fn load(data: &Path) -> Settings {
     };
     Settings {
         relay_url: check_relay(&file.relay_url).unwrap_or(built.relay_url),
-        auto_fix: file.auto_fix,
         engine: engine_now(),
     }
 }
@@ -87,7 +78,6 @@ pub fn forget_old_token(data: &Path) {
 pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
     let settings = Settings {
         relay_url: check_relay(&incoming.relay_url)?,
-        auto_fix: incoming.auto_fix,
         engine: incoming.engine,
     };
     fs::create_dir_all(data).map_err(|error| error.to_string())?;
@@ -109,13 +99,6 @@ pub fn save(data: &Path, incoming: Settings) -> Result<Settings, String> {
 pub fn set_engine(data: &Path, engine: Engine) -> Result<Settings, String> {
     let mut settings = load(data);
     settings.engine = engine;
-    save(data, settings)
-}
-
-/// Turns Claude's fixing of new review notes on or off, keeping the rest.
-pub fn set_auto_fix(data: &Path, on: bool) -> Result<Settings, String> {
-    let mut settings = load(data);
-    settings.auto_fix = on;
     save(data, settings)
 }
 
@@ -158,8 +141,9 @@ mod tests {
         fs::write(path(&data), r#"{"relayUrl":"https://writer.example","relayToken":"old","autoFix":false}"#).unwrap();
         forget_old_token(&data);
         let text = fs::read_to_string(path(&data)).unwrap();
-        // The old file's relay isn't Writer's own, so the built one replaces it.
-        assert!(!text.contains("relayToken") && !text.contains("https://writer.example") && text.contains(&built_relay()) && text.contains("false"), "{text}");
+        // The old file's relay isn't Writer's own, so the built one replaces it;
+        // autoFix went when fixing moved to accounts' Fixing page.
+        assert!(!text.contains("relayToken") && !text.contains("https://writer.example") && text.contains(&built_relay()) && !text.contains("autoFix"), "{text}");
         let _ = fs::remove_dir_all(&data);
     }
 }

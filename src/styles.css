@@ -1254,7 +1254,7 @@ button.fb-section-head[aria-expanded="false"] svg { transform: rotate(-90deg); }
 .review-link input { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 12px; }
 .review-meta { margin: 6px 0 0; font-size: 12px; }
 .review-auto { margin: 12px 0 4px; align-items: flex-start; line-height: 1.4; }
-.review-auto input { margin-top: 2px; }
+
 .review-notes { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; max-height: 50vh; overflow: auto; }
 .review-note { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid var(--accent); }
 .review-note[data-status="done"] { border-left-color: var(--ok); }

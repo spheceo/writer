@@ -7,14 +7,22 @@
 //! sharing again publishes the next version under the same link. While
 //! Writer runs it asks for changed notes every 45 seconds and keeps them in
 //! `reviews/notes.json` beside `scripts/` (each Mac its own copy, so two
-//! Macs never conflict over it). Five minutes after a script's last new note,
-//! its open notes are fixed by Claude (fixing.rs), unless that's turned off.
+//! Macs never conflict over it).
+//!
+//! Notes are fixed when a reviewer clicks "Ready for changes" on the review
+//! page, by the one computer an admin chose on accounts.spheceo.com's Fixing
+//! page (accounts/docs/fixing.md). Writer checks in (`reviews:checkIn`) every
+//! 45 seconds, every 15 on the fixing computer; there it takes each waiting
+//! request (`reviews:takeFix`), fixes the notes (fixing.rs, which says how
+//! it's going with `reviews:fixProgress`) and shares the next version, which
+//! the page then offers. Fixing by hand works on any computer.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -22,13 +30,11 @@ use tauri::{AppHandle, Emitter};
 
 use crate::blocks::{self, Range};
 use crate::model::now_ms;
-use crate::{cloud, import, jobs, settings, store};
+use crate::{cloud, import, jobs, store};
 
 const POLL: Duration = Duration::from_secs(45);
-/// A sitting's notes are fixed together: this long after the last one.
-pub const QUIET_MS: i64 = 5 * 60_000;
-/// Runs a note gets by itself; after that, only the producer fixes it, by hand.
-const MAX_ATTEMPTS: u32 = 2;
+/// How often the fixing computer checks for "Ready for changes"; others check in at POLL.
+const CHECK_IN_CHOSEN: Duration = Duration::from_secs(15);
 
 /// A script's review link, kept in its script.json so every Mac has it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -220,10 +226,12 @@ fn changes(data: &Path, cursor: i64) -> Result<(Vec<Note>, i64), String> {
     Ok((notes, cursor))
 }
 
-/// Takes notes to fix; answers the IDs this Mac got (not replies, done, or under another run's claim).
-pub fn claim(data: &Path, note_ids: &[String]) -> Result<Vec<String>, String> {
+/// Takes notes to fix; answers the IDs this Mac got (not replies, done, or
+/// under another run's claim). Once a computer is chosen to fix, Repack
+/// gives notes only to it, unless they're fixed by hand (`manual`).
+pub fn claim(data: &Path, note_ids: &[String], manual: bool) -> Result<Vec<String>, String> {
     // Repack takes a hundred at a time.
-    let value = cloud::call(data, "mutation", "reviews:claim", json!({ "noteIds": &note_ids[..note_ids.len().min(100)], "by": by() }))?;
+    let value = cloud::call(data, "mutation", "reviews:claim", json!({ "noteIds": &note_ids[..note_ids.len().min(100)], "by": by(), "machine": crate::machine::id(), "manual": manual }))?;
     Ok(value["claimed"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_string)).collect())
 }
 
@@ -314,13 +322,19 @@ pub fn reply(data: &Path, note_id: &str, text: &str) -> Result<(), String> {
 /// Publishes the script as it stands: its first version, or the next under
 /// the same link. Answers the script with its link.
 pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script. Share it when that's done.".into());
+    }
+    share_next(data, id)
+}
+
+/// Shares the next version from inside the fix that made it ("Ready for
+/// changes"), which is still the script's running job.
+pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String> {
     let dir = store::script_dir(data, id)?;
     let mut script = store::read(&dir)?;
     if script.status != "ready" {
         return Err("Share a script once its import has finished.".into());
-    }
-    if jobs::running(id) {
-        return Err("Claude is still working on this script. Share it when that's done.".into());
     }
     // A commentary's paragraphs get the IDs notes anchor to.
     if let Some(draft) = script.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()) {
@@ -443,8 +457,7 @@ struct Known {
     /// Notes this Mac has started fixing, so a run is never repeated.
     #[serde(default)]
     tried: BTreeMap<String, i64>,
-    /// How many runs each note has had here: auto-fix stops at MAX_ATTEMPTS,
-    /// so a note reopened again and again can't keep Claude busy.
+    /// How many runs each note has had here.
     #[serde(default)]
     attempts: BTreeMap<String, u32>,
     /// Script ID → its approved version, as Repack's reviews:open says.
@@ -531,7 +544,8 @@ fn scan_links(data: &Path) -> BTreeMap<String, String> {
 pub struct Counts {
     pub open: BTreeMap<String, usize>,
     pub approved: BTreeMap<String, Approval>,
-    pub auto_fix: bool,
+    /// This Mac is the one chosen to fix notes (accounts' Fixing page), as of its last check-in.
+    pub fixes_here: bool,
 }
 
 pub fn counts(data: &Path) -> Counts {
@@ -542,7 +556,7 @@ pub fn counts(data: &Path) -> Counts {
             *open.entry(script.clone()).or_insert(0) += 1;
         }
     }
-    Counts { open, approved: known.approved, auto_fix: settings::load(data).auto_fix }
+    Counts { open, approved: known.approved, fixes_here: CHOSEN.load(Ordering::Relaxed) }
 }
 
 /// A script's notes, oldest first, with their replies.
@@ -590,10 +604,12 @@ pub fn poll_soon() {
     }
 }
 
-/// Asks for changed notes while Writer runs, and starts fixes when a sitting is over.
+/// Asks for changed notes while Writer runs, checks in as this computer, and
+/// on the fixing computer takes each "Ready for changes".
 pub fn start(app: AppHandle, data: PathBuf) {
     std::thread::spawn(move || {
         let mut waited = POLL;
+        let mut checked: Option<Instant> = None;
         loop {
             let now = POLL_NOW.lock().map(|mut now| std::mem::take(&mut *now)).unwrap_or(false);
             if now || waited >= POLL {
@@ -601,7 +617,11 @@ pub fn start(app: AppHandle, data: PathBuf) {
                 if let Ok(true) = poll(&data) {
                     let _ = app.emit("reviews", ());
                 }
-                start_fixes(&app, &data);
+            }
+            let every = if CHOSEN.load(Ordering::Relaxed) { CHECK_IN_CHOSEN } else { POLL };
+            if checked.is_none_or(|at| at.elapsed() >= every) {
+                checked = Some(Instant::now());
+                check_in(&app, &data);
             }
             std::thread::sleep(Duration::from_secs(3));
             waited += Duration::from_secs(3);
@@ -665,41 +685,103 @@ fn poll(data: &Path) -> Result<bool, String> {
     Ok(changed)
 }
 
-/// Starts a fix on each script whose reviewer has been quiet for five
-/// minutes, with open notes nobody has taken: one run per script, never
-/// during a build or an import, and not at all when turned off.
-fn start_fixes(app: &AppHandle, data: &Path) {
-    if !settings::load(data).auto_fix {
+// ---- Ready for changes, on the fixing computer --------------------------------
+
+/// This Mac is the fixing computer, as the last check-in said.
+static CHOSEN: AtomicBool = AtomicBool::new(false);
+
+/// A review waiting for the fixing computer.
+struct Request {
+    review_id: String,
+    script_id: String,
+    title: String,
+}
+
+/// Says this Mac is open (for accounts' Fixing page) and, on the fixing
+/// computer, takes each waiting "Ready for changes" whose script is here.
+fn check_in(app: &AppHandle, data: &Path) {
+    if !crate::account::can_call() {
         return;
     }
-    let grants = crate::can::grants();
-    if !grants.has(crate::can::SHARE) {
+    let email = crate::account::creator().map(|person| person.email).filter(|email| !email.is_empty());
+    let answer = match cloud::call(data, "mutation", "reviews:checkIn", json!({ "machine": crate::machine::id(), "name": crate::machine::name(), "email": email })) {
+        Ok(answer) => answer,
+        Err(error) => {
+            crate::log::warn("review", format!("checking in for fixing: {error}"));
+            return;
+        }
+    };
+    let chosen = answer["chosen"] == true;
+    if CHOSEN.swap(chosen, Ordering::Relaxed) != chosen {
+        crate::log::info("review", if chosen { "this Mac is the fixing computer: it takes Ready for changes" } else { "this Mac isn't the fixing computer" });
+        let _ = app.emit("reviews", ());
+    }
+    if !chosen || !crate::can::grants().has(crate::can::SHARE) {
         return;
     }
-    let known = load(data);
-    let mut by_script: BTreeMap<String, Vec<&Note>> = BTreeMap::new();
-    for note in known.notes.values() {
-        let spent = known.attempts.get(&note.id).copied().unwrap_or(0) >= MAX_ATTEMPTS;
-        if note.is_root() && note.untaken() && !known.tried.contains_key(&note.id) && !spent {
-            // An approved script is finished: nothing is fixed by itself.
-            if let Some(script) = note.script_id.as_ref().or_else(|| known.links.get(&note.review_id)).filter(|script| !known.approved.contains_key(*script)) {
-                by_script.entry(script.clone()).or_default().push(note);
-            }
+    let requests: Vec<Request> = answer["requests"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| Some(Request { review_id: row["reviewId"].as_str()?.to_string(), script_id: row["sourceId"].as_str()?.to_string(), title: row["title"].as_str().unwrap_or("").to_string() }))
+        .collect();
+    if requests.is_empty() {
+        return;
+    }
+    // The notes it fixes are read from what this Mac has heard: hear them first.
+    let _ = poll(data);
+    for request in requests {
+        take(app, data, &request);
+    }
+}
+
+/// Takes one request and starts its fix, or says why it couldn't.
+fn take(app: &AppHandle, data: &Path, request: &Request) {
+    let name = crate::log::named(&request.script_id, &request.title);
+    // A script this Mac hasn't got yet (the sync brings it) or is busy with waits for a later check-in.
+    let here = store::script_dir(data, &request.script_id).and_then(|dir| store::read(&dir)).is_ok_and(|script| script.status == "ready");
+    if !here || jobs::running(&request.script_id) || import::importing(&request.script_id) {
+        crate::log::info("review", format!("{name}: Ready for changes waits: the script {}", if here { "is busy" } else { "isn't on this Mac yet" }));
+        return;
+    }
+    let taken = match cloud::call(data, "mutation", "reviews:takeFix", json!({ "machine": crate::machine::id(), "reviewId": request.review_id })) {
+        Ok(taken) => taken,
+        Err(error) => {
+            crate::log::warn("review", format!("{name}: couldn't take Ready for changes: {error}"));
+            return;
+        }
+    };
+    if taken["ok"] != true {
+        crate::log::info("review", format!("{name}: Ready for changes not taken ({})", taken["reason"].as_str().unwrap_or("?")));
+        return;
+    }
+    let notes: Vec<String> = taken["noteIds"].as_array().into_iter().flatten().filter_map(|id| id.as_str().map(str::to_string)).collect();
+    crate::log::info("review", format!("{name}: Ready for changes: fixing {} {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }));
+    mark_tried(data, &notes);
+    if let Err(error) = jobs::start(app.clone(), request.script_id.clone(), jobs::Work::Review { notes, ready: Some(request.review_id.clone()) }) {
+        progress(data, &request.review_id, Some("failed"), None, None, None, Some(&error));
+    }
+}
+
+/// How a "Ready for changes" is going, for its review page: `state` fixing,
+/// sharing, done (nothing to share) or failed (`error`). Sharing the next
+/// version ends it by itself. Best effort: the page reads a request that
+/// stops answering as stopped after 30 minutes.
+pub fn progress(data: &Path, review_id: &str, state: Option<&str>, stage: Option<&str>, done: Option<usize>, total: Option<usize>, error: Option<&str>) {
+    let mut args = json!({ "machine": crate::machine::id(), "reviewId": review_id });
+    for (key, value) in [("state", state), ("stage", stage), ("error", error)] {
+        if let Some(value) = value {
+            args[key] = json!(value);
         }
     }
-    for (script, notes) in by_script {
-        let last = notes.iter().map(|note| note.created_at).max().unwrap_or(0);
-        if now_ms() - last < QUIET_MS || jobs::running(&script) || import::importing(&script) {
-            continue;
-        }
-        let ready = store::script_dir(data, &script).and_then(|dir| store::read(&dir)).is_ok_and(|found| found.status == "ready" && crate::can::sees(&grants, &found));
-        if !ready {
-            continue;
-        }
-        let ids: Vec<String> = notes.iter().map(|note| note.id.clone()).collect();
-        crate::log::info("review", format!("script {}: {} new {} quiet for five minutes; fixing them", &script[..8.min(script.len())], ids.len(), if ids.len() == 1 { "note" } else { "notes" }));
-        mark_tried(data, &ids);
-        let _ = jobs::start(app.clone(), script, jobs::Work::Review { notes: ids });
+    if let Some(done) = done {
+        args["done"] = json!(done);
+    }
+    if let Some(total) = total {
+        args["total"] = json!(total);
+    }
+    if let Err(error) = cloud::call(data, "mutation", "reviews:fixProgress", args) {
+        crate::log::warn("review", format!("saying how the fix is going: {error}"));
     }
 }
 

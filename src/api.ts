@@ -348,8 +348,6 @@ export const fixNotes = (id: string) =>
 
 export const setEngine = (engine: "cli" | "sdk") =>
   inTauri() ? invoke<Settings>("set_engine", { engine }) : http<Settings>("/api/settings/engine", { ...json({ engine }), method: "PUT" });
-export const setAutoFix = (on: boolean) =>
-  inTauri() ? invoke<ReviewCounts>("set_auto_fix", { on }) : http<ReviewCounts>("/api/reviews/auto-fix", { ...json({ on }), method: "PUT" });
 
 /** Calls `then` whenever review notes change (in the app; the dev page asks every half minute). */
 /** Scripts came, went or changed behind the page's back (the cloud, the local

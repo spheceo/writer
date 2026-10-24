@@ -26,6 +26,7 @@ mod http;
 mod import;
 mod jobs;
 mod log;
+mod machine;
 mod media;
 mod names;
 mod net;
@@ -1003,7 +1004,7 @@ fn review_notes(app: AppHandle, id: String) -> Result<serde_json::Value, String>
     review_notes_now(&data_dir(&app)?, &id)
 }
 
-/// Fixes a script's open notes now, rather than waiting for the quiet.
+/// Fixes a script's open notes now, by hand: on any computer, not only the fixing one.
 pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::BuildStatus, String> {
     can::require(can::SHARE)?;
     if let Some(approved) = reviews::approval(data, &id) {
@@ -1014,7 +1015,7 @@ pub fn fix_notes_now(app: AppHandle, data: &Path, id: String) -> Result<jobs::Bu
         return Err("No notes are open.".into());
     }
     reviews::mark_tried(data, &notes);
-    jobs::start(app, id, jobs::Work::Review { notes })
+    jobs::start(app, id, jobs::Work::Review { notes, ready: None })
 }
 
 #[tauri::command]
@@ -1281,14 +1282,6 @@ pub fn ab_build_now(data: &Path, id: &str, engine: &str, kind: Option<formats::K
 #[tauri::command]
 fn set_engine(app: AppHandle, engine: settings::Engine) -> Result<settings::Settings, String> {
     settings::set_engine(&data_dir(&app)?, engine)
-}
-
-#[tauri::command]
-fn set_auto_fix(app: AppHandle, on: bool) -> Result<reviews::Counts, String> {
-    can::require(can::SHARE)?;
-    let data = data_dir(&app)?;
-    settings::set_auto_fix(&data, on)?;
-    Ok(reviews::counts(&data))
 }
 
 #[tauri::command]
@@ -1595,7 +1588,6 @@ pub fn run() {
             review_counts,
             review_notes,
             fix_notes,
-            set_auto_fix,
             set_engine,
             approve_review,
             get_logs,

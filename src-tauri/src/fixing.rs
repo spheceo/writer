@@ -67,11 +67,50 @@ fn everywhere(note: &Note) -> bool {
 }
 
 /// Runs as a job. Answers the report the page shows, and what it cost.
-pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f64), String> {
+/// `ready`: the review whose "Ready for changes" asked for this fix: its
+/// page hears how it's going, and the next version is shared after.
+pub fn run(app: &AppHandle, id: &str, note_ids: &[String], ready: Option<&str>) -> Result<(String, f64), String> {
     let data = crate::data_dir(app)?;
+    let Some(review) = ready else {
+        return fix_notes(app, &data, id, note_ids, None);
+    };
+    let before = store::read(&store::script_dir(&data, id)?)?.revision;
+    let fixed = fix_notes(app, &data, id, note_ids, Some(review));
+    let (report, cost) = match fixed {
+        Ok(done) => done,
+        Err(error) => {
+            reviews::progress(&data, review, Some("failed"), None, None, None, Some(&error));
+            return Err(error);
+        }
+    };
+    let script = store::read(&store::script_dir(&data, id)?)?;
+    if let Some(approved) = reviews::approval(&data, id) {
+        reviews::progress(&data, review, Some("failed"), None, None, None, Some(&format!("v{} was approved meanwhile, so nothing was shared.", approved.version)));
+        return Ok((report, cost));
+    }
+    // Nothing changed (questions answered, notes left open with a reason): nothing to share.
+    if script.revision == before {
+        reviews::progress(&data, review, Some("done"), Some("Answered: nothing in the script changed"), None, None, None);
+        return Ok((report, cost));
+    }
+    let next = script.review.as_ref().map_or(1, |link| link.version + 1);
+    jobs::stage(id, &format!("Sharing v{next}"));
+    reviews::progress(&data, review, Some("sharing"), Some(&format!("Sharing v{next}")), None, None, None);
+    match reviews::share_next(&data, id) {
+        // Repack ends the request as done with the new version.
+        Ok(_) => Ok((format!("{report}\nShared v{next} for the reviewers."), cost)),
+        Err(error) => {
+            reviews::progress(&data, review, Some("failed"), None, None, None, Some(&format!("The fixes are in, but sharing v{next} failed: {error}")));
+            Ok((format!("{report}\nCouldn't share v{next}: {error}"), cost))
+        }
+    }
+}
+
+fn fix_notes(app: &AppHandle, data: &std::path::Path, id: &str, note_ids: &[String], ready: Option<&str>) -> Result<(String, f64), String> {
+    let data = data.to_path_buf();
     let dir = store::script_dir(&data, id)?;
     jobs::stage(id, "Taking the review notes");
-    let taken = reviews::claim(&data, note_ids)?;
+    let taken = reviews::claim(&data, note_ids, ready.is_none())?;
     reviews::mark_tried(&data, note_ids);
     let mut notes: Vec<Note> = taken.iter().filter_map(|note| reviews::note(&data, note)).collect();
     notes.sort_by_key(|note| note.created_at);
@@ -97,7 +136,11 @@ pub fn run(app: &AppHandle, id: &str, note_ids: &[String]) -> Result<(String, f6
             lines.push(format!("Stopped: v{} was approved, so the other {} notes were left as they are.", approved.version, rest.len()));
             break;
         }
-        jobs::stage(id, &format!("Fixing note {} of {}", index + 1, notes.len()));
+        let stage = format!("Fixing note {} of {}", index + 1, notes.len());
+        jobs::stage(id, &stage);
+        if let Some(review) = ready {
+            reviews::progress(&data, review, None, Some(&stage), Some(index), Some(notes.len()), None);
+        }
         let before = store::read(&dir)?;
         let next = before.review.as_ref().map_or(1, |link| link.version + 1);
         let began = std::time::Instant::now();

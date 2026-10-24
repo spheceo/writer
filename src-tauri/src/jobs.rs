@@ -135,8 +135,9 @@ pub enum Work {
     Find,
     /// A step in learning from a review (feedback.rs).
     Learn(crate::feedback::Step),
-    /// Fix a shared script from its reviewers' notes (fixing.rs).
-    Review { notes: Vec<String> },
+    /// Fix a shared script from its reviewers' notes (fixing.rs). `ready`:
+    /// the review whose "Ready for changes" asked for it, shared again after.
+    Review { notes: Vec<String>, ready: Option<String> },
     /// Bring an archived script's footage back (archive.rs).
     Restore,
 }
@@ -198,7 +199,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         Work::Reuse { urls } => format!("bringing in {} reused {}", urls.len(), if urls.len() == 1 { "case" } else { "cases" }),
         Work::Find => "finding clips on YouTube".to_string(),
         Work::Learn(_) => "learning from the feedback".to_string(),
-        Work::Review { notes } => format!("fixing {} review {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }),
+        Work::Review { notes, .. } => format!("fixing {} review {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }),
         Work::Restore => "bringing the footage back".to_string(),
     };
     let name = crate::log::named(&id, &title);
@@ -213,7 +214,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
             Work::Reuse { urls } => crate::reuse::import(&app, &id, urls),
             Work::Find => crate::scout::find(&app, &id),
             Work::Learn(step) => crate::feedback::run(&app, &id, step),
-            Work::Review { notes } => crate::fixing::run(&app, &id, notes),
+            Work::Review { notes, ready } => crate::fixing::run(&app, &id, notes, ready.as_deref()),
             Work::Restore => crate::archive::restore(&app, &id),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));

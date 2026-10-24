@@ -73,6 +73,10 @@ const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
   "reviews:resolve": "review.share",
   "reviews:reply": "review.share",
   "reviews:note": "review.share",
+  // Fixing on the one computer chosen on accounts' Fixing page (accounts/docs/fixing.md).
+  "reviews:checkIn": "read",
+  "reviews:takeFix": "review.share",
+  "reviews:fixProgress": "review.share",
   "edit:getMedia": "read",
   "edit:putMedia": "any",
 };

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, setAutoFix, shareScript } from "./api";
+import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
@@ -226,14 +226,14 @@ export function ReviewDialog({
   const [sharing, setSharing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [autoFix, setAuto] = useState<boolean | null>(null);
+  const [fixesHere, setFixesHere] = useState<boolean | null>(null);
   // Sharing, approving and fixing need review.share; reading the notes doesn't.
   const mayShare = useGrants().has(CAN.share);
   useEffect(() => {
     if (!open) return;
     setProblem(null);
     onRefresh();
-    void reviewCounts().then((counts) => setAuto(counts.autoFix), () => {});
+    void reviewCounts().then((counts) => setFixesHere(counts.fixesHere), () => {});
   }, [open]);
 
   const link = script.review;
@@ -351,11 +351,12 @@ export function ReviewDialog({
           )}
         </p>
       )}
-      {mayShare && link && autoFix !== null && !approved && (
-        <label className="toggle review-auto">
-          <input type="checkbox" checked={autoFix} onChange={(event) => void setAutoFix(event.target.checked).then((counts) => setAuto(counts.autoFix), (cause) => setProblem(message(cause)))} />
-          Claude fixes new notes by itself, five minutes after a reviewer's last one, while Writer is open
-        </label>
+      {mayShare && link && fixesHere !== null && !approved && (
+        <p className="faint review-auto">
+          {fixesHere
+            ? "When a reviewer clicks Ready for changes, Claude fixes the notes on this Mac and shares the next version."
+            : "When a reviewer clicks Ready for changes, the fixing computer chosen on accounts.spheceo.com fixes the notes and shares the next version."}
+        </p>
       )}
       {link && roots.length === 0 && <p className="faint">No notes yet.</p>}
       {roots.length > 0 && (

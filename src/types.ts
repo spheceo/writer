@@ -479,7 +479,7 @@ export type ReviewNote = {
 };
 /** A review's approved version: the link takes no more notes, and Repack deletes the other versions' files (their notes stay). */
 export type ReviewApproval = { version: number; by: string; at: number };
-export type ReviewCounts = { open: Record<string, number>; approved: Record<string, ReviewApproval>; autoFix: boolean };
+export type ReviewCounts = { open: Record<string, number>; approved: Record<string, ReviewApproval>; fixesHere: boolean };
 
 /** A stretch of a YouTube video a commentary plays, downloaded beside it (footage.rs). */
 export type FootagePiece = { video: string; fromMs: number; toMs: number; file: string };
