@@ -250,11 +250,12 @@ pub fn get_file(data: &Path, script: &str, key: &str, size: u64, path: &Path) ->
     cloud.download(script, &name, key, size, path).map_err(|problem| problem.message)
 }
 
-/// A script file's key and size in the cloud, as this Mac last synced it.
-pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64)> {
+/// A script file's key and size in the cloud, as this Mac last synced it,
+/// and the modified time this Mac knew it by.
+pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64, u64)> {
     let ledger = load(data);
     let kept = ledger.scripts.get(id)?.files.get(name)?;
-    Some((kept.key.clone(), kept.size))
+    Some((kept.key.clone(), kept.size, kept.mtime))
 }
 
 /// Verified in the cloud: the object at a script file's ledger key is
@@ -262,7 +263,7 @@ pub fn file_key(data: &Path, id: &str, name: &str) -> Option<(String, u64)> {
 /// is only what this Mac last believed; this is the signal share and
 /// storage deletion gate on (an `r2/head` through the relay).
 pub fn verify_file(data: &Path, id: &str, name: &str, local_size: u64) -> Result<bool, String> {
-    let Some((key, size)) = file_key(data, id, name) else { return Ok(false) };
+    let Some((key, size, _)) = file_key(data, id, name) else { return Ok(false) };
     if size != local_size {
         return Ok(false);
     }

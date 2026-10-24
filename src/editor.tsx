@@ -161,6 +161,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
@@ -657,12 +658,23 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           onVideo={onVideo}
           empty={
             script.status === "ready" && !archived ? (
-              <span>
-                Preview is in the cloud.{" "}
-                <button type="button" className="link-button" onClick={() => void change(() => restorePreview(script.id))}>
-                  Download preview
-                </button>
-              </span>
+              fetching ? (
+                <span>Downloading the preview… a long video's takes a few minutes.</span>
+              ) : (
+                <span>
+                  Preview is in the cloud.{" "}
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => {
+                      setFetching(true);
+                      void change(() => restorePreview(script.id)).finally(() => setFetching(false));
+                    }}
+                  >
+                    Download preview
+                  </button>
+                </span>
+              )
             ) : undefined
           }
         />

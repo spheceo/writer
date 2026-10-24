@@ -77,6 +77,7 @@ fn get_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
     can::require_id(&data_dir(&app)?, &id)?;
     let data = data_dir(&app)?;
     let dir = store::script_dir(&data, &id)?;
+    storage::used(&data, &id);
     Ok(store::detail(store::read(&dir)?, &dir))
 }
 

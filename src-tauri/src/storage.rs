@@ -26,6 +26,8 @@
 //! What was purged is remembered in `cloud/storage.json`, so cloud.rs
 //! keeps listing the footage in the cloud (a later edit doesn't drop it
 //! from the script's files) and doesn't download it straight back.
+//! When a preview was last opened is in `cloud/previews.json`: the cache
+//! cap keeps the one in use, however big it is.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -114,6 +116,41 @@ fn record_purged(data: &Path, id: &str, names: &[String]) {
         }
     }
     save_purged(data, &map);
+}
+
+// ---- When each preview was last used ------------------------------------------
+
+/// How long a preview stays safe from the cap after its script was opened.
+const IN_USE_MS: i64 = 30 * 60 * 1000;
+
+static USED: std::sync::Mutex<BTreeMap<String, i64>> = std::sync::Mutex::new(BTreeMap::new());
+
+fn used_path(data: &Path) -> PathBuf {
+    data.join("cloud").join("previews.json")
+}
+
+fn used_map(data: &Path) -> BTreeMap<String, i64> {
+    fs::read(used_path(data)).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default()
+}
+
+/// A script opened (or its preview fetched) now: the cap leaves its preview
+/// alone for a while, and evicts it after the ones used longer ago. Written
+/// at most once a minute per script, as the editor asks often.
+pub fn used(data: &Path, id: &str) {
+    let now = crate::model::now_ms();
+    let Ok(mut recent) = USED.lock() else { return };
+    if recent.get(id).is_some_and(|at| now - at < 60_000) {
+        return;
+    }
+    recent.insert(id.to_string(), now);
+    let mut map = used_map(data);
+    map.insert(id.to_string(), now);
+    let path = used_path(data);
+    let _ = fs::create_dir_all(path.parent().unwrap_or(data));
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, serde_json::to_vec_pretty(&map).unwrap_or_default()).is_ok() {
+        let _ = fs::rename(tmp, path);
+    }
 }
 
 fn forget_purged(data: &Path, id: &str, name: &str) {
@@ -222,8 +259,10 @@ pub fn report(data: &Path) -> Report {
 // ---- Clearing -----------------------------------------------------------------
 
 /// Proxies left on this Mac are a cache, capped at this much in all:
-/// past it, the least recently changed scripts' previews go first (they
-/// are fetched back from the cloud on request).
+/// past it, the least recently used scripts' previews go first (they are
+/// fetched back from the cloud on request). The most recently used one,
+/// and any opened in the last half hour, stay even past it: a long
+/// compilation's preview alone can be bigger than the cap.
 pub const CACHE_CAP_BYTES: u64 = 500_000_000;
 
 /// A file verified in the cloud, live: its object is there at this size.
@@ -293,7 +332,7 @@ fn purge_with(data: &Path, id: &str, keep_preview: bool, verify: &dyn Fn(&str, u
     Ok(freed)
 }
 
-/// Evicts cached previews past the cap, least recently changed first.
+/// Evicts cached previews past the cap, least recently used first.
 /// A preview is only evicted once verified in the cloud; one that can't
 /// be verified stays, cap or not.
 pub fn enforce_cache_cap(data: &Path, cap_bytes: u64) -> u64 {
@@ -302,12 +341,15 @@ pub fn enforce_cache_cap(data: &Path, cap_bytes: u64) -> u64 {
 
 fn enforce_cache_cap_with(data: &Path, cap_bytes: u64, verify: &dyn Fn(&str, &str, u64) -> Result<bool, String>) -> u64 {
     let root = store::scripts_root(data);
+    let used = used_map(data);
+    let now = crate::model::now_ms();
     let mut previews: Vec<(i64, String, u64)> = Vec::new();
     for entry in fs::read_dir(&root).into_iter().flatten().flatten().filter(|entry| entry.path().is_dir()) {
         let Ok(script) = store::read(&entry.path()) else { continue };
         let size = fs::metadata(store::proxy_path(&entry.path())).map(|meta| meta.len()).unwrap_or(0);
         if size > 0 {
-            previews.push((script.updated_at, script.id, size));
+            let at = script.updated_at.max(used.get(&script.id).copied().unwrap_or(0));
+            previews.push((at, script.id, size));
         }
     }
     let mut total: u64 = previews.iter().map(|(_, _, size)| *size).sum();
@@ -315,10 +357,15 @@ fn enforce_cache_cap_with(data: &Path, cap_bytes: u64, verify: &dyn Fn(&str, &st
         return 0;
     }
     previews.sort();
+    // The newest stays, whatever its size.
+    previews.pop();
     let mut freed = 0;
-    for (_, id, size) in previews {
+    for (at, id, size) in previews {
         if total <= cap_bytes {
             break;
+        }
+        if now - at < IN_USE_MS {
+            continue;
         }
         if verify(&id, "proxy.mp4", size).map(|ok| !ok).unwrap_or(true) {
             continue;
@@ -362,8 +409,14 @@ pub fn fetch_preview(data: &Path, id: &str) -> Result<PathBuf, String> {
     if proxy.is_file() {
         return Ok(proxy);
     }
-    let (key, size) = cloud::file_key(data, id, "proxy.mp4").ok_or("This script's preview isn't in the cloud yet. Wait for it to sync, then try again.")?;
+    let (key, size, mtime) = cloud::file_key(data, id, "proxy.mp4").ok_or("This script's preview isn't in the cloud yet. Wait for it to sync, then try again.")?;
     cloud::get_file(data, id, &key, size, &proxy)?;
+    // Dated as the cloud's copy was here, so the sync sees the same file
+    // and doesn't send it all up again as a new one.
+    if mtime > 0 {
+        let _ = fs::File::options().write(true).open(&proxy).and_then(|file| file.set_modified(std::time::UNIX_EPOCH + Duration::from_millis(mtime)));
+    }
+    used(data, id);
     forget_purged(data, id, "proxy.mp4");
     store::library_changed();
     Ok(proxy)
@@ -474,6 +527,36 @@ mod tests {
         assert!(!data.join("scripts/aaaa1111/proxy.mp4").exists());
         assert!(data.join("scripts/bbbb2222/proxy.mp4").is_file());
         assert!(data.join("scripts/cccc3333/proxy.mp4").is_file());
+        let _ = fs::remove_dir_all(&data);
+    }
+
+    #[test]
+    fn cache_cap_keeps_the_preview_in_use() {
+        let data = std::env::temp_dir().join(format!("writer-storage-use-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        let write = |id: &str, at: i64, size: usize| {
+            let dir = data.join("scripts").join(id);
+            fs::create_dir_all(&dir).unwrap();
+            let script = format!(r#"{{"id":"{id}","title":"T","sourceKind":"youtube","sourceUrl":"u","originalPath":"","status":"ready","stage":"ready","progress":100,"error":null,"durationMs":1000,"revision":1,"createdAt":0,"updatedAt":{at}}}"#);
+            fs::write(dir.join("script.json"), script).unwrap();
+            fs::write(dir.join("proxy.mp4"), vec![0u8; size]).unwrap();
+        };
+        // One preview bigger than the cap by itself: it stays.
+        write("aaaa1111", 1, 900);
+        assert_eq!(enforce_cache_cap_with(&data, 500, &|_, _, _| Ok(true)), 0);
+        // An older script opened just now outlives a newer one opened long ago.
+        write("bbbb2222", 2, 900);
+        fs::create_dir_all(data.join("cloud")).unwrap();
+        let now = crate::model::now_ms();
+        fs::write(used_path(&data), format!(r#"{{"aaaa1111":{now}}}"#)).unwrap();
+        assert_eq!(enforce_cache_cap_with(&data, 500, &|_, _, _| Ok(true)), 900);
+        assert!(data.join("scripts/aaaa1111/proxy.mp4").is_file());
+        assert!(!data.join("scripts/bbbb2222/proxy.mp4").exists());
+        // Opened in the last half hour, even not the newest: it stays too.
+        write("bbbb2222", 2, 900);
+        write("cccc3333", now, 900);
+        assert_eq!(enforce_cache_cap_with(&data, 500, &|_, _, _| Ok(true)), 900);
+        assert!(data.join("scripts/aaaa1111/proxy.mp4").is_file() && data.join("scripts/cccc3333/proxy.mp4").is_file());
         let _ = fs::remove_dir_all(&data);
     }
 }

@@ -321,7 +321,7 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     // this Mac is fine, exactly because it is verified.
     if script.commentary.is_none() {
         match cloud::file_key(data, id, "proxy.mp4") {
-            Some((key, size)) => match cloud::head(data, &key) {
+            Some((key, size, _)) => match cloud::head(data, &key) {
                 Ok(Some(found)) if found == size => {}
                 Ok(_) => return Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into()),
                 Err(error) => return Err(format!("Couldn't verify its preview in the cloud ({error}). Check the connection, then share again.")),
