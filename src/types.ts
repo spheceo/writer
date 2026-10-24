@@ -386,7 +386,15 @@ export type DocComment = {
 export type Proposal = { id: string; cutIn: string; before: string; after: string; at: number };
 
 /** One message in a footage script's conversation with the editor. */
-export type ChatTurn = { role: "producer" | "editor"; text: string; at: number; costUsd?: number; failed?: boolean };
+export type ChatTurn = {
+  role: "producer" | "editor";
+  text: string;
+  at: number;
+  costUsd?: number;
+  failed?: boolean;
+  /** Claude asked to start the script over: pending until the producer answers. */
+  reset?: "pending" | "accepted" | "declined";
+};
 
 /** What the producer is looking at as they ask for a change. */
 export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null };

@@ -1452,3 +1452,12 @@ button.google:hover:not(:disabled) { background: var(--surface); }
 .update-button { position: relative; overflow: hidden; isolation: isolate; }
 .update-button::before { content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1; width: var(--filled, 0%); background: var(--active); transition: width 0.4s ease; }
 .update-button[data-working]:disabled { opacity: 1; cursor: default; }
+
+/* Claude asking to start over, answered in the chat. */
+.reset-ask { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 12px; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--surface); font-size: 13px; }
+.reset-ask b { font-weight: 600; }
+.reset-ask p { margin: 0; color: var(--text-2); line-height: 1.5; }
+.reset-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 4px; }
+.reset-settled { margin: 0 0 12px; font-size: 12px; }
+.turn a { color: var(--text); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
+.turn a:hover { text-decoration-color: var(--text); }

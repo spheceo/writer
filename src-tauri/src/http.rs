@@ -454,6 +454,10 @@ fn route(
         ("GET", ["api", "scripts", id, "chat"]) => {
             json_result(stream, store::script_dir(&data_dir(&app)?, id).map(|dir| crate::chat::read(&dir)))
         }
+        ("POST", ["api", "scripts", id, "reset"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::reset_script_now(&data_dir(&app)?, id, value["accept"] == true))
+        }
         ("DELETE", ["api", "scripts", id, "chat"]) => match crate::clear_chat_now(&data_dir(&app)?, id) {
             Ok(()) => write_json(stream, 200, &json!({ "ok": true })),
             Err(error) => write_json(stream, 400, &json!({ "error": error })),

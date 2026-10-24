@@ -1,7 +1,7 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChatLog, Composer, Elapsed, Said, Working } from "./agent";
-import { addSource, previewSrc, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
+import { ChatLog, Composer, Elapsed, ResetAsk, Said, Working } from "./agent";
+import { addSource, getChat, previewSrc, resetScript, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, narrationWords, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
@@ -9,7 +9,7 @@ import { Monitor } from "./monitor";
 import { type HoverClip, useHoverPreview } from "./hover-preview";
 import { A4, Grow, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { CutPlayer, clipStarts, editedPosition, type Item, Playhead, usePlayheadValue } from "./playback";
-import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, Footage, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary } from "./types";
+import type { Adding, BuildStatus, Cite, Draft, Feedback, Finds, Footage, LearnStep, Pacing, Paragraph, Role, Script, Source, Summary, ChatTurn } from "./types";
 import { FoundClips } from "./found-clips";
 import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
@@ -431,6 +431,12 @@ export function CommentaryEditor({
   const total = sources.reduce((sum, source) => sum + source.chars, 0);
   const times = draft ? timing(draft) : null;
   const said = (report && !working ? report.text : draft?.report) ?? "";
+  // Claude asking to start over, answered under its reply (chat.json keeps the ask).
+  const [reset, setReset] = useState<ChatTurn["reset"]>(undefined);
+  useEffect(() => {
+    if (working) return;
+    void getChat(script.id).then((turns) => setReset([...turns].reverse().find((turn) => turn.role === "editor")?.reset), () => {});
+  }, [script.id, working, script.revision]);
 
   const editParagraph = (section: number, index: number, next: Paragraph | null) => {
     if (!draft) return;
@@ -629,6 +635,21 @@ export function CommentaryEditor({
                 ) : (
                   <>
                     {said && !(working && !draft) && <Said text={said} costUsd={report && !working ? report.costUsd : 0} />}
+                    {reset && !working && (
+                      <ResetAsk
+                        state={reset}
+                        busy={busy}
+                        onAnswer={(accept) =>
+                          void resetScript(script.id, accept).then(
+                            (fresh) => {
+                              setReset(accept ? "accepted" : "declined");
+                              onChange(fresh);
+                            },
+                            (cause) => setError(message(cause)),
+                          )
+                        }
+                      />
+                    )}
                     {draft && !busy && cut.items.length > 0 && (
                       <div className="turn">
                         <p className="muted">

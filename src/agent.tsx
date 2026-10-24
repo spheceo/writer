@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { openPage } from "./api";
 import { clock } from "./clips";
 import { Icon } from "./ui";
 
@@ -52,12 +53,58 @@ export function Asked({ text }: { text: string }) {
   );
 }
 
+const LINK = /(https?:\/\/[^\s<>()"']+[^\s<>()"'.,;:!?])/g;
+
+/** A paragraph with its web addresses made into links that open in the browser. */
+function linked(text: string): ReactNode[] {
+  return text.split(LINK).map((part, index) =>
+    index % 2 ? (
+      <a
+        key={index}
+        href={part}
+        onClick={(event) => {
+          event.preventDefault();
+          void openPage(part);
+        }}
+      >
+        {part.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")}
+      </a>
+    ) : (
+      part
+    ),
+  );
+}
+
+/**
+ * Claude asking to start the script over, answered here: nothing is cleared
+ * until the producer accepts.
+ */
+export function ResetAsk({ state, busy, onAnswer }: { state: "pending" | "accepted" | "declined"; busy: boolean; onAnswer: (accept: boolean) => void }) {
+  if (state !== "pending") {
+    return <p className="reset-settled faint">{state === "accepted" ? "Started over. The script as it was is in Versions." : "Kept the script as it is."}</p>;
+  }
+  return (
+    <div className="reset-ask" role="alertdialog" aria-label="Start the script over?">
+      <b>Start the script over?</b>
+      <p>Every clip and cut-in goes. The transcript, speakers, sources and research stay, and Versions keeps the script as it is now.</p>
+      <div className="reset-actions">
+        <button type="button" className="ghost sm" disabled={busy} onClick={() => onAnswer(false)}>
+          Reject
+        </button>
+        <button type="button" className="danger-fill sm" disabled={busy} onClick={() => onAnswer(true)}>
+          Start over
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** What Claude said, a paragraph at a time. */
 export function Said({ text, failed }: { text: string; costUsd?: number; failed?: boolean }) {
   return (
     <div className={failed ? "turn failed" : "turn"}>
       {text.split(/\n{2,}/).map((part, index) => (
-        <p key={index}>{part}</p>
+        <p key={index}>{linked(part)}</p>
       ))}
     </div>
   );

@@ -1064,6 +1064,8 @@ pub struct Revised {
     pub draft: Draft,
     pub answer: String,
     pub cost_usd: f64,
+    /// The producer asked to start over: nothing changes until they confirm it (chat.rs).
+    pub start_over: bool,
 }
 
 const REVISE_NOTE: &str = r#"THIS TURN IS A REVISION, NOT A NEW SCRIPT. The script is written; the producer asks for a change to it. Instead of the whole script, answer ONCE with the edits that carry the change out, in order, and a short reply. Paragraphs are named by their IDs in THE SCRIPT. Change only what is asked: every paragraph, clip, heading and note that no edit names stays exactly as it is, and a paragraph you rewrite keeps every word the request doesn't touch. New clips follow the build's rules: copied from a source and checked against it. The edits:
@@ -1073,7 +1075,7 @@ const REVISE_NOTE: &str = r#"THIS TURN IS A REVISION, NOT A NEW SCRIPT. The scri
 - {"op":"heading","id":"p1a2b3c4d","heading":"2. The Lawsuit"}: rename the section that paragraph is in.
 - {"op":"note","id":"p1a2b3c4d","note":"edit: a blue waveform under this call"}: add a note for the video editor to the paragraph, only when asked for one. It starts "edit:" and says what to do in that section; the editor follows it over their usual plan.
 - {"op":"montage","open":[…]}: every clip of the montage, when the change is to the montage.
-A request that needs no change, or that you can't carry out from the sources, gets no edits and a reply that says why. The reply is for the producer: one to three short sentences on what you changed."#;
+A request that needs no change, or that you can't carry out from the sources, gets no edits and a reply that says why. START OVER: only when the producer asks to start the script over, rebuild it from scratch or throw it away, set startOver to true and send no edits. Nothing is cleared until the producer confirms it in the app; the transcript, speakers, sources and research stay. The reply says you have asked them to confirm. Never set it otherwise. The reply is for the producer: one to three short sentences on what you changed."#;
 
 fn revise_schema() -> String {
     let mut piece = cite_schema();
@@ -1107,7 +1109,8 @@ fn revise_schema() -> String {
                     "required": ["op"]
                 }
             },
-            "answer": { "type": "string" }
+            "answer": { "type": "string" },
+            "startOver": { "type": "boolean" }
         },
         "required": ["edits", "answer"]
     })
@@ -1142,10 +1145,16 @@ pub fn revise(dir: &Path, script: &Script, request: &str, lessons: &str) -> Resu
     let mut repairs = 0;
     loop {
         let refusal = match &turn.plan {
+            // Asked to start over: answered, and left to the producer to confirm.
+            Some(plan) if plan["startOver"] == true => {
+                let answer: String = plan["answer"].as_str().unwrap_or("").trim().chars().take(2_000).collect();
+                let answer = if answer.is_empty() { "Start the script over? Confirm it below.".into() } else { answer };
+                return Ok(Revised { draft: draft.clone(), answer, cost_usd: cost, start_over: true });
+            }
             Some(plan) => match apply_edits(draft, plan["edits"].as_array().map(Vec::as_slice).unwrap_or(&[]), &corpus) {
                 Ok(draft) => {
                     let answer: String = plan["answer"].as_str().unwrap_or("").trim().chars().take(2_000).collect();
-                    return Ok(Revised { draft, answer: if answer.is_empty() { "Done.".into() } else { answer }, cost_usd: cost });
+                    return Ok(Revised { draft, answer: if answer.is_empty() { "Done.".into() } else { answer }, cost_usd: cost, start_over: false });
                 }
                 Err(reason) => format!("The app refused your edits: {reason} Nothing was saved. Send the complete corrected answer, every edit again in order."),
             },

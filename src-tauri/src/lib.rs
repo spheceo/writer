@@ -703,7 +703,7 @@ fn start_build(app: AppHandle, id: String, note: String, kind: Option<formats::K
     jobs::start(app, id, jobs::Work::Build { note, kind })
 }
 
-/// Sonnet revises a built footage script with targeted edits, as Repack's
+/// Opus revises a built footage script with targeted edits, as Repack's
 /// chat editor does. Runs on a job's thread; the page follows it as a build.
 pub fn revise_once(app: &AppHandle, id: &str, request: &str, focus: &revise::Focus) -> Result<(String, f64), String> {
     revise_with(app, id, request, request, focus, false)
@@ -741,6 +741,11 @@ pub fn revise_with(app: &AppHandle, id: &str, request: &str, said: &str, focus: 
             return Err(error);
         }
     };
+    // Starting over waits for the producer to confirm it in the chat.
+    if done.start_over {
+        chat::ask_reset(&dir, &done.answer, Some(done.cost_usd));
+        return Ok((done.answer, done.cost_usd));
+    }
     // Edits made by hand while Claude worked would be lost: ask again instead.
     let mut now = store::read(&dir)?;
     if now.revision != script.revision {
@@ -779,6 +784,10 @@ pub fn revise_commentary(data: &Path, dir: &Path, script: &model::Script, reques
     let script = &script;
     chat::add(dir, "producer", said, None, false);
     let done = commentary::revise(dir, script, request, &feedback::lessons_text(data)).inspect_err(|error| chat::add(dir, "editor", error, None, true))?;
+    if done.start_over {
+        chat::ask_reset(dir, &done.answer, Some(done.cost_usd));
+        return Ok((done.answer, done.cost_usd));
+    }
     let mut now = store::read(dir)?;
     if now.revision != script.revision {
         let error = "The script changed while Claude was editing it, so nothing was applied. Ask again.".to_string();
@@ -1288,6 +1297,40 @@ fn get_chat(app: AppHandle, id: String) -> Result<Vec<chat::Turn>, String> {
     Ok(chat::read(&store::script_dir(&data_dir(&app)?, &id)?))
 }
 
+/// The producer's answer to Claude asking to start over: accepted, the
+/// built script goes (every clip and cut-in, or a commentary's draft) and
+/// the transcript, speakers, sources and research stay; the script as it
+/// was is kept in Versions. Declined, nothing changes.
+pub fn reset_script_now(data: &Path, id: &str, accept: bool) -> Result<model::ScriptDetail, String> {
+    can::require_id(data, id)?;
+    if jobs::running(id) {
+        return Err("Claude is still working on this script.".into());
+    }
+    let dir = store::script_dir(data, id)?;
+    chat::settle_reset(&dir, accept)?;
+    let mut now = store::read(&dir)?;
+    if accept {
+        let before = now.clone();
+        match now.commentary.as_mut() {
+            Some(commentary) => commentary.draft = None,
+            None => {
+                now.clips.clear();
+                now.proposals.clear();
+            }
+        }
+        now.revision += 1;
+        now.updated_at = now_ms();
+        store::write(&dir, &now)?;
+        versions::keep(&dir, "producer", &before, &now);
+    }
+    Ok(store::detail(store::read(&dir)?, &dir))
+}
+
+#[tauri::command]
+async fn reset_script(app: AppHandle, id: String, accept: bool) -> Result<model::ScriptDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || reset_script_now(&data_dir(&app)?, &id, accept)).await.map_err(|error| error.to_string())?
+}
+
 pub fn clear_chat_now(data: &Path, id: &str) -> Result<(), String> {
     if jobs::running(id) {
         return Err("Claude is still working on this script.".into());
@@ -1585,6 +1628,7 @@ pub fn run() {
             build_status,
             get_chat,
             clear_chat,
+            reset_script,
             decline_proposal,
             correct_word,
             set_heading,
@@ -1607,4 +1651,40 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running writer");
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::*;
+
+    #[test]
+    fn starting_over_clears_the_built_script_only_once_accepted() {
+        let data = std::env::temp_dir().join(format!("writer-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        let id = "aaaa1111-0000-0000-0000-000000000000";
+        let dir = data.join("scripts").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = serde_json::json!({
+            "id": id, "title": "Case", "sourceKind": "file", "sourceUrl": "", "originalPath": "", "status": "ready", "stage": "",
+            "progress": 100, "error": null, "durationMs": 10_000, "revision": 3, "createdAt": 0, "updatedAt": 0,
+            "words": [{ "id": "w0", "text": "Hi.", "startMs": 0, "endMs": 500 }],
+            "clips": [{ "id": "c1", "startMs": 0, "endMs": 3_000 }, { "id": "k1", "kind": "cut-in", "startMs": 0, "endMs": 3_000, "narration": "It began." }]
+        });
+        std::fs::write(dir.join("script.json"), serde_json::to_vec(&script).unwrap()).unwrap();
+        // Nothing asked: nothing to answer.
+        assert!(reset_script_now(&data, id, true).is_err());
+        chat::ask_reset(&dir, "Start over? Confirm below.", None);
+        // Declined: the script stays.
+        let kept = reset_script_now(&data, id, false).unwrap();
+        assert_eq!(kept.script.clips.len(), 2);
+        assert_eq!(chat::read(&dir).last().unwrap().reset.as_deref(), Some("declined"));
+        // Accepted: the clips and cut-ins go, the words stay.
+        chat::ask_reset(&dir, "Start over? Confirm below.", None);
+        let fresh = reset_script_now(&data, id, true).unwrap();
+        assert!(fresh.script.clips.is_empty());
+        assert_eq!(fresh.script.words.len(), 1);
+        assert_eq!(fresh.script.revision, 4);
+        assert_eq!(chat::read(&dir).last().unwrap().reset.as_deref(), Some("accepted"));
+        let _ = std::fs::remove_dir_all(&data);
+    }
 }

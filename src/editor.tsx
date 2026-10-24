@@ -1,6 +1,6 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Asked, ChatLog, Composer, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, message, previewSrc, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { type CSSProperties, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Asked, ChatLog, Composer, ResetAsk, Said, Working } from "./agent";
+import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { UpdateButton } from "./update";
@@ -804,7 +804,28 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               turn.role === "producer" ? (
                 <Asked key={`${turn.at}-${index}`} text={turn.text} />
               ) : (
-                <Said key={`${turn.at}-${index}`} text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />
+                <Fragment key={`${turn.at}-${index}`}>
+                  <Said text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />
+                  {turn.reset && (
+                    <ResetAsk
+                      state={turn.reset}
+                      busy={busy}
+                      onAnswer={(accept) =>
+                        void resetScript(script.id, accept).then(
+                          (fresh) => {
+                            remember(shown.current);
+                            onChange(fresh);
+                            setClips(fresh.clips);
+                            shown.current = fresh.clips;
+                            revision.current = fresh.revision;
+                            void getChat(script.id).then(setChat, () => {});
+                          },
+                          (cause) => setError(message(cause)),
+                        )
+                      }
+                    />
+                  )}
+                </Fragment>
               ),
             )}
             {sent && working && <Asked text={sent} />}
@@ -846,7 +867,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             disabled={busy}
             canSend={!busy && ready && (!cueCount || !!note.trim())}
             label={cueCount ? "Ask for a change" : "Build the script"}
-            model={cueCount ? "Sonnet 5.5" : "Opus 5.5"}
+            model="Opus 5.5"
             onNewChat={chat.length > 0 ? () => setClearing(true) : undefined}
             placeholder={
               archived

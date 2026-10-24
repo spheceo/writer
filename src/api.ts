@@ -169,6 +169,10 @@ export const framesUrl = (id: string, finds: Finds, frames: string) =>
   inTauri() ? convertFileSrc(`${finds.dir}/${frames}`) : `/api/scripts/${id}/finds/frames/${frames.split("/").pop()}`;
 
 /** The script's conversation with the editor. */
+/** The producer's answer to Claude asking to start over: accepted, the built script goes (the transcript and research stay). */
+export const resetScript = (id: string, accept: boolean) =>
+  inTauri() ? invoke<Script>("reset_script", { id, accept }) : http<Script>(`/api/scripts/${id}/reset`, json({ accept }));
+
 export const getChat = (id: string) =>
   inTauri() ? invoke<ChatTurn[]>("get_chat", { id }) : http<ChatTurn[]>(`/api/scripts/${id}/chat`);
 
