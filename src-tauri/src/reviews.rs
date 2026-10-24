@@ -384,10 +384,16 @@ fn meta_of(data: &Path, id: &str, script: &crate::model::Script, mut found: Vec<
         meta["targetRangeMs"] = json!([low, high]);
     }
     if footage {
-        // The proxy the script syncs: the clips' times are on its clock.
-        if let Some((key, size)) = cloud::file_key(data, id, "proxy.mp4") {
-            meta["preview"] = json!({ "key": key, "durationMs": script.duration_ms, "sizeBytes": size });
+        // The preview the clips play from (their times are on its clock), put
+        // under the review: the review page serves only writer/reviews/ keys.
+        // Sent again only when it changed.
+        let proxy = crate::storage::fetch_preview(data, id)?;
+        let size = std::fs::metadata(&proxy).map_err(|error| error.to_string())?.len();
+        let key = format!("writer/reviews/{id}/preview.mp4");
+        if cloud::head(data, &key)? != Some(size) {
+            cloud::put_file(data, id, &key, &proxy)?;
         }
+        meta["preview"] = json!({ "key": key, "durationMs": script.duration_ms, "sizeBytes": size });
     }
     meta["blocks"] = json!(found);
     if serde_json::to_vec(&meta).map(|bytes| bytes.len()).unwrap_or(0) > META_BYTES {
