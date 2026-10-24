@@ -146,6 +146,29 @@ export const addReviewNote = (id: string, text: string, details?: NoteDetails) =
 export const replyReviewNote = (id: string, noteId: string, text: string) =>
   inTauri() ? invoke<void>("reply_review_note", { id, noteId, text }) : http<void>(`/api/scripts/${id}/review/notes/${noteId}/replies`, json({ text }));
 
+/** A person's word on a fix: confirmed, or sent back with what still isn't right (added as a reply). */
+export const checkReviewNote = (id: string, noteId: string, verdict: "confirmed" | "notFixed", text?: string) =>
+  inTauri() ? invoke<void>("check_review_note", { id, noteId, verdict, text }) : http<void>(`/api/scripts/${id}/review/notes/${noteId}/check`, json({ verdict, text }));
+
+/** How Ready for changes is going on the script's review (the page's `fix`), and whether the fixing computer is on. */
+export type ReviewFix = {
+  state: "waiting" | "fixing" | "sharing" | "done" | "failed";
+  by: string;
+  requestedAt: number;
+  version: number;
+  stage: string | null;
+  done: number | null;
+  total: number | null;
+  newVersion: number | null;
+  error: string | null;
+  stale: boolean;
+  updatedAt: number;
+};
+export const reviewFix = (id: string) =>
+  inTauri()
+    ? invoke<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null }>("review_fix", { id })
+    : http<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null }>(`/api/scripts/${id}/review/fix`);
+
 /** Deletes a note left from Writer (never a reviewer's), with its replies. */
 export const deleteReviewNote = (id: string, noteId: string) =>
   inTauri() ? invoke<void>("delete_review_note", { id, noteId }) : http<void>(`/api/scripts/${id}/review/notes/${noteId}`, { method: "DELETE" });

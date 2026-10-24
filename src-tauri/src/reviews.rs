@@ -113,9 +113,15 @@ pub struct Note {
     /// A reviewer confirmed the fix.
     #[serde(default)]
     pub confirmed: bool,
+    /// Who confirmed it, as the page says "Confirmed by …".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_by: Option<String>,
     /// When a reviewer last sent the fix back as not fixed (the note reopened): a retry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_fixed_at: Option<i64>,
+    /// The version the fix it was sent back from was in ("Not fixed in vN").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_fixed_version: Option<u32>,
     /// When a run last took it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attempt_at: Option<i64>,
@@ -171,7 +177,9 @@ impl Note {
             outcome: text("outcome"),
             action: text("action").filter(|action| !action.trim().is_empty()),
             confirmed: value["confirmed"].is_object(),
+            confirmed_by: value["confirmed"]["by"].as_str().map(str::to_string),
             not_fixed_at: value["notFixed"]["at"].as_f64().map(|at| at as i64),
+            not_fixed_version: value["notFixed"]["version"].as_f64().map(|version| version as u32),
             attempt_at: value["attempt"]["at"].as_f64().map(|at| at as i64),
             created_at: number("createdAt").unwrap_or(0),
             updated_at: number("updatedAt").or_else(|| number("createdAt")).unwrap_or(0),
@@ -310,6 +318,9 @@ pub struct NoteDetails {
     pub intent: Option<String>,
     #[serde(default)]
     pub replacement: Option<String>,
+    /// Who it's from: the signed-in person (set by lib.rs, not the page).
+    #[serde(skip)]
+    pub author: Option<String>,
 }
 
 /// A note left from Writer on the script's review (feedback.spheceo.com), on
@@ -336,9 +347,51 @@ pub fn add_note(data: &Path, id: &str, text: &str, details: &NoteDetails) -> Res
     if let Some(replacement) = &details.replacement {
         args["replacement"] = json!(replacement);
     }
+    // Signed with the person's name, as a reply is; a Repack from before
+    // `author` refuses it as an unknown argument, and then it goes as Writer's.
+    if let Some(author) = details.author.as_deref().map(str::trim).filter(|author| !author.is_empty()) {
+        let mut signed = args.clone();
+        signed["author"] = json!(author.chars().take(200).collect::<String>());
+        match cloud::call(data, "mutation", "reviews:note", signed) {
+            Ok(_) => {
+                let _ = poll(data);
+                return Ok(());
+            }
+            Err(error) if !error.contains("author") => return Err(error),
+            Err(_) => {}
+        }
+    }
     cloud::call(data, "mutation", "reviews:note", args)?;
     let _ = poll(data);
     Ok(())
+}
+
+/// A person's word on a fix, as the page's "Confirm it's fixed" and "Not
+/// fixed…" give it: confirmed, or sent back (the note opens again for the
+/// next round), with what still isn't right as a reply signed `author`.
+pub fn check(data: &Path, note_id: &str, author: &str, verdict: &str, text: Option<&str>) -> Result<(), String> {
+    if verdict != "confirmed" && verdict != "notFixed" {
+        return Err("A fix is confirmed or sent back.".into());
+    }
+    let mut args = json!({ "noteId": note_id, "author": author.chars().take(200).collect::<String>(), "verdict": verdict });
+    if let Some(text) = text.map(str::trim).filter(|text| !text.is_empty()) {
+        args["text"] = json!(text);
+    }
+    cloud::call(data, "mutation", "reviews:check", args).map_err(|error| {
+        if error.contains("Could not find public function") || error.contains("reviews:check") { "Checking a fix from Writer needs Repack's latest update; do it on the review page for now.".to_string() } else { error }
+    })?;
+    let _ = poll(data);
+    Ok(())
+}
+
+/// How a "Ready for changes" request on the script's review is going, and
+/// whether the fixing computer is on (`reviews:get`): `{fix, computer}`,
+/// the review page's own shapes, or nulls when Repack doesn't say yet.
+pub fn fix_state(data: &Path, script_id: &str) -> Value {
+    match cloud::call(data, "query", "reviews:get", json!({ "sourceId": script_id })) {
+        Ok(value) => json!({ "fix": value["fix"], "computer": value["computer"] }),
+        Err(_) => json!({ "fix": null, "computer": null }),
+    }
 }
 
 /// The text each block was last shared with (share_next), beside the script.

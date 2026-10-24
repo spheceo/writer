@@ -470,8 +470,11 @@ export type ReviewNote = {
   suggestion?: string | null;
   /** On a footage clip: cut, extend or restore. */
   action?: string | null;
-  /** A reviewer confirmed the fix. */
+  /** A reviewer confirmed the fix, and who. */
   confirmed?: boolean;
+  confirmedBy?: string | null;
+  /** The version the fix it was sent back from was in. */
+  notFixedVersion?: number | null;
   /** Sent back as not fixed (a retry), when. */
   notFixedAt?: number | null;
   /** When a computer took it to fix (claims last 30 minutes). */

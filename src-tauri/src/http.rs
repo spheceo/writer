@@ -401,6 +401,11 @@ fn route(
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             json_result(stream, crate::reply_review_note_now(&data_dir(&app)?, id, note, value["text"].as_str().unwrap_or("")).map(|_| json!({ "ok": true })))
         }
+        ("POST", ["api", "scripts", id, "review", "notes", note, "check"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::check_review_note_now(&data_dir(&app)?, id, note, value["verdict"].as_str().unwrap_or(""), value["text"].as_str()).map(|_| json!({ "ok": true })))
+        }
+        ("GET", ["api", "scripts", id, "review", "fix"]) => json_result(stream, crate::review_fix_now(&data_dir(&app)?, id)),
         ("DELETE", ["api", "scripts", id, "review", "notes", note]) => {
             json_result(stream, crate::delete_review_note_now(&data_dir(&app)?, id, note).map(|_| json!({ "ok": true })))
         }

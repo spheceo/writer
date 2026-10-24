@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { addReviewNote, deleteReviewNote, message, type NoteDetails, replyReviewNote } from "./api";
+import { addReviewNote, checkReviewNote, deleteReviewNote, message, type NoteDetails, replyReviewNote, reviewFix, type ReviewFix } from "./api";
 import mark from "./assets/writer-mark.svg";
 import type { ReviewNote } from "./types";
 import { Icon, Menu, type MenuItem, Select } from "./ui";
@@ -123,7 +123,7 @@ export function stateOf(note: ReviewNote, replies: ReviewNote[], now = Date.now(
   if (note.status === "done") {
     if (note.outcome === "accepted") return { kind: "applied", label: `Applied${v}`, tip: note.fixSummary ?? undefined };
     if (note.outcome === "rejected") return { kind: "notApplied", label: "Not applied", tip: note.fixSummary ?? undefined };
-    if (note.confirmed) return { kind: "confirmed", label: "Confirmed", tip: note.fixSummary ?? undefined };
+    if (note.confirmed) return { kind: "confirmed", label: note.confirmedBy ? `Confirmed by ${note.confirmedBy}` : "Confirmed", tip: note.fixSummary ?? undefined };
     return { kind: "done", label: `Done${v}`, tip: note.fixSummary ?? undefined };
   }
   if (note.fromApp && note.intent === "question") return { kind: "answer", label: "Waiting for your reply" };
@@ -131,7 +131,7 @@ export function stateOf(note: ReviewNote, replies: ReviewNote[], now = Date.now(
   const last = replies[replies.length - 1];
   if (!working && last?.fromApp && note.intent !== "question" && note.intent !== "fyi") return { kind: "left", label: `Left: ${last.text}` };
   if (working) return { kind: "working", label: "Writer is working on it" };
-  if (note.notFixedAt) return { kind: "notFixed", label: "Not fixed: back with Writer" };
+  if (note.notFixedAt) return { kind: "notFixed", label: note.notFixedVersion ? `Not fixed in v${note.notFixedVersion}: back with Writer` : "Not fixed: back with Writer" };
   if (note.intent === "question") return { kind: "answer", label: "Writer will answer" };
   if (note.intent === "fyi") return { kind: "answer", label: "No fix asked" };
   return null;
@@ -285,6 +285,7 @@ export function CommentsPanel({
           }}
         />
       </div>
+      <ReadyLine scriptId={scriptId} />
       <div className="cm-cards" ref={list}>
         {roots.length === 0 && <p className="cm-empty">No comments yet. Select words in the script to comment on them, or leave a general comment below.</p>}
         {roots.length > 0 && shown.length === 0 && <p className="cm-empty">Nothing here.</p>}
@@ -305,6 +306,10 @@ export function CommentsPanel({
             }}
             onReply={async (text) => {
               await replyReviewNote(scriptId, note.id, text);
+              onRefresh();
+            }}
+            onCheck={async (verdict, text) => {
+              await checkReviewNote(scriptId, note.id, verdict, text);
               onRefresh();
             }}
             onDelete={async () => {
@@ -335,6 +340,7 @@ function Card({
   canWrite,
   onOpen,
   onReply,
+  onCheck,
   onDelete,
   onError,
 }: {
@@ -347,14 +353,28 @@ function Card({
   canWrite: boolean;
   onOpen: () => void;
   onReply: (text: string) => Promise<void>;
+  /** A person's word on a fix: confirmed, or sent back with what still isn't right. */
+  onCheck: (verdict: "confirmed" | "notFixed", text?: string) => Promise<void>;
   onDelete: () => void;
   onError: (error: string) => void;
 }) {
-  const [replying, setReplying] = useState(false);
+  const [replying, setReplying] = useState<"reply" | "notFixed" | false>(false);
+  const checkable = canWrite && note.status === "done" && !note.confirmed && note.outcome !== "rejected";
   const state = stateOf(note, replies);
   const author = note.fromApp ? "Writer" : note.author;
   const menu: MenuItem[] = [
     ...(note.anchor?.blockId ? [{ label: note.status === "done" && note.doneInVersion ? `Show the words (fixed in v${note.doneInVersion})` : "Show the words", icon: "search", onSelect: onOpen }] : []),
+    ...(checkable
+      ? [
+          {
+            label: "Confirm it's fixed",
+            icon: "check",
+            separated: true,
+            onSelect: () => void onCheck("confirmed").catch((cause) => onError(message(cause))),
+          },
+          { label: "Not fixed…", icon: "reset", onSelect: () => setReplying("notFixed") },
+        ]
+      : []),
     ...(canWrite && note.fromApp ? [{ label: note.intent === "suggestion" ? "Delete suggestion" : "Delete note", danger: true, separated: true, onSelect: onDelete }] : []),
   ];
   const suggestion = note.intent === "suggestion" && note.replacement !== undefined && note.replacement !== null;
@@ -432,10 +452,12 @@ function Card({
         <footer className="cm-foot">
           {replying ? (
             <ReplyForm
+              back={replying === "notFixed"}
               onCancel={() => setReplying(false)}
               onSend={async (text) => {
                 try {
-                  await onReply(text);
+                  if (replying === "notFixed") await onCheck("notFixed", text);
+                  else await onReply(text);
                   setReplying(false);
                 } catch (cause) {
                   onError(message(cause));
@@ -443,7 +465,7 @@ function Card({
               }}
             />
           ) : (
-            <button type="button" className="link-button faint" onClick={() => setReplying(true)}>
+            <button type="button" className="link-button faint" onClick={() => setReplying("reply")}>
               Reply
             </button>
           )}
@@ -453,22 +475,24 @@ function Card({
   );
 }
 
-function ReplyForm({ onCancel, onSend }: { onCancel: () => void; onSend: (text: string) => Promise<void> }) {
+/** A reply, or (`back`) the page's "Not fixed…": what still isn't right, optional, then sent back to Writer. */
+function ReplyForm({ back, onCancel, onSend }: { back?: boolean; onCancel: () => void; onSend: (text: string) => Promise<void> }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const send = async () => {
-    if (!text.trim() || sending) return;
+    if ((!text.trim() && !back) || sending) return;
     setSending(true);
     await onSend(text);
     setSending(false);
   };
   return (
     <div className="cm-reply-form">
+      {back && <span className="cm-back-label">What still isn’t right? Optional: it’s added as a reply.</span>}
       <textarea
         autoFocus
         rows={2}
         value={text}
-        placeholder="Reply…"
+        placeholder={back ? "e.g. The face is still visible at 1:04" : "Reply…"}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void send();
@@ -477,8 +501,8 @@ function ReplyForm({ onCancel, onSend }: { onCancel: () => void; onSend: (text: 
       />
       <div className="cm-actions">
         <button type="button" className="ghost sm" onClick={onCancel}>Cancel</button>
-        <button type="button" className="primary sm" disabled={!text.trim() || sending} onClick={() => void send()}>
-          {sending ? "Sending…" : "Reply"}
+        <button type="button" className={back ? "danger-soft sm" : "primary sm"} disabled={(!text.trim() && !back) || sending} onClick={() => void send()}>
+          {sending ? "Sending…" : back ? "Send back to Writer" : "Reply"}
         </button>
       </div>
     </div>
@@ -576,5 +600,71 @@ function Composer({ scriptId, draft, onDraft, onSent, onError }: { scriptId: str
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * How "Ready for changes" is going, as the page's line under its toolbar
+ * says it (feedback/src/client/ready.tsx), from the review's `fix` and
+ * whether the fixing computer is on: asked every 12 s while shown.
+ */
+function ReadyLine({ scriptId }: { scriptId: string }) {
+  const [state, setState] = useState<{ fix: ReviewFix | null; computer: "on" | "off" | "none" | null } | null>(null);
+  const [seen, setSeen] = useState(() => Number(localStorage.getItem(`writer-ready-seen:${scriptId}`) ?? 0));
+  useEffect(() => {
+    let live = true;
+    const ask = () => void reviewFix(scriptId).then((next) => live && setState(next), () => {});
+    ask();
+    const timer = window.setInterval(ask, 12_000);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [scriptId]);
+  const fix = state?.fix;
+  if (!fix || fix.requestedAt === seen) return null;
+  const running = fix.state === "fixing" || fix.state === "sharing";
+  const ended = fix.state === "done" || fix.state === "failed" || (running && fix.stale);
+  const text =
+    fix.state === "waiting"
+      ? state?.computer === "on"
+        ? `${fix.by} asked for changes. Found a computer; starting…`
+        : state?.computer === "none"
+          ? "No fixing computer is chosen for Writer yet: choose one on the accounts dashboard. This waits until then."
+          : "No computer is on to make these changes: this waits, and starts when it comes on."
+      : running
+        ? fix.stale
+          ? "The fixing computer stopped answering. Ask again with Ready for changes."
+          : (fix.stage ?? (fix.state === "sharing" ? `Sharing v${fix.version + 1}…` : fix.total ? `Fixing comment ${(fix.done ?? 0) + 1} of ${fix.total}…` : "Fixing the comments…"))
+        : fix.state === "failed"
+          ? `${fix.error ?? "Writer couldn't make the changes."} Ask again with Ready for changes.`
+          : fix.newVersion
+            ? `v${fix.newVersion} has the changes.`
+            : (fix.stage ?? "Writer went through the comments; nothing needed a new version.");
+  const tone = fix.state === "failed" || (running && fix.stale) ? "failed" : fix.state === "done" ? "done" : "working";
+  return (
+    <div className={`cm-ready ${tone}`}>
+      <span className="cm-ready-text">
+        <Icon name={tone === "done" ? "check" : tone === "failed" ? "minus" : "history"} size={12} />
+        {text}
+      </span>
+      {ended && (
+        <button
+          type="button"
+          className="link-button faint"
+          onClick={() => {
+            localStorage.setItem(`writer-ready-seen:${scriptId}`, String(fix.requestedAt));
+            setSeen(fix.requestedAt);
+          }}
+        >
+          Dismiss
+        </button>
+      )}
+      {running && !fix.stale && fix.total ? (
+        <span className="cm-ready-bar">
+          <i style={{ width: `${Math.round((((fix.done ?? 0) + 0.5) / fix.total) * 100)}%` }} />
+        </span>
+      ) : null}
+    </div>
   );
 }

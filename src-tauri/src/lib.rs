@@ -877,7 +877,36 @@ pub fn pull_feedback_now(data: &Path, id: &str) -> Result<feedback::Feedback, St
 pub fn add_review_note_now(data: &Path, id: &str, text: &str, details: &reviews::NoteDetails) -> Result<(), String> {
     can::require(can::SHARE)?;
     can::require_id(data, id)?;
-    reviews::add_note(data, id, text, details)
+    let details = reviews::NoteDetails { author: Some(person_name()), ..details.clone() };
+    reviews::add_note(data, id, text, &details)
+}
+
+/// The signed-in person's name, as review notes and replies are signed.
+fn person_name() -> String {
+    account::status().person.map(|person| if person.name.trim().is_empty() { person.email } else { person.name }).unwrap_or_else(|| "Writer".into())
+}
+
+/// A person's word on a fix from Writer: confirmed, or sent back with what still isn't right.
+pub fn check_review_note_now(data: &Path, id: &str, note_id: &str, verdict: &str, text: Option<&str>) -> Result<(), String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    reviews::check(data, note_id, &person_name(), verdict, text)
+}
+
+#[tauri::command]
+async fn check_review_note(app: AppHandle, id: String, note_id: String, verdict: String, text: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || check_review_note_now(&data_dir(&app)?, &id, &note_id, &verdict, text.as_deref())).await.map_err(|error| error.to_string())?
+}
+
+/// How Ready for changes is going on the script's review, and whether the fixing computer is on.
+pub fn review_fix_now(data: &Path, id: &str) -> Result<serde_json::Value, String> {
+    can::require_id(data, id)?;
+    Ok(reviews::fix_state(data, id))
+}
+
+#[tauri::command]
+async fn review_fix(app: AppHandle, id: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || review_fix_now(&data_dir(&app)?, &id)).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -889,8 +918,7 @@ async fn add_review_note(app: AppHandle, id: String, text: String, details: Opti
 pub fn reply_review_note_now(data: &Path, id: &str, note_id: &str, text: &str) -> Result<(), String> {
     can::require(can::SHARE)?;
     can::require_id(data, id)?;
-    let author = account::status().person.map(|person| if person.name.trim().is_empty() { person.email } else { person.name }).unwrap_or_else(|| "Writer".into());
-    reviews::reply_as(data, note_id, text, &author)
+    reviews::reply_as(data, note_id, text, &person_name())
 }
 
 #[tauri::command]
@@ -1636,6 +1664,8 @@ pub fn run() {
             pull_feedback,
             add_review_note,
             reply_review_note,
+            check_review_note,
+            review_fix,
             delete_review_note,
             get_feedback,
             set_feedback_item,
