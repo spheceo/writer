@@ -512,63 +512,87 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M10 2.75v10.5" />
     </>
   ),
+};
+
+/**
+ * Edit's own icons, drawn as Edit draws them (lucide v1.55.0, ISC: 24-unit
+ * grid, 2-unit stroke), for what Writer shares with Edit: the account menu,
+ * Update, New conversation.
+ */
+const EDIT_PATHS: Record<string, ReactNode> = {
   user: (
     <>
-      <circle cx="8" cy="5.5" r="2.75" />
-      <path d="M2.75 14c.6-2.7 2.7-4.25 5.25-4.25s4.65 1.55 5.25 4.25" />
+      <circle cx="12" cy="8" r="5" />
+      <path d="M20 21a8 8 0 0 0-16 0" />
     </>
   ),
   gear: (
     <>
-      <circle cx="8" cy="8" r="2" />
-      <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.6 3.6l1.05 1.05M11.35 11.35l1.05 1.05M3.6 12.4l1.05-1.05M11.35 4.65l1.05-1.05" />
+      <path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915" />
+      <circle cx="12" cy="12" r="3" />
     </>
   ),
   logs: (
     <>
-      <path d="M4.25 2.25h7.5a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-7.5" />
-      <path d="M4.25 2.25a1.5 1.5 0 0 0-1.5 1.5v1h3v-1a1.5 1.5 0 0 0-1.5-1.5zM6.5 7h4M6.5 9.5h4M4.25 13.75a1.5 1.5 0 0 1-1.5-1.5" />
+      <path d="M15 12h-5" />
+      <path d="M15 8h-5" />
+      <path d="M19 17V5a2 2 0 0 0-2-2H4" />
+      <path d="M8 21h12a2 2 0 0 0 2-2v-1a1 1 0 0 0-1-1H11a1 1 0 0 0-1 1v1a2 2 0 1 1-4 0V5a2 2 0 1 0-4 0v2a1 1 0 0 0 1 1h3" />
     </>
   ),
   bug: (
     <>
-      <rect x="4.75" y="5" width="6.5" height="8.25" rx="3.25" />
-      <path d="M6 5V4a2 2 0 0 1 4 0v1M8 8v5.25M1.75 9h3M11.25 9h3M2.5 5.5l2.4 1.2M13.5 5.5l-2.4 1.2M2.5 13l2.5-1.4M13.5 13l-2.5-1.4" />
+      <path d="M12 20v-9" />
+      <path d="M14 7a4 4 0 0 1 4 4v3a6 6 0 0 1-12 0v-3a4 4 0 0 1 4-4z" />
+      <path d="M14.12 3.88 16 2" />
+      <path d="M21 21a4 4 0 0 0-3.81-4" />
+      <path d="M21 5a4 4 0 0 1-3.55 3.97" />
+      <path d="M22 13h-4" />
+      <path d="M3 21a4 4 0 0 1 3.81-4" />
+      <path d="M3 5a4 4 0 0 0 3.55 3.97" />
+      <path d="M6 13H2" />
+      <path d="m8 2 1.88 1.88" />
+      <path d="M9 7.13V6a3 3 0 1 1 6 0v1.13" />
     </>
   ),
   "sign-out": (
     <>
-      <path d="M6.25 13.75h-3a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1h3M10.5 11l3-3-3-3M13.5 8H6" />
-    </>
-  ),
-  "new-chat": (
-    <>
-      <path d="M13.75 7.5v3.25a1.5 1.5 0 0 1-1.5 1.5H6.5L3 14.5v-2.25h-.25a.5.5 0 0 1 0 0V4.25a1.5 1.5 0 0 1 1.5-1.5H8.5" />
-      <path d="M12 1.75v4M10 3.75h4" />
+      <path d="m16 17 5-5-5-5" />
+      <path d="M21 12H9" />
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     </>
   ),
   "update-up": (
     <>
-      <circle cx="8" cy="8" r="6" />
-      <path d="M8 11V5.25M5.5 7.5 8 5l2.5 2.5" />
+      <circle cx="12" cy="12" r="10" />
+      <path d="m16 12-4-4-4 4" />
+      <path d="M12 16V8" />
+    </>
+  ),
+  "new-chat": (
+    <>
+      <path d="M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z" />
+      <path d="M12 8v6" />
+      <path d="M9 11h6" />
     </>
   ),
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {
+  const edit = EDIT_PATHS[name];
   return (
     <svg
       width={size}
       height={size}
-      viewBox="0 0 16 16"
+      viewBox={edit ? "0 0 24 24" : "0 0 16 16"}
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.4"
+      strokeWidth={edit ? 2 : 1.4}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {PATHS[name]}
+      {edit ?? PATHS[name]}
     </svg>
   );
 }
