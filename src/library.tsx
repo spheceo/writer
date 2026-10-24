@@ -1,5 +1,4 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
-import { CloudBadge } from "./cloud-badge";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import {
   checkVideos,
@@ -23,10 +22,12 @@ import { Avatar } from "./avatar";
 import mark from "./assets/writer-mark.svg";
 import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
-import type { Choice, ClaudeStatus, ImportProgress, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
+import type { Choice, ClaudeStatus, ImportProgress, Kind, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
+import { UpdateButton } from "./update";
 
-type Source = "youtube" | "drive" | "file" | "compilation" | "commentary";
+/** The New script dialog's tabs: one case's video (YouTube, Drive or a file on this Mac), a compilation, a commentary. */
+type Source = "video" | "compilation" | "commentary";
 
 function ago(at: number) {
   const minutes = Math.round((Date.now() - at) / 60_000);
@@ -117,22 +118,27 @@ export function splitTitle(title: string) {
 
 const KIND_ICON: Record<string, string> = { youtube: "youtube", drive: "drive", file: "file", commentary: "doc", compilation: "stack" };
 
-/** What the library can be narrowed to: a footage script by its kind, or a compilation, or a commentary. */
-type ScriptType = "interrogation" | "foia" | "courtroom" | "compilation" | "commentary";
+/** The list's sections, as Edit's Home splits its own: one case's footage, compilations, commentaries. */
+type Section = "footage" | "compilations" | "commentary";
 
-const TYPES: { value: ScriptType; label: string }[] = [
-  { value: "interrogation", label: "Interrogation" },
-  { value: "foia", label: "FOIA" },
-  { value: "courtroom", label: "Courtroom" },
-  { value: "compilation", label: "Compilation" },
+const SECTIONS: { value: Section; label: string }[] = [
+  { value: "footage", label: "Footage" },
+  { value: "compilations", label: "Compilations" },
   { value: "commentary", label: "Commentary" },
 ];
 
-function typeOf(script: Summary): ScriptType {
+function sectionOf(script: Summary): Section {
   if (script.sourceKind === "commentary") return "commentary";
-  if (script.compilation) return "compilation";
-  return script.kind ?? "interrogation";
+  return script.compilation ? "compilations" : "footage";
 }
+
+/** A footage script's or a compilation's style, coloured as Edit colours them. */
+type Style = Kind;
+const STYLES: { value: Style; label: string; colour: string }[] = [
+  { value: "foia", label: "Bodycam", colour: "#7aa2ff" },
+  { value: "interrogation", label: "Interrogation", colour: "#ff5f6d" },
+  { value: "courtroom", label: "Courtroom", colour: "#c4a7ff" },
+];
 
 export function Library({
   scripts,
@@ -162,11 +168,13 @@ export function Library({
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const next = useRef(0);
   const [query, setQuery] = useState("");
-  const [type, setTypeNow] = useState<ScriptType | "">(() => (localStorage.getItem("writer.libraryType") as ScriptType | null) ?? "");
-  const setType = (next: ScriptType | "") => {
-    setTypeNow(next);
-    localStorage.setItem("writer.libraryType", next);
+  const [section, setSectionNow] = useState<Section>(() => (localStorage.getItem("writer.section") as Section | null) ?? "footage");
+  const setSection = (next: Section) => {
+    setSectionNow(next);
+    setStyle(null);
+    localStorage.setItem("writer.section", next);
   };
+  const [style, setStyle] = useState<Style | null>(null);
   const search = useRef<HTMLInputElement>(null);
   // "/" finds a script from anywhere on the page, as in Repack's lists.
   useEffect(() => {
@@ -189,13 +197,21 @@ export function Library({
   const empty = scripts.length === 0 && !importing.length;
   // Newest first, under a divider for each stretch of time, as Repack lists them.
   const needle = query.trim().toLowerCase();
-  // Only the types the library has are offered; a saved one it no longer has shows everything.
-  const types = TYPES.filter((option) => scripts.some((script) => typeOf(script) === option.value));
-  const typed = types.some((option) => option.value === type) ? type : "";
+  // Footage a commentary was written from lives inside that commentary: the list shows it only to a search.
+  const listed = scripts.filter((script) => !script.inCommentary);
+  const sections = SECTIONS.map((option) => ({ ...option, count: listed.filter((script) => sectionOf(script) === option.value).length })).filter(
+    (option) => option.count > 0 || option.value === "footage",
+  );
+  const shownSection = sections.some((option) => option.value === section) ? section : "footage";
+  const styles = shownSection === "commentary" ? [] : STYLES.filter((option) => listed.some((script) => sectionOf(script) === shownSection && (script.kind ?? "interrogation") === option.value));
+  // A search looks through everything; otherwise the section and the style narrow the list.
   const rows = [...scripts]
     .sort((a, b) => b.createdAt - a.createdAt)
-    .filter((script) => !typed || typeOf(script) === typed)
-    .filter((script) => !needle || script.title.toLowerCase().includes(needle));
+    .filter((script) =>
+      needle
+        ? script.title.toLowerCase().includes(needle)
+        : !script.inCommentary && sectionOf(script) === shownSection && (!style || (script.kind ?? "interrogation") === style),
+    );
   const open = (script: Summary) => (stuck(script) ? setRecovering(script) : onOpen(script.id));
 
   return (
@@ -205,46 +221,39 @@ export function Library({
           <img src={mark} alt="" width={22} height={22} />
           Writer
         </span>
+        {!empty && (
+          <label className="list-search">
+            <Icon name="search" size={14} />
+            <input
+              ref={search}
+              value={query}
+              placeholder="Search scripts"
+              aria-label="Search scripts"
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") setQuery("");
+                if (event.key === "Enter" && rows[0]) open(rows[0]);
+              }}
+            />
+            {query ? (
+              <button type="button" className="clear" aria-label="Clear search" onClick={() => setQuery("")}>
+                ×
+              </button>
+            ) : (
+              <kbd>/</kbd>
+            )}
+          </label>
+        )}
         <span className="spacer" data-tauri-drag-region />
         <div className="heading-actions">
-          {!empty && types.length > 1 && (
-            <select className="field-select list-type" value={typed} aria-label="Show scripts of one type" onChange={(event) => setType(event.target.value as ScriptType | "")}>
-              <option value="">All types</option>
-              {types.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label} ({scripts.filter((script) => typeOf(script) === option.value).length})
-                </option>
-              ))}
-            </select>
+          {/* Claude only says something when it needs the person: signed out or missing. */}
+          {claude && !claude.loggedIn && (
+            <button type="button" className="claude-status bad" title={claude.message} onClick={onSettings}>
+              <span className="dot bad" />
+              Claude needs signing in
+            </button>
           )}
-          {!empty && (
-            <label className="list-search">
-              <Icon name="search" size={14} />
-              <input
-                ref={search}
-                value={query}
-                placeholder="Search scripts"
-                aria-label="Search scripts"
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") setQuery("");
-                  if (event.key === "Enter" && rows[0]) open(rows[0]);
-                }}
-              />
-              {query ? (
-                <button type="button" className="clear" aria-label="Clear search" onClick={() => setQuery("")}>
-                  ×
-                </button>
-              ) : (
-                <kbd>/</kbd>
-              )}
-            </label>
-          )}
-          <CloudBadge />
-          <button type="button" className="claude-status" title={claude?.message ?? "Checking Claude…"} onClick={onSettings}>
-            <span className={claude?.loggedIn ? "dot on" : "dot"} />
-            Claude{claude?.subscription ? ` · ${claude.subscription[0].toUpperCase()}${claude.subscription.slice(1)}` : ""}
-          </button>
+          <UpdateButton />
           <button type="button" className="primary" onClick={() => setCreating(true)}>
             <Icon name="plus" size={15} />
             New script
@@ -253,6 +262,25 @@ export function Library({
         </div>
       </header>
       <div className="library-body">
+      {!empty && !needle && (
+        <div className="list-filters">
+          <div className="seg" role="tablist" aria-label="Sections">
+            {sections.map((option) => (
+              <button key={option.value} type="button" role="tab" aria-selected={shownSection === option.value} className={shownSection === option.value ? "on" : ""} onClick={() => setSection(option.value)}>
+                {option.label} <span>{option.count}</span>
+              </button>
+            ))}
+          </div>
+          <span className="spacer" />
+          {styles.length > 1 &&
+            styles.map((option) => (
+              <button key={option.value} type="button" className={style === option.value ? "style-pill on" : "style-pill"} aria-pressed={style === option.value} onClick={() => setStyle(style === option.value ? null : option.value)}>
+                <i style={{ background: option.colour }} />
+                {option.label}
+              </button>
+            ))}
+        </div>
+      )}
       {loadError && <div className="notice">{loadError}</div>}
       {empty ? (
         <div className="welcome">
@@ -327,9 +355,12 @@ export function Library({
                             {reviews?.open[script.id]}
                           </span>
                         )}
-                        {script.compilation ? (
+                        {/* The section says what it is; a search's results, from every section, say it themselves. */}
+                        {needle && script.inCommentary ? (
+                          <span className="script-kind" title={`Footage of the commentary “${script.inCommentary}”`}>In {script.inCommentary}</span>
+                        ) : needle && script.compilation ? (
                           <span className="script-kind">Compilation</span>
-                        ) : script.sourceKind === "commentary" ? (
+                        ) : needle && script.sourceKind === "commentary" ? (
                           <span className="script-kind">Commentary</span>
                         ) : null}
                         <Avatar creator={script.createdBy} />
@@ -367,16 +398,16 @@ export function Library({
                 </Fragment>
               );
             })}
-            {(needle || typed) && rows.length === 0 && (
+            {rows.length === 0 && !importing.length && (
               <tr className="table-row empty-row">
                 <td className="cell" colSpan={4}>
-                  {needle ? `Nothing matches “${query.trim()}”${typed ? ` in ${TYPES.find((option) => option.value === typed)?.label}` : ""}.` : "Nothing of this type."}{" "}
+                  {needle ? `Nothing matches “${query.trim()}”.` : style ? `No ${STYLES.find((option) => option.value === style)?.label} scripts here yet.` : "Nothing here yet."}{" "}
                   <button
                     type="button"
                     className="link-button"
                     onClick={() => {
                       setQuery("");
-                      setType("");
+                      setStyle(null);
                     }}
                   >
                     Show all
@@ -655,27 +686,30 @@ function RecoverDialog({
 }
 
 const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
-  youtube: {
-    placeholder: "https://www.youtube.com/watch?v=… or a Trello card link",
-    hint: "Downloads on this Mac through Writer's proxy, then transcribes. A Trello card link fills in its videos.",
-  },
-  drive: {
-    placeholder: "https://drive.google.com/drive/folders/…",
-    hint: "A video, or a folder of recordings joined in name order. Shared with Repack's Drive account.",
-  },
-  file: {
-    placeholder: "/Users/you/Movies/interrogation.mp4",
-    hint: "The video stays where it is. Writer makes a preview and transcribes it.",
+  video: {
+    placeholder: "Paste a YouTube, Google Drive or Trello card link",
+    hint: "Writer downloads it, makes a preview and transcribes it.",
   },
   commentary: {
-    placeholder: "Optional: the brief, then evidence, one Google Doc, Drive or web link per line",
-    hint: "A video essay in the Internet Janitor's style, written from sources rather than one case's footage. The first link is the brief; add more sources, and past scripts for the style, once it's made.",
+    placeholder: "Sources (optional): the brief first, then evidence. One Google Doc, Drive or web link per line.",
+    hint: "A video essay written from sources rather than one case's footage. You can add sources once it's made.",
   },
   compilation: {
-    placeholder: "One YouTube or Drive video link per line, a case each, or paste a Trello card link to fill them in. REUSE before a link marks a case the channel already covered; a Google Doc link is the script of one, reused as it is.",
-    hint: "2 to 20 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case. A reused case isn't imported or rewritten: it takes only its transition, with its link. A script's Doc gives that transition its narration to lead into.",
+    placeholder: "One YouTube or Drive link per line, a case each, or paste a Trello card link.\nPut REUSE before a link the channel already covered.",
+    hint: "2 to 20 videos, in the order they play. A title that starts with \"When\" makes a standard compilation.",
   },
 };
+
+const isDrive = (url: string) => /drive\.google\.com/.test(url);
+/** What the Video tab will do with what's in it, said in a few words. */
+const videoHint = (value: string, file: string) =>
+  file
+    ? "The video stays where it is on this Mac. Writer makes a preview and transcribes it."
+    : isDrive(value)
+      ? "A Drive video, or a folder of recordings joined in name order."
+      : value.trim()
+        ? "Downloaded on this Mac through Writer's proxy, then transcribed."
+        : SOURCES.video.hint;
 
 /** A Google Doc link: the script of a case the channel already made, always a reused case. */
 const isDoc = (url: string) => url.includes("docs.google.com/document/d/");
@@ -741,11 +775,14 @@ function ImportDialog({
   const many = grants.compilationKinds.length > 0;
   const courtroom = grants.has(CAN.courtroom);
   const sources: Source[] = [
-    ...(single ? (["youtube", "drive", "file"] as const) : []),
+    ...(single ? (["video"] as const) : []),
     ...(many || courtroom ? (["compilation"] as const) : []),
     ...(grants.has(CAN.commentary) ? (["commentary"] as const) : []),
   ];
-  const [source, setSource] = useState<Source>("youtube");
+  const [source, setSource] = useState<Source>("video");
+  // A video picked on this Mac, instead of a link.
+  const [file, setFile] = useState("");
+  const [articleShown, setArticleShown] = useState(false);
   const [value, setValue] = useState("");
   const [title, setTitle] = useState("");
   const [article, setArticle] = useState("");
@@ -791,7 +828,10 @@ function ImportDialog({
       multiple: false,
       filters: [{ name: "Video", extensions: ["mp4", "mov", "mkv", "webm", "m4v"] }],
     });
-    if (typeof picked === "string") setValue(picked);
+    if (typeof picked === "string") {
+      setFile(picked);
+      setValue("");
+    }
   };
 
   const openTrello = async (list: TrelloList, again = false) => {
@@ -812,16 +852,12 @@ function ImportDialog({
     setError(null);
     setChecked(null);
     // A pasted card with one video is that video's import.
-    if (card.kind === "video") {
-      setSource("youtube");
-      setValue(card.footage ?? "");
-      setCardTitle(card.name);
-      return;
-    }
-    if (card.kind === "case") {
-      setSource("drive");
+    if (card.kind === "video" || card.kind === "case") {
+      setSource("video");
+      setFile("");
       setValue(card.footage ?? "");
       setArticle(card.article ?? "");
+      setArticleShown(!!card.article);
       setCardTitle(card.name);
       return;
     }
@@ -884,7 +920,7 @@ function ImportDialog({
   // access) stay in the dialog; after that it closes and the list follows it.
   const submit = async () => {
     const input = value.trim();
-    if (!input && source !== "commentary") return;
+    if (!input && !file && source !== "commentary") return;
     if (source === "commentary") {
       if (!title.trim()) {
         setError("Give the script a title.");
@@ -916,13 +952,13 @@ function ImportDialog({
     setBusy(true);
     setError(null);
     const work =
-      source === "youtube"
-        ? importYoutube(input, article.trim())
-        : source === "drive"
-          ? importDrive(input, article.trim(), cardTitle)
-          : source === "compilation"
-            ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
-            : importFile(input, article.trim());
+      source === "compilation"
+        ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
+        : file
+          ? importFile(file, article.trim())
+          : isDrive(input)
+            ? importDrive(input, article.trim(), cardTitle)
+            : importYoutube(input, article.trim());
     const outcome = work.then(
       (script) => ({ kind: "done" as const, script }),
       (cause: unknown) => ({ kind: "failed" as const, cause }),
@@ -938,6 +974,8 @@ function ImportDialog({
     setTitle("");
     setArticle("");
     setCardTitle("");
+    setFile("");
+    setArticleShown(false);
     setChecked(null);
     setOneCase(false);
     onClose();
@@ -953,8 +991,7 @@ function ImportDialog({
       open={open}
       onClose={onClose}
       title="New script"
-      description="Bring in the footage. Writer transcribes it, then Claude can write the script."
-      width={620}
+      width={560}
       footer={
         <>
           {error && <span className="bad dialog-error">{error}</span>}
@@ -964,7 +1001,7 @@ function ImportDialog({
             type="submit"
             form="import"
             className="primary"
-            disabled={busy || checking || (source === "commentary" ? !title.trim() : !value.trim()) || (source === "compilation" && !!checked && !!blocked)}
+            disabled={busy || checking || (source === "commentary" ? !title.trim() : !value.trim() && !file) || (source === "compilation" && !!checked && !!blocked)}
           >
             {busy
               ? source === "commentary"
@@ -999,14 +1036,13 @@ function ImportDialog({
             setChecked(null);
             setError(null);
             setCardTitle("");
+            setFile("");
             setTrello(null);
           }}
           options={[
-            { value: "youtube" as Source, label: <><Icon name="youtube" size={14} />YouTube</> },
-            { value: "drive" as Source, label: <><Icon name="drive" size={14} />Google Drive</> },
-            { value: "file" as Source, label: <><Icon name="file" size={14} />This Mac</> },
+            { value: "video" as Source, label: <><Icon name="youtube" size={14} />Video</> },
             { value: "compilation" as Source, label: <><Icon name="stack" size={14} />{many ? "Compilation" : "Several videos"}</> },
-            { value: "commentary" as Source, label: <><Icon name="file" size={14} />Commentary</> },
+            { value: "commentary" as Source, label: <><Icon name="doc" size={14} />Commentary</> },
           ].filter((option) => sources.includes(option.value))}
         />
         {!sources.length && <p className="bad">Your account can't start scripts in Writer yet. Ask an admin at accounts.spheceo.com.</p>}
@@ -1118,48 +1154,42 @@ function ImportDialog({
                 )}
               </p>
             </>
-          ) : source === "file" && desktop ? (
-            <button type="button" className="drop" onClick={() => void choose()}>
-              {value ? (
-                <>
-                  <strong>{value.split("/").pop()}</strong>
-                  <span>{value}</span>
-                </>
-              ) : (
-                <>
-                  <strong>Choose a video…</strong>
-                  <span>MP4, MOV, MKV, WebM or M4V</span>
-                </>
-              )}
-            </button>
           ) : (
-            <input
-              data-autofocus
-              value={value}
-              placeholder={SOURCES[source].placeholder}
-              spellCheck={false}
-              onChange={(event) => paste(event.target.value)}
-            />
-          )}
-          <p className="hint">{readingCard ? "Reading the Trello card…" : SOURCES[source].hint}</p>
-          {(source === "youtube" || source === "drive" || source === "file") && (
             <>
-              <input
-                value={article}
-                placeholder="Article (optional): https://… a news report on the case"
-                spellCheck={false}
-                aria-label="Article"
-                onChange={(event) => setArticle(event.target.value)}
-              />
-              <p className="hint">If given, Writer reads it when the import starts and uses it for the case's facts instead of searching.</p>
+              {file ? (
+                <div className="picked-file">
+                  <Icon name="file" size={14} />
+                  <span className="truncate" title={file}>{file.split("/").pop()}</span>
+                  <button type="button" className="link-button faint" onClick={() => setFile("")}>Use a link instead</button>
+                </div>
+              ) : (
+                <input data-autofocus value={value} placeholder={SOURCES.video.placeholder} spellCheck={false} onChange={(event) => paste(event.target.value)} />
+              )}
+              <p className="hint">
+                {readingCard ? "Reading the Trello card…" : videoHint(value, file)}
+                {desktop && !file && (
+                  <>
+                    {" "}
+                    <button type="button" className="link-button" onClick={() => void choose()}>Choose a file on this Mac…</button>
+                  </>
+                )}
+              </p>
+              {articleShown ? (
+                <input value={article} placeholder="News article on the case: https://…" spellCheck={false} aria-label="Article" onChange={(event) => setArticle(event.target.value)} />
+              ) : (
+                <button type="button" className="link-button faint add-article" onClick={() => setArticleShown(true)}>
+                  <Icon name="plus" size={12} /> Add a news article
+                </button>
+              )}
+              {cardTitle && isDrive(value) && (
+                <p className="hint">
+                  Titled from Trello: <strong>{cardTitle}</strong> ·{" "}
+                  <button type="button" className="link-button" onClick={() => setCardTitle("")}>Use the video's own name</button>
+                </p>
+              )}
             </>
           )}
-          {source === "drive" && cardTitle && (
-            <p className="hint">
-              Titled from Trello: <strong>{cardTitle}</strong> ·{" "}
-              <button type="button" className="link-button" onClick={() => setCardTitle("")}>Use the folder's name</button>
-            </p>
-          )}
+          {source !== "video" && <p className="hint">{readingCard ? "Reading the Trello card…" : SOURCES[source].hint}</p>}
         </div>
         )}
       </form>

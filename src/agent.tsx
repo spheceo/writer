@@ -77,6 +77,7 @@ export function Composer({
   extra,
   label,
   model = "Opus 5.5",
+  onNewChat,
   onChange,
   onSend,
 }: {
@@ -90,6 +91,8 @@ export function Composer({
   label: string;
   /** The model the message goes to. */
   model?: string;
+  /** Starts the conversation again (Repack's New session, beside the model); absent while there's none. */
+  onNewChat?: () => void;
   onChange: (value: string) => void;
   onSend: () => void;
 }) {
@@ -124,6 +127,14 @@ export function Composer({
           </svg>
           {model}
         </span>
+        {onNewChat && (
+          <>
+            <span className="tool-divider" />
+            <button type="button" className="icon-tool sm" aria-label="New conversation" title="New conversation: clears this one; the script stays as it is" disabled={disabled} onClick={onNewChat}>
+              <Icon name="new-chat" size={14} />
+            </button>
+          </>
+        )}
         {extra}
         <span className="spacer" />
         {hint && <span className="faint composer-hint">{hint}</span>}

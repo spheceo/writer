@@ -23,9 +23,10 @@ pub struct Settings {
     /// Claude fixes new review notes by itself while Writer runs (reviews.rs).
     #[serde(default = "on")]
     pub auto_fix: bool,
-    /// How Writer reaches Claude: `cli` (one `claude -p` answer per question,
-    /// a script's plan in one reply) or `sdk` (the Agent SDK through
-    /// writer-agent, as Edit; a script built in steps with Writer's tools).
+    /// How Writer reaches Claude: `sdk` (the Agent SDK through writer-agent,
+    /// as Edit; a script built in steps with Writer's tools), everyone's
+    /// since Oct 24 2026, or `cli` (one `claude -p` answer per question),
+    /// kept for comparisons (`WRITER_ENGINE=cli`) and not offered in Settings.
     #[serde(default)]
     pub engine: Engine,
 }
@@ -33,9 +34,15 @@ pub struct Settings {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Engine {
-    #[default]
     Cli,
+    #[default]
     Sdk,
+}
+
+/// The Agent SDK for everyone: a `cli` saved before Settings stopped
+/// offering the choice no longer applies; only `WRITER_ENGINE=cli` asks for it.
+fn engine_now() -> Engine {
+    if std::env::var("WRITER_ENGINE").is_ok_and(|value| value == "cli") { Engine::Cli } else { Engine::Sdk }
 }
 
 fn on() -> bool {
@@ -47,7 +54,7 @@ impl Default for Settings {
         Self {
             relay_url: built_relay(),
             auto_fix: true,
-            engine: Engine::default(),
+            engine: engine_now(),
         }
     }
 }
@@ -64,7 +71,7 @@ pub fn load(data: &Path) -> Settings {
     Settings {
         relay_url: check_relay(&file.relay_url).unwrap_or(built.relay_url),
         auto_fix: file.auto_fix,
-        engine: file.engine,
+        engine: engine_now(),
     }
 }
 

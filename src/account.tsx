@@ -61,7 +61,7 @@ function GoogleMark() {
   );
 }
 
-/** Setup's quiet account line: who's signed in, and what they may use. */
+/** Settings' quiet account line: who's signed in, and what they may use. */
 export function AccountRow() {
   const [status] = useAccount();
   const person = status?.person;
@@ -94,11 +94,11 @@ export function AccountMenu({ onSettings, onLogs }: { onSettings: () => void; on
         </div>
       }
       items={[
-        { label: "Manage account", onSelect: () => void openPage("https://accounts.spheceo.com") },
-        { label: "Setup…", hint: "⌘,", onSelect: onSettings, separated: true },
-        { label: "Logs", hint: "⇧⌘L", onSelect: onLogs },
-        { label: "Report a problem…", onSelect: () => void openPage("https://github.com/spheceo/writer/issues/new") },
-        { label: "Sign out", separated: true, onSelect: () => void signOut().then(setStatus, () => {}) },
+        { label: "Manage account", icon: "user", onSelect: () => void openPage("https://accounts.spheceo.com") },
+        { label: "Settings", icon: "gear", hint: "⌘,", onSelect: onSettings, separated: true },
+        { label: "Logs", icon: "logs", onSelect: onLogs },
+        { label: "Report a problem…", icon: "bug", onSelect: () => void openPage("https://github.com/spheceo/writer/issues/new") },
+        { label: "Sign out", icon: "sign-out", separated: true, onSelect: () => void signOut().then(setStatus, () => {}) },
       ]}
     />
   );

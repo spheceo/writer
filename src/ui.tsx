@@ -1,4 +1,5 @@
-import { Fragment, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /** Keeps something mounted for the length of its closing animation. */
 function usePresence(open: boolean, ms = 140) {
@@ -20,6 +21,9 @@ function usePresence(open: boolean, ms = 140) {
   }, [open, mounted, ms]);
   return { mounted, closing };
 }
+
+/** Open dialogs, newest last: only the top one answers Escape and keeps Tab inside it. */
+const OPEN_DIALOGS: object[] = [];
 
 const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
@@ -47,11 +51,15 @@ export function Dialog({
 
   useEffect(() => {
     if (!open) return;
+    const me = {};
+    OPEN_DIALOGS.push(me);
     const before = document.activeElement as HTMLElement | null;
     const node = box.current;
     const first = node?.querySelector<HTMLElement>("[data-autofocus]") ?? node?.querySelector<HTMLElement>("input, textarea");
     (first ?? node)?.focus();
     const onKey = (event: KeyboardEvent) => {
+      // A menu open over the dialog takes its own Escape, and a dialog over this one its keys.
+      if ((event.target as HTMLElement | null)?.closest?.(".menu-list") || OPEN_DIALOGS[OPEN_DIALOGS.length - 1] !== me) return;
       if (event.key === "Escape") {
         event.stopPropagation();
         close.current();
@@ -71,6 +79,7 @@ export function Dialog({
     window.addEventListener("keydown", onKey, true);
     return () => {
       window.removeEventListener("keydown", onKey, true);
+      OPEN_DIALOGS.splice(OPEN_DIALOGS.indexOf(me), 1);
       before?.focus?.();
     };
   }, [open]);
@@ -98,15 +107,67 @@ export function Dialog({
   );
 }
 
-export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean; hint?: string; separated?: boolean };
+export type MenuItem = { label: string; onSelect: () => void; danger?: boolean; disabled?: boolean; hint?: string; separated?: boolean; icon?: string; checked?: boolean };
 
-/** A menu from a button: the "more" dots by default, or what `trigger` shows (the account menu opens from your avatar, `head` above its items). */
-export function Menu({ items, label = "More", trigger, head, className }: { items: MenuItem[]; label?: string; trigger?: ReactNode; head?: ReactNode; className?: string }) {
-  const [open, setOpen] = useState(false);
+/**
+ * Where a popover goes: under its trigger, or above it when there's no room
+ * below, kept on screen. It lives in a portal on top of everything, so a
+ * row's hover or a panel never covers it.
+ */
+function usePlace(shown: boolean, trigger: RefObject<HTMLElement | null>, list: RefObject<HTMLElement | null>, align: "start" | "end", matchWidth: boolean) {
+  const [place, setPlace] = useState<CSSProperties>({ visibility: "hidden" });
+  useLayoutEffect(() => {
+    if (!shown) return;
+    const put = () => {
+      const anchor = trigger.current?.getBoundingClientRect();
+      const box = list.current;
+      if (!anchor || !box) return;
+      const width = Math.max(box.offsetWidth, matchWidth ? anchor.width : 0);
+      const height = box.offsetHeight;
+      const below = anchor.bottom + 4 + height <= window.innerHeight - 8 || anchor.top - 4 - height < 8;
+      const left = Math.min(Math.max(8, align === "end" ? anchor.right - width : anchor.left), window.innerWidth - width - 8);
+      setPlace({
+        top: below ? anchor.bottom + 4 : anchor.top - 4 - height,
+        left,
+        minWidth: matchWidth ? anchor.width : undefined,
+        transformOrigin: `${below ? "top" : "bottom"} ${align === "end" ? "right" : "left"}`,
+      });
+    };
+    put();
+    window.addEventListener("resize", put);
+    window.addEventListener("scroll", put, true);
+    return () => {
+      window.removeEventListener("resize", put);
+      window.removeEventListener("scroll", put, true);
+    };
+  }, [shown, align, matchWidth, trigger, list]);
+  return place;
+}
+
+/** The list a Menu or a Select opens: keyboard-led, placed by usePlace, closed by a click anywhere else. */
+function MenuList({
+  open,
+  setOpen,
+  items,
+  head,
+  trigger,
+  align,
+  matchWidth = false,
+  className,
+}: {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  items: MenuItem[];
+  head?: ReactNode;
+  trigger: RefObject<HTMLElement | null>;
+  align: "start" | "end";
+  matchWidth?: boolean;
+  className?: string;
+}) {
   const [active, setActive] = useState(0);
   const { mounted, closing } = usePresence(open, 110);
-  const root = useRef<HTMLDivElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const place = usePlace(mounted, trigger, list, align, matchWidth);
 
   // The list mounts a render after opening; take focus once it is there.
   useEffect(() => {
@@ -115,12 +176,14 @@ export function Menu({ items, label = "More", trigger, head, className }: { item
 
   useEffect(() => {
     if (!open) return;
-    setActive(items.findIndex((item) => !item.disabled));
+    const checked = items.findIndex((item) => item.checked && !item.disabled);
+    setActive(checked >= 0 ? checked : items.findIndex((item) => !item.disabled));
     const onDown = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (!list.current?.contains(target) && !trigger.current?.contains(target)) setOpen(false);
     };
-    window.addEventListener("pointerdown", onDown);
-    return () => window.removeEventListener("pointerdown", onDown);
+    window.addEventListener("pointerdown", onDown, true);
+    return () => window.removeEventListener("pointerdown", onDown, true);
     // Items are rebuilt on every render; only opening resets the highlight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
@@ -128,6 +191,7 @@ export function Menu({ items, label = "More", trigger, head, className }: { item
   const choose = (item: MenuItem | undefined) => {
     if (!item || item.disabled) return;
     setOpen(false);
+    trigger.current?.focus();
     item.onSelect();
   };
 
@@ -141,9 +205,62 @@ export function Menu({ items, label = "More", trigger, head, className }: { item
     setActive(next);
   };
 
+  if (!mounted) return null;
+  const marks = items.some((item) => item.checked !== undefined);
+  return createPortal(
+    <div
+      ref={list}
+      className={[closing ? "menu-list out" : "menu-list", className ? `${className}-list` : ""].join(" ")}
+      role="menu"
+      tabIndex={-1}
+      style={place}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown") step(1);
+        else if (event.key === "ArrowUp") step(-1);
+        else if (event.key === "Enter" || event.key === " ") choose(items[active]);
+        else if (event.key === "Escape" || event.key === "Tab") {
+          setOpen(false);
+          trigger.current?.focus();
+        } else return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      {head && <div className="menu-head">{head}</div>}
+      {items.map((item, index) => (
+        <Fragment key={item.label}>
+          {item.separated && <hr className="menu-sep" />}
+          <button
+            type="button"
+            role={marks ? "menuitemradio" : "menuitem"}
+            aria-checked={marks ? !!item.checked : undefined}
+            tabIndex={-1}
+            disabled={item.disabled}
+            className={[index === active ? "active" : "", item.danger ? "danger" : ""].join(" ")}
+            onPointerEnter={() => !item.disabled && setActive(index)}
+            onClick={() => choose(item)}
+          >
+            {item.icon && <Icon name={item.icon} size={14} />}
+            <span className="menu-label">{item.label}</span>
+            {item.hint && <span className="menu-hint">{item.hint}</span>}
+            {marks && <span className="menu-check">{item.checked && <Icon name="check" size={13} />}</span>}
+          </button>
+        </Fragment>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
+/** A menu from a button: the "more" dots by default, or what `trigger` shows (the account menu opens from your avatar, `head` above its items). */
+export function Menu({ items, label = "More", trigger, head, className, align = "end" }: { items: MenuItem[]; label?: string; trigger?: ReactNode; head?: ReactNode; className?: string; align?: "start" | "end" }) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
   return (
-    <div className={className ? `menu ${className}` : "menu"} ref={root} onClick={(event) => event.stopPropagation()}>
+    <div className={className ? `menu ${className}` : "menu"} onClick={(event) => event.stopPropagation()}>
       <button
+        ref={button}
         type="button"
         className={trigger ? (open ? "menu-trigger on" : "menu-trigger") : open ? "icon-button on" : "icon-button"}
         aria-label={label}
@@ -153,43 +270,69 @@ export function Menu({ items, label = "More", trigger, head, className }: { item
       >
         {trigger ?? <Icon name="more" />}
       </button>
-      {mounted && (
-        <div
-          ref={list}
-          className={closing ? "menu-list out" : "menu-list"}
-          role="menu"
-          tabIndex={-1}
-          onKeyDown={(event) => {
-            if (event.key === "ArrowDown") step(1);
-            else if (event.key === "ArrowUp") step(-1);
-            else if (event.key === "Enter" || event.key === " ") choose(items[active]);
-            else if (event.key === "Escape" || event.key === "Tab") setOpen(false);
-            else return;
-            event.preventDefault();
-            event.stopPropagation();
-          }}
-        >
-          {head && <div className="menu-head">{head}</div>}
-          {items.map((item, index) => (
-            <Fragment key={item.label}>
-            {item.separated && <hr className="menu-sep" />}
-            <button
-              type="button"
-              role="menuitem"
-              tabIndex={-1}
-              disabled={item.disabled}
-              className={[index === active ? "active" : "", item.danger ? "danger" : ""].join(" ")}
-              onPointerEnter={() => !item.disabled && setActive(index)}
-              onClick={() => choose(item)}
-            >
-              {item.label}
-              {item.hint && <span>{item.hint}</span>}
-            </button>
-            </Fragment>
-          ))}
-        </div>
-      )}
+      <MenuList open={open} setOpen={setOpen} items={items} head={head} trigger={button} align={align} className={className} />
     </div>
+  );
+}
+
+/** Writer's own dropdown: the chosen option and a chevron, opening a list like a Menu's, the chosen one ticked. */
+export function Select<T extends string>({
+  value,
+  options,
+  onChange,
+  label,
+  disabled,
+  size = "md",
+  className,
+  align = "start",
+}: {
+  value: T;
+  options: { value: T; label: string; hint?: string }[];
+  onChange: (value: T) => void;
+  label: string;
+  disabled?: boolean;
+  /** md: a field's height; sm: quiet, inline in a toolbar or a line of text. */
+  size?: "md" | "sm";
+  className?: string;
+  align?: "start" | "end";
+}) {
+  const [open, setOpen] = useState(false);
+  const button = useRef<HTMLButtonElement>(null);
+  const current = options.find((option) => option.value === value);
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        className={["select", `select-${size}`, open ? "on" : "", className ?? ""].join(" ")}
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={disabled}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(!open);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className="truncate">{current?.label ?? value}</span>
+        <Icon name="chevron" size={size === "sm" ? 12 : 14} />
+      </button>
+      <MenuList
+        open={open}
+        setOpen={setOpen}
+        trigger={button}
+        align={align}
+        matchWidth={size === "md"}
+        items={options.map((option) => ({ label: option.label, hint: option.hint, checked: option.value === value, onSelect: () => option.value !== value && onChange(option.value) }))}
+      />
+    </>
   );
 }
 
@@ -367,6 +510,47 @@ const PATHS: Record<string, ReactNode> = {
     <>
       <rect x="2" y="2.75" width="12" height="10.5" rx="1.75" />
       <path d="M10 2.75v10.5" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="8" cy="5.5" r="2.75" />
+      <path d="M2.75 14c.6-2.7 2.7-4.25 5.25-4.25s4.65 1.55 5.25 4.25" />
+    </>
+  ),
+  gear: (
+    <>
+      <circle cx="8" cy="8" r="2" />
+      <path d="M8 1.75v1.5M8 12.75v1.5M1.75 8h1.5M12.75 8h1.5M3.6 3.6l1.05 1.05M11.35 11.35l1.05 1.05M3.6 12.4l1.05-1.05M11.35 4.65l1.05-1.05" />
+    </>
+  ),
+  logs: (
+    <>
+      <path d="M4.25 2.25h7.5a1.5 1.5 0 0 1 1.5 1.5v8.5a1.5 1.5 0 0 1-1.5 1.5h-7.5" />
+      <path d="M4.25 2.25a1.5 1.5 0 0 0-1.5 1.5v1h3v-1a1.5 1.5 0 0 0-1.5-1.5zM6.5 7h4M6.5 9.5h4M4.25 13.75a1.5 1.5 0 0 1-1.5-1.5" />
+    </>
+  ),
+  bug: (
+    <>
+      <rect x="4.75" y="5" width="6.5" height="8.25" rx="3.25" />
+      <path d="M6 5V4a2 2 0 0 1 4 0v1M8 8v5.25M1.75 9h3M11.25 9h3M2.5 5.5l2.4 1.2M13.5 5.5l-2.4 1.2M2.5 13l2.5-1.4M13.5 13l-2.5-1.4" />
+    </>
+  ),
+  "sign-out": (
+    <>
+      <path d="M6.25 13.75h-3a1 1 0 0 1-1-1v-9.5a1 1 0 0 1 1-1h3M10.5 11l3-3-3-3M13.5 8H6" />
+    </>
+  ),
+  "new-chat": (
+    <>
+      <path d="M13.75 7.5v3.25a1.5 1.5 0 0 1-1.5 1.5H6.5L3 14.5v-2.25h-.25a.5.5 0 0 1 0 0V4.25a1.5 1.5 0 0 1 1.5-1.5H8.5" />
+      <path d="M12 1.75v4M10 3.75h4" />
+    </>
+  ),
+  "update-up": (
+    <>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M8 11V5.25M5.5 7.5 8 5l2.5 2.5" />
     </>
   ),
 };

@@ -5,7 +5,8 @@ import { Editor } from "./editor";
 import { Library } from "./library";
 import { Icon } from "./ui";
 import { SettingsDialog } from "./settings";
-import { ActivityPanel, LogsDialog } from "./logs";
+import { LogsDialog } from "./logs";
+import { SyncDock } from "./sync-dock";
 import { UpdatePill } from "./update";
 import { SignInScreen, useAccount } from "./account";
 import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
@@ -33,7 +34,7 @@ export function App() {
   const [settings, setSettings] = useState(false);
   const [logs, setLogs] = useState(false);
   const [account] = useAccount();
-  // ⌘⇧L opens the Logs window, ⌘, Setup, from anywhere.
+  // ⌘⇧L opens the Logs window, ⌘, Settings, from anywhere.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "l") {
@@ -192,9 +193,10 @@ export function App() {
         />
       )}
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
-      <ActivityPanel onOpen={(id) => setRoute({ name: "script", id })} onLogs={() => setLogs(true)} />
+      <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />
       <LogsDialog open={logs} onClose={() => setLogs(false)} />
-      <UpdatePill />
+      {/* The list has Update in its header; other screens show it at the bottom right. */}
+      {route.name !== "library" && <UpdatePill />}
     </>
   );
 }

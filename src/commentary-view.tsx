@@ -15,11 +15,10 @@ import { FoundClips } from "./found-clips";
 import { FeedbackPanel } from "./feedback-panel";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { CloudBadge } from "./cloud-badge";
 import { type Band, BandTip, bandProps, bandsOf, isEditNote, pieceBands, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
 import { CAN, useGrants } from "./can";
-import { Dialog, Icon, Menu, Tabs } from "./ui";
+import { Dialog, Icon, Menu, Select, Tabs } from "./ui";
 
 const PACINGS: { value: Pacing; label: string; hint: string }[] = [
   { value: "channel", label: "Channel pacing", hint: "The channel's own videos: a line or two of setup, then the person talks. Clips run longer than the narration." },
@@ -446,6 +445,7 @@ export function CommentaryEditor({
 
   // With a script written, a message changes the paragraphs it is about; a whole rewrite is asked for.
   const [rewriting, setRewriting] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const revise = async (text: string) => {
     setReport(null);
     setError(null);
@@ -483,7 +483,6 @@ export function CommentaryEditor({
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
-          <CloudBadge compact />
           {working && (
             <span className="agent-working">
               <span className="dot live" />
@@ -491,10 +490,6 @@ export function CommentaryEditor({
             </span>
           )}
           {VIEWS.length > 1 && <ViewTabs view={view} views={VIEWS} onChange={setView} />}
-          <Shortcuts groups={COMMENTARY_SHORTCUTS} />
-          <button type="button" className="icon-tool" disabled={!draft} aria-label="Copy script" title="Copy the script in the channel's Doc layout" onClick={() => void copy()}>
-            <Icon name={copied ? "check" : "copy"} />
-          </button>
           <button
             type="button"
             className="icon-tool"
@@ -510,6 +505,14 @@ export function CommentaryEditor({
             <Icon name="doc" size={14} />
             Google Doc
           </button>
+          <Menu
+            label="More"
+            items={[
+              { label: copied ? "Copied" : "Copy script text", icon: "copy", disabled: !draft, onSelect: () => void copy() },
+              { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", onSelect: () => setShortcutsOpen(true) },
+            ]}
+          />
+          <Shortcuts groups={COMMENTARY_SHORTCUTS} open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         </div>
       </header>
       <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
@@ -650,19 +653,16 @@ export function CommentaryEditor({
                   </>
                 )}
               </ChatLog>
-              <label className="pacing-pick" title={PACINGS.find((item) => item.value === (script.commentary?.pacing ?? "channel"))?.hint}>
-                <select
+              <div className="pacing-pick">
+                <Select
+                  size="sm"
                   value={script.commentary?.pacing ?? "channel"}
                   disabled={busy}
-                  aria-label="Pacing for the next build"
-                  onChange={(event) => void change(setPacing(script.id, event.target.value as Pacing))}
-                >
-                  {PACINGS.map((item) => (
-                    <option key={item.value} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
-                <Icon name="chevron" size={12} />
-              </label>
+                  label="Pacing for the next build"
+                  options={PACINGS.map((item) => ({ value: item.value, label: item.label }))}
+                  onChange={(pacing) => void change(setPacing(script.id, pacing))}
+                />
+              </div>
               <Composer
                 value={note}
                 disabled={busy}
@@ -709,19 +709,16 @@ export function CommentaryEditor({
                       {source.title}
                     </button>
                     <div className="source-meta">
-                      <label className={`role-chip ${source.role}`} title={ROLES.find((role) => role.value === source.role)?.hint}>
-                        <select
+                      <span className={`role-chip ${source.role}`}>
+                        <Select
+                          size="sm"
                           value={source.role}
                           disabled={busy}
-                          aria-label={`Use ${source.id} as`}
-                          onChange={(event) => void change(updateSource(script.id, source.id, { role: event.target.value as Role }))}
-                        >
-                          {ROLES.map((role) => (
-                            <option key={role.value} value={role.value}>{role.label}</option>
-                          ))}
-                        </select>
-                        <Icon name="chevron" size={12} />
-                      </label>
+                          label={`Use ${source.id} as: ${ROLES.find((role) => role.value === source.role)?.hint ?? ""}`}
+                          options={ROLES.map((role) => ({ value: role.value, label: role.label }))}
+                          onChange={(role) => void change(updateSource(script.id, source.id, { role }))}
+                        />
+                      </span>
                       <span className="meta">
                         {size(source.chars)} characters{source.timed ? " · timed" : ""}
                         {srcOf.has(source.id) ? " · plays" : ""} · {origin(source)}

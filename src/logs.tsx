@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { type Activity, getActivity, getLogs, type LogLine, message, revealLogs } from "./api";
-import { Dialog, Icon } from "./ui";
+import { getLogs, type LogLine, message, revealLogs } from "./api";
+import { Dialog, Icon, Select } from "./ui";
 
 /**
  * Writer's log, as it's written (log.rs): a live tail of the last 2000
@@ -87,12 +87,7 @@ export function LogsDialog({ open, onClose }: { open: boolean; onClose: () => vo
     >
       <div className="logs-tools">
         <input type="search" placeholder="Search the log" value={query} onChange={(event) => setQuery(event.target.value)} aria-label="Search the log" />
-        <select value={area} onChange={(event) => setArea(event.target.value)} aria-label="Subsystem">
-          <option value="all">Every subsystem</option>
-          {areas.map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
+        <Select value={area} label="Subsystem" onChange={setArea} options={[{ value: "all", label: "Every subsystem" }, ...areas.map((item) => ({ value: item, label: item }))]} />
         <div className="segmented" role="group" aria-label="Which lines">
           <button type="button" className={problems ? "" : "on"} onClick={() => setProblems(false)}>All</button>
           <button type="button" className={problems ? "on" : ""} onClick={() => setProblems(true)}>Problems</button>
@@ -117,64 +112,5 @@ export function LogsDialog({ open, onClose }: { open: boolean; onClose: () => vo
         ))}
       </div>
     </Dialog>
-  );
-}
-
-const amount = (work: Activity) => {
-  if (work.unit === "percent") return `${work.done}%`;
-  if (!work.total) return "";
-  if (work.unit === "bytes") return "";
-  return `${work.done} of ${work.total}`;
-};
-
-/**
- * Everything long under way, on every screen: imports, Claude's jobs,
- * footage going to Edit, the cloud's transfers; each with its step and a
- * bar. Hidden when nothing runs.
- */
-export function ActivityPanel({ onOpen, onLogs }: { onOpen: (script: string) => void; onLogs: () => void }) {
-  const [work, setWork] = useState<Activity[]>([]);
-  const [folded, setFolded] = useState(false);
-  useEffect(() => {
-    let live = true;
-    const ask = () => void getActivity().then((found) => live && setWork(found), () => {});
-    ask();
-    const timer = window.setInterval(ask, 1500);
-    return () => {
-      live = false;
-      window.clearInterval(timer);
-    };
-  }, []);
-  if (!work.length) return null;
-  return (
-    <aside className="activity" aria-label="Under way" data-folded={folded || undefined}>
-      <header>
-        <span className="dot live" />
-        <b>{work.length === 1 ? "1 thing under way" : `${work.length} things under way`}</b>
-        <span className="spacer" />
-        <button type="button" className="link-button" onClick={onLogs}>Logs</button>
-        <button type="button" className="link-button" aria-label={folded ? "Show" : "Hide"} onClick={() => setFolded(!folded)}>
-          {folded ? "Show" : "Hide"}
-        </button>
-      </header>
-      {!folded &&
-        work.map((item) => {
-          const share = item.total ? Math.min(1, item.done / item.total) : null;
-          return (
-            <button key={item.key} type="button" className="activity-item" disabled={!item.script} onClick={() => item.script && onOpen(item.script)} title={`${item.what}: ${item.title}\n${item.step}`}>
-              <span className="activity-head">
-                <span className="truncate">
-                  <b>{item.what}</b> · {item.title}
-                </span>
-                <span className="faint">{amount(item)}</span>
-              </span>
-              <span className="activity-step truncate">{item.step}</span>
-              <span className="activity-bar" data-unknown={share === null || undefined}>
-                <i style={share === null ? undefined : { width: `${Math.round(share * 100)}%` }} />
-              </span>
-            </button>
-          );
-        })}
-    </aside>
   );
 }

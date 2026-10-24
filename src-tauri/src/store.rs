@@ -90,6 +90,8 @@ pub fn list(data: &Path) -> Result<Vec<Summary>, String> {
     let root = scripts_root(data);
     fs::create_dir_all(&root).map_err(|error| error.to_string())?;
     let mut rows = Vec::new();
+    // Footage a commentary was written from, by id: that commentary's title.
+    let mut used_by: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         if !entry.path().is_dir() {
@@ -97,12 +99,20 @@ pub fn list(data: &Path) -> Result<Vec<Summary>, String> {
         }
         match read(&entry.path()) {
             Ok(script) => {
+                for source in script.commentary.iter().flat_map(|commentary| &commentary.sources) {
+                    if let Some(id) = source.origin.strip_prefix("writer:") {
+                        used_by.entry(id.to_string()).or_insert_with(|| script.title.clone());
+                    }
+                }
                 let mut row = script.summary();
                 row.archive = crate::archive::state(data, &script.id);
                 rows.push(row);
             }
             Err(_) => continue,
         }
+    }
+    for row in &mut rows {
+        row.in_commentary = used_by.get(&row.id).cloned();
     }
     rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(rows)

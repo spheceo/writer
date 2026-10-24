@@ -57,8 +57,15 @@ export const COMMENTARY_SHORTCUTS: { title: string; items: Shortcut[] }[] = [
 ];
 
 /** A keyboard button for the top bar, and the sheet it opens; "?" opens it too. */
-export function Shortcuts({ groups }: { groups: { title: string; items: Shortcut[] }[] }) {
-  const [open, setOpen] = useState(false);
+/** The shortcuts sheet, opened by ? anywhere; with `open`/`onOpenChange` it's opened from elsewhere (a menu) and has no button of its own. */
+export function Shortcuts({ groups, open: shown, onOpenChange }: { groups: { title: string; items: Shortcut[] }[]; open?: boolean; onOpenChange?: (open: boolean) => void }) {
+  const [own, setOwn] = useState(false);
+  const open = shown ?? own;
+  const setOpen = (next: boolean | ((now: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(open) : next;
+    if (onOpenChange) onOpenChange(value);
+    else setOwn(value);
+  };
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -71,9 +78,11 @@ export function Shortcuts({ groups }: { groups: { title: string; items: Shortcut
   }, []);
   return (
     <>
-      <button type="button" className="icon-tool" aria-label="Shortcuts" title="Shortcuts (?)" onClick={() => setOpen(true)}>
-        <Icon name="keyboard" />
-      </button>
+      {!onOpenChange && (
+        <button type="button" className="icon-tool" aria-label="Shortcuts" title="Shortcuts (?)" onClick={() => setOpen(true)}>
+          <Icon name="keyboard" />
+        </button>
+      )}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}

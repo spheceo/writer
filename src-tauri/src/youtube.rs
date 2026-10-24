@@ -341,7 +341,7 @@ pub fn cookies_file(data: &Path) -> std::path::PathBuf {
 pub fn sign_in(data: &Path) -> Result<String, String> {
     let file = cookies_file(data);
     let tmp = file.with_extension("txt.new");
-    let mut tried = Vec::new();
+    let mut tried: Vec<(&str, Reading)> = Vec::new();
     for browser in ["firefox", "chrome", "brave", "edge"] {
         let _ = std::fs::remove_file(&tmp);
         let tmp_text = tmp.to_string_lossy().into_owned();
@@ -358,10 +358,79 @@ pub fn sign_in(data: &Path) -> Result<String, String> {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600));
             }
-            return Ok(browser.to_string());
+            return Ok(browser_name(browser).to_string());
         }
-        tried.push(format!("{browser}: {}", ran.err().map(|error| error.lines().last().unwrap_or("").chars().take(120).collect::<String>()).unwrap_or_else(|| "not signed in to YouTube".into())));
+        let error = ran.err().unwrap_or_default();
+        crate::log::info("youtube", format!("no YouTube sign-in from {browser}: {}", error.lines().last().unwrap_or("signed out of YouTube")));
+        tried.push((browser, reading(&error)));
     }
     let _ = std::fs::remove_file(&tmp);
-    Err(format!("No browser on this Mac is signed in to YouTube ({}).", tried.join("; ")))
+    Err(sign_in_problem(&tried))
+}
+
+/// What reading one browser's sign-in came to, when it didn't give one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Reading {
+    /// The browser isn't on this Mac (no cookies database).
+    Missing,
+    /// macOS didn't let Writer read it (the Keychain prompt was refused).
+    Refused,
+    /// It's here but not signed in to YouTube.
+    SignedOut,
+}
+
+fn reading(error: &str) -> Reading {
+    let lower = error.to_lowercase();
+    if lower.contains("could not find") && lower.contains("cookies database") {
+        Reading::Missing
+    } else if lower.contains("keychain") || lower.contains("decrypt") || lower.contains("password") || lower.contains("not permitted") || lower.contains("permission") {
+        Reading::Refused
+    } else {
+        Reading::SignedOut
+    }
+}
+
+fn browser_name(browser: &str) -> &str {
+    match browser {
+        "firefox" => "Firefox",
+        "chrome" => "Chrome",
+        "brave" => "Brave",
+        "edge" => "Edge",
+        other => other,
+    }
+}
+
+/// One plain sentence on why no sign-in was saved, and what to do about it.
+fn sign_in_problem(tried: &[(&str, Reading)]) -> String {
+    let named = |kind: Reading| tried.iter().filter(|(_, reading)| *reading == kind).map(|(browser, _)| browser_name(browser)).collect::<Vec<_>>();
+    let list = |names: &[&str]| match names {
+        [one] => one.to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+        [] => String::new(),
+    };
+    let refused = named(Reading::Refused);
+    if !refused.is_empty() {
+        return format!("macOS didn't let Writer read {}'s sign-in. Click Save sign-in again and choose Always Allow when macOS asks for your password.", list(&refused));
+    }
+    let signed_out = named(Reading::SignedOut);
+    if !signed_out.is_empty() {
+        return format!("{} isn't signed in to YouTube. Sign in at youtube.com there, then click Save sign-in again.", list(&signed_out));
+    }
+    "Writer reads your YouTube sign-in from Chrome, Firefox, Brave or Edge, and none of them is on this Mac (Safari's can't be read). Sign in to YouTube in one of them, then click Save sign-in again.".into()
+}
+
+#[cfg(test)]
+mod sign_in_tests {
+    use super::*;
+
+    #[test]
+    fn says_plainly_why_no_sign_in_was_saved() {
+        let missing = "ERROR: could not find chrome cookies database in \"/Users/x/Library/Application Support/Google/Chrome\"";
+        assert_eq!(reading(missing), Reading::Missing);
+        assert_eq!(reading("ERROR: cannot decrypt v10 cookies: no key found (Keychain refused)"), Reading::Refused);
+        assert_eq!(reading(""), Reading::SignedOut);
+        assert!(sign_in_problem(&[("firefox", Reading::Missing), ("chrome", Reading::Missing)]).contains("none of them is on this Mac"));
+        assert!(sign_in_problem(&[("firefox", Reading::Missing), ("chrome", Reading::SignedOut)]).starts_with("Chrome isn't signed in"));
+        assert!(sign_in_problem(&[("chrome", Reading::Refused), ("brave", Reading::SignedOut)]).starts_with("macOS didn't let Writer read Chrome's"));
+    }
 }

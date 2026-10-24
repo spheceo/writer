@@ -324,6 +324,10 @@ pub struct Summary {
     pub archive: Option<crate::archive::State>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_by: Option<Creator>,
+    /// Footage a commentary was written from (its source `writer:<id>`): the
+    /// commentary's title. The list keeps it inside that commentary (filled in by store::list).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub in_commentary: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -361,6 +365,7 @@ impl Script {
             kind: self.kind,
             archive: None,
             created_by: self.created_by.clone(),
+            in_commentary: None,
         }
     }
 }

@@ -16,9 +16,8 @@ import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
 import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { CloudBadge } from "./cloud-badge";
 import { BandTip, bandsOf, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
-import { Icon } from "./ui";
+import { Dialog, Icon, Menu, Select } from "./ui";
 
 export type View = "video" | "script" | "split";
 const VIEWS: { value: View; label: string }[] = [
@@ -105,7 +104,7 @@ export function ViewTabs({ view, onChange, views = VIEWS }: { view: View; onChan
 
 const KINDS: { value: Kind; label: string }[] = [
   { value: "interrogation", label: "Interrogation" },
-  { value: "foia", label: "FOIA" },
+  { value: "foia", label: "Bodycam" },
   { value: "courtroom", label: "Courtroom" },
 ];
 
@@ -160,8 +159,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [chat, setChat] = useState<ChatTurn[]>([]);
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
-  const [rebuilding, setRebuilding] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [fetching, setFetching] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useState("");
   const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
@@ -458,7 +458,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const build = async () => {
     setError(null);
     setStage("Starting");
-    setRebuilding(false);
     try {
       const job = await startBuild(script.id, note, kind);
       setSent(note.trim() ? `Build the script. ${note.trim()}` : "Build the script.");
@@ -570,7 +569,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
-          <CloudBadge compact />
           {working && (
             <span className="agent-working">
               <span className="dot live" />
@@ -583,13 +581,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           </button>
           <button type="button" className="icon-tool" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!future.current.length || busy} onClick={redo}>
             <Icon name="redo" />
-          </button>
-          <button type="button" className="icon-tool" aria-label="Versions" title="Versions" onClick={() => setVersionsOpen(true)}>
-            <Icon name="history" />
-          </button>
-          <Shortcuts groups={FOOTAGE_SHORTCUTS} />
-          <button type="button" className="icon-tool" aria-label="Copy script" disabled={!cueCount} title="Copy the script as Repack's Doc text" onClick={() => void copy()}>
-            <Icon name={copied ? "check" : "copy"} />
           </button>
           <button
             type="button"
@@ -606,6 +597,15 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             <Icon name="doc" size={14} />
             Google Doc
           </button>
+          <Menu
+            label="More"
+            items={[
+              { label: "Versions", icon: "history", onSelect: () => setVersionsOpen(true) },
+              { label: copied ? "Copied" : "Copy script text", icon: "copy", disabled: !cueCount, onSelect: () => void copy() },
+              { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", onSelect: () => setShortcutsOpen(true) },
+            ]}
+          />
+          <Shortcuts groups={FOOTAGE_SHORTCUTS} open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
         </div>
       </header>
       <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
@@ -862,43 +862,13 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               />
             )}
           </ChatLog>
-          {cueCount > 0 && !busy && (
-            <div className="agent-actions" style={{ padding: "0 14px 8px" }}>
-              {rebuilding ? (
-                <>
-                  <span>Rebuild from scratch? Every clip and paragraph is replaced (undo brings them back).</span>
-                  <select className="kind-select" value={kind} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
-                    {kinds.map((item) => (
-                      <option key={item.value} value={item.value}>{item.label}</option>
-                    ))}
-                  </select>
-                  <button type="button" className="sm danger-fill" onClick={() => void build()}>
-                    Rebuild{note.trim() ? " with these notes" : ""}
-                  </button>
-                  <button type="button" className="link-button" onClick={() => setRebuilding(false)}>
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button type="button" className="link-button" onClick={() => setRebuilding(true)}>
-                    Rebuild from scratch…
-                  </button>
-                  {chat.length > 0 && (
-                    <button type="button" className="link-button" title="Start the conversation again; the script stays as it is" onClick={() => void clearChat(script.id).then(() => setChat([]), (cause) => setError(message(cause)))}>
-                      New conversation
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          )}
           <Composer
             value={note}
             disabled={busy}
             canSend={!busy && ready && (!cueCount || !!note.trim())}
             label={cueCount ? "Ask for a change" : "Build the script"}
             model={cueCount ? "Sonnet 5.5" : "Opus 5.5"}
+            onNewChat={chat.length > 0 ? () => setClearing(true) : undefined}
             placeholder={
               archived
                 ? "The footage is archived: restore it to change the script"
@@ -910,19 +880,37 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             }
             hint={!ready ? "Transcribe the footage first" : undefined}
             extra={
-              !cueCount ? (
-                <select className="kind-select" value={kind} disabled={busy} title="The format Claude writes in" onChange={(event) => setKind(event.target.value as Kind)}>
-                  {kinds.map((item) => (
-                    <option key={item.value} value={item.value}>{item.label}</option>
-                  ))}
-                </select>
-              ) : undefined
+              !cueCount ? <Select size="sm" value={kind} disabled={busy} label="The format Claude writes in" options={kinds} onChange={setKind} /> : undefined
             }
             onChange={setNote}
             onSend={() => void (cueCount ? revise() : build())}
           />
         </aside>
       </div>
+      <Dialog
+        open={clearing}
+        onClose={() => setClearing(false)}
+        title="Start a new conversation?"
+        description="This conversation with Claude is cleared. The script stays exactly as it is."
+        width={400}
+        footer={
+          <>
+            <span className="spacer" />
+            <button type="button" className="ghost" onClick={() => setClearing(false)}>Cancel</button>
+            <button
+              type="button"
+              className="primary"
+              data-autofocus
+              onClick={() => {
+                setClearing(false);
+                void clearChat(script.id).then(() => setChat([]), (cause) => setError(message(cause)));
+              }}
+            >
+              New conversation
+            </button>
+          </>
+        }
+      />
       <VersionsDialog
         open={versionsOpen}
         script={script}

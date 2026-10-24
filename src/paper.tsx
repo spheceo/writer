@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { type Band, showTip } from "./review";
-import { Icon } from "./ui";
+import { Icon, Select } from "./ui";
 
 /** A sheet as Docs lays out the export, at 96 dpi with one-inch margins. */
 export type Sheet = { width: number; height: number };
@@ -76,15 +76,14 @@ export function ZoomTools({
         <button type="button" aria-label="Zoom out" onClick={() => onZoom(step(zoom, scale, -1))}>
           <Icon name="minus" size={13} />
         </button>
-        <label className="zoom-select">
-          <span className="sr-only">Script zoom</span>
-          <select value={String(zoom)} onChange={(event) => onZoom(event.target.value === "fit" ? "fit" : Number(event.target.value))}>
-            {ZOOMS.map((option) => (
-              <option key={option.label} value={String(option.value)}>{option.label}</option>
-            ))}
-          </select>
-          <Icon name="chevron" size={14} />
-        </label>
+        <Select
+          size="sm"
+          className="zoom-select"
+          value={String(zoom)}
+          label="Script zoom"
+          options={ZOOMS.map((option) => ({ value: String(option.value), label: option.label }))}
+          onChange={(value) => onZoom(value === "fit" ? "fit" : Number(value))}
+        />
         <button type="button" aria-label="Zoom in" onClick={() => onZoom(step(zoom, scale, 1))}>
           <Icon name="plus" size={13} />
         </button>

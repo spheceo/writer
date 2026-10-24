@@ -117,6 +117,8 @@ export type Archive = { at: number; by: string; freedBytes: number; restoring: b
 export type Summary = {
   archive?: Archive;
   createdBy?: Creator;
+  /** Footage a commentary was written from: that commentary's title. The list keeps it inside it. */
+  inCommentary?: string;
   /** Interrogation, FOIA or Courtroom. */
   kind?: Kind;
   id: string;
