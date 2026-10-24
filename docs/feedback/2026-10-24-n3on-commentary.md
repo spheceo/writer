@@ -73,7 +73,7 @@ The counts below were measured on v1 with `commentary::measure` (`GET /api/scrip
 - **Cause.** A paragraph's note was one string. The Doc put it on the first narration piece, Writer's Script view lit the first narration, the review page drew the block, and a fix that added an editor note banded the whole block. The writer already tried to say where ("Find, under "streamed with Kanye West": …"), but nothing could carry it.
 - **Code.**
   - Notes are written as `notes: [{on, text}]`, and each line keeps a mark on its words (`Paragraph.marks`).
-  - The Doc comments, Writer's yellow and the review page's `editMarks` (sent to the feedback thread to draw) sit on those words.
+  - The Doc comments, Writer's yellow and the review page's `editMarks` sit on those words (drawn by feedback/ in 8d95670: only the marked words light, a pop-up's card shows its words, who and where; a line without a mark, or an older version, lights the whole paragraph; it ships with the next feedback deploy).
   - A reviewer's "for the editor" note keeps the reviewer's words.
   - A fix's band covers only the note's words.
 - **Teach.** NOTES ON THEIR WORDS in Editor notes, with T2's words.
