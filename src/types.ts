@@ -403,7 +403,7 @@ export type TrelloCard = {
   url: string;
   labels: string[];
   activity: string | null;
-  kind: "case" | "compilation";
+  kind: "case" | "compilation" | "video";
   footage: string | null;
   article: string | null;
   lines: string[];

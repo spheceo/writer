@@ -107,6 +107,11 @@ impl Relay {
         self.get_json(&format!("/v1/trello/cards?list={list}"))
     }
 
+    /// One card by its link's id, from any board Repack's token reads.
+    pub fn trello_card(&self, card: &str) -> Result<Value, String> {
+        self.get_json(&format!("/v1/trello/card?card={card}"))
+    }
+
     /// The proxy YouTube downloads go through, if the relay has one.
     pub fn proxy(&self) -> Result<Option<String>, String> {
         let value = self.get_json("/v1/proxy")?;

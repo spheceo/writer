@@ -292,6 +292,12 @@ fn route(
             let title = json_str(body, "title").ok();
             json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref(), title.as_deref()))
         }
+        ("GET", ["api", "youtube", "sign-in"]) => write_json(stream, 200, &json!(crate::youtube_sign_in_now(&data_dir(&app)?))),
+        ("POST", ["api", "youtube", "sign-in"]) => json_result(stream, crate::youtube::sign_in(&data_dir(&app)?).map(|browser| json!({ "browser": browser }))),
+        ("POST", ["api", "trello", "card"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::trello_card_now(&data_dir(&app)?, value["link"].as_str().unwrap_or("")))
+        }
         ("GET", ["api", "trello", list]) => json_result(stream, crate::trello_now(&data_dir(&app)?, list)),
         ("POST", ["api", "scripts", "commentary"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

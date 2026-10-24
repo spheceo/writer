@@ -14,6 +14,7 @@ import {
   renameScript,
   restoreScript,
   resumeImport,
+  trelloCard,
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
@@ -612,8 +613,8 @@ function RecoverDialog({
 
 const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
   youtube: {
-    placeholder: "https://www.youtube.com/watch?v=…",
-    hint: "Downloads on this Mac through Writer's proxy, then transcribes.",
+    placeholder: "https://www.youtube.com/watch?v=… or a Trello card link",
+    hint: "Downloads on this Mac through Writer's proxy, then transcribes. A Trello card link fills in its videos.",
   },
   drive: {
     placeholder: "https://drive.google.com/drive/folders/…",
@@ -628,7 +629,7 @@ const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
     hint: "A video essay in the Internet Janitor's style, written from sources rather than one case's footage. The first link is the brief; add more sources, and past scripts for the style, once it's made.",
   },
   compilation: {
-    placeholder: "One YouTube or Drive video link per line, a case each. REUSE before a link marks a case the channel already covered; a Google Doc link is the script of one, reused as it is.",
+    placeholder: "One YouTube or Drive video link per line, a case each, or paste a Trello card link to fill them in. REUSE before a link marks a case the channel already covered; a Google Doc link is the script of one, reused as it is.",
     hint: "2 to 20 videos, one case each, in the order they play. A title that opens with \"When\" makes a standard compilation; any other hides that there's more than one case. A reused case isn't imported or rewritten: it takes only its transition, with its link. A script's Doc gives that transition its narration to lead into.",
   },
 };
@@ -767,6 +768,13 @@ function ImportDialog({
     setTrello(null);
     setError(null);
     setChecked(null);
+    // A pasted card with one video is that video's import.
+    if (card.kind === "video") {
+      setSource("youtube");
+      setValue(card.footage ?? "");
+      setCardTitle(card.name);
+      return;
+    }
     if (card.kind === "case") {
       setSource("drive");
       setValue(card.footage ?? "");
@@ -779,6 +787,23 @@ function ImportDialog({
     setTitle(card.name);
     setValue(card.lines.join("\n"));
     if (card.lines.length >= 2) void check(card.lines);
+  };
+
+  // A Trello card link pasted in a link field: the card is read and fills the dialog, as a picked card does.
+  const [readingCard, setReadingCard] = useState(false);
+  const paste = (text: string) => {
+    setValue(text);
+    const link = text.match(/https?:\/\/(?:www\.)?trello\.com\/c\/[A-Za-z0-9]+[^\s]*/)?.[0];
+    if (!link) return;
+    setReadingCard(true);
+    setError(null);
+    void trelloCard(link)
+      .then((card) => {
+        if (card.problem) setError(`${card.name}: ${card.problem}`);
+        else useCard(card);
+      })
+      .catch((cause) => setError(message(cause)))
+      .finally(() => setReadingCard(false));
   };
 
   const check = async (lines = links) => {
@@ -1001,7 +1026,7 @@ function ImportDialog({
                   value={value}
                   placeholder={SOURCES.compilation.placeholder}
                   spellCheck={false}
-                  onChange={(event) => setValue(event.target.value)}
+                  onChange={(event) => paste(event.target.value)}
                 />
               ) : (
                 <div className="checklist video-checks">
@@ -1070,10 +1095,10 @@ function ImportDialog({
               value={value}
               placeholder={SOURCES[source].placeholder}
               spellCheck={false}
-              onChange={(event) => setValue(event.target.value)}
+              onChange={(event) => paste(event.target.value)}
             />
           )}
-          <p className="hint">{SOURCES[source].hint}</p>
+          <p className="hint">{readingCard ? "Reading the Trello card…" : SOURCES[source].hint}</p>
           {(source === "youtube" || source === "drive" || source === "file") && (
             <>
               <input

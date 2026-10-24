@@ -637,6 +637,49 @@ pub(crate) fn trello_now(data: &std::path::Path, list: &str) -> Result<trello::C
     trello::cards(&settings::load(data), list, &titles)
 }
 
+/// Whether downloads have the person's YouTube sign-in to fall back on (youtube.rs).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YoutubeSignIn {
+    pub saved: bool,
+    pub saved_at: Option<u64>,
+}
+
+pub fn youtube_sign_in_now(data: &Path) -> YoutubeSignIn {
+    let saved_at = std::fs::metadata(youtube::cookies_file(data)).and_then(|meta| meta.modified()).ok().and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok()).map(|at| at.as_millis() as u64);
+    YoutubeSignIn { saved: saved_at.is_some(), saved_at }
+}
+
+#[tauri::command]
+fn youtube_sign_in_status(app: AppHandle) -> Result<YoutubeSignIn, String> {
+    Ok(youtube_sign_in_now(&data_dir(&app)?))
+}
+
+/// Copies the person's YouTube sign-in from their browser into a file, once.
+#[tauri::command]
+async fn save_youtube_sign_in(app: AppHandle) -> Result<String, String> {
+    let data = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        tools::ensure_yt_dlp().ok();
+        youtube::sign_in(&data)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// The card a pasted Trello link names, read for its videos.
+pub fn trello_card_now(data: &Path, link: &str) -> Result<trello::Card, String> {
+    let titles: Vec<String> = store::list(data)?.into_iter().map(|row| row.title.trim().to_lowercase()).collect();
+    trello::card(&settings::load(data), link, &titles)
+}
+
+#[tauri::command]
+async fn trello_card(app: AppHandle, link: String) -> Result<trello::Card, String> {
+    tauri::async_runtime::spawn_blocking(move || trello_card_now(&data_dir(&app)?, &link))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 async fn trello_cards(app: AppHandle, list: String) -> Result<trello::Cards, String> {
     tauri::async_runtime::spawn_blocking(move || trello_now(&data_dir(&app)?, &list))
@@ -1476,6 +1519,9 @@ pub fn run() {
             claude_status,
             check_videos,
             trello_cards,
+            trello_card,
+            youtube_sign_in_status,
+            save_youtube_sign_in,
             start_build,
             start_revision,
             start_reuse_import,

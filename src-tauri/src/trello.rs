@@ -26,7 +26,7 @@ pub struct Card {
     pub url: String,
     pub labels: Vec<String>,
     pub activity: Option<String>,
-    /// `case` (Raw Channels) or `compilation`.
+    /// `case` (Raw Channels), `compilation`, or `video` (a pasted card with one video).
     pub kind: &'static str,
     /// A case card's Drive folder or video, and its article.
     pub footage: Option<String>,
@@ -64,6 +64,57 @@ pub fn cards(settings: &Settings, list: &str, titles: &[String]) -> Result<Cards
         .filter_map(|card| parse(card, compilation, titles))
         .collect();
     Ok(Cards { list: value["list"].as_str().unwrap_or(list).to_string(), cards })
+}
+
+/// The card a pasted link names (trello.com/c/<id>/…): its YouTube videos, from
+/// wherever on the card they are (description, attachments, checklists,
+/// comments), as a compilation's lines when there are two or more, or as one
+/// video's import. A compilation card's "case N" lines are read as they are
+/// on the compilation list, reused cases included.
+pub fn card(settings: &Settings, link: &str, titles: &[String]) -> Result<Card, String> {
+    let id = card_id(link).ok_or("That isn't a Trello card link (trello.com/c/…).")?;
+    let value = Relay::new(settings)?.trello_card(&id)?;
+    let name: String = value["name"].as_str().unwrap_or("Trello card").trim().chars().take(180).collect();
+    let desc = value["desc"].as_str().unwrap_or("");
+    let more: Vec<String> = ["attachments", "checklists", "comments"].iter().flat_map(|field| value[*field].as_array().cloned().unwrap_or_default()).filter_map(|item| item.as_str().map(str::to_string)).collect();
+    // The description's cases first, as the compilation list reads them; then any video found elsewhere on the card.
+    let mut links = compilation_links(desc);
+    for found in links_in(&format!("{desc}\n{}", more.join("\n"))) {
+        if crate::handoff::youtube_id(&found.url).is_some() && !links.iter().any(|known| same_video(&known.url, &found.url)) {
+            links.push(found);
+        }
+    }
+    links.retain(|link| link.reuse || crate::handoff::youtube_id(&link.url).is_some() || link.url.contains("drive.google.com"));
+    let videos = links.iter().filter(|link| !link.reuse).count();
+    let mut found = Card {
+        id: value["id"].as_str().unwrap_or(&id).to_string(),
+        scripted: titles.iter().any(|title| *title == name.to_lowercase()),
+        name,
+        url: value["url"].as_str().unwrap_or(link).to_string(),
+        labels: value["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
+        activity: value["activity"].as_str().map(str::to_string),
+        kind: if videos >= 2 { "compilation" } else { "video" },
+        footage: None,
+        article: None,
+        lines: links.iter().map(|link| if link.reuse { format!("REUSE {}", link.url) } else { link.url.clone() }).collect(),
+        videos,
+        reuses: links.len() - videos,
+        problem: None,
+    };
+    if videos == 1 {
+        found.footage = links.iter().find(|link| !link.reuse).map(|link| link.url.clone());
+    }
+    if videos == 0 {
+        found.problem = Some("No YouTube or Drive video on the card.".into());
+    }
+    Ok(found)
+}
+
+/// The id in a card link: trello.com/c/<id>/<slug>.
+pub fn card_id(link: &str) -> Option<String> {
+    let rest = link.trim().split_once("trello.com/c/")?.1;
+    let id: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    (6..=32).contains(&id.len()).then_some(id)
 }
 
 fn parse(card: &Value, compilation: bool, titles: &[String]) -> Option<Card> {
@@ -290,6 +341,13 @@ pub fn case_links(description: &str, attachments: &[String]) -> (Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_id_from_links() {
+        assert_eq!(card_id("https://trello.com/c/fCTopHe2/999-cop-reports-dead-body").as_deref(), Some("fCTopHe2"));
+        assert_eq!(card_id("trello.com/c/fCTopHe2").as_deref(), Some("fCTopHe2"));
+        assert!(card_id("https://trello.com/b/abc/board").is_none());
+    }
 
     #[test]
     fn reads_a_compilation_card_as_repack_does() {

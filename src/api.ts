@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage, TrelloCard } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -55,6 +55,9 @@ export const importDrive = (url: string, article?: string, title?: string) =>
     : http<Script>("/api/scripts/drive", json({ url, article, title }));
 
 /** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
+/** The card a pasted Trello link names, read for its videos (any board Repack's Trello reads). */
+export const trelloCard = (link: string) =>
+  inTauri() ? invoke<TrelloCard>("trello_card", { link }) : http<TrelloCard>("/api/trello/card", json({ link }));
 export const trelloCards = (list: TrelloList) =>
   inTauri() ? invoke<TrelloCards>("trello_cards", { list }) : http<TrelloCards>(`/api/trello/${list}`);
 
@@ -452,3 +455,9 @@ export const getFootage = (id: string) => (inTauri() ? invoke<Footage>("get_foot
 
 /** Where a downloaded stretch plays from: the file itself in the Mac's window, the API on the dev page. */
 export const footageUrl = (id: string, footage: Footage, file: string) => (inTauri() ? convertFileSrc(`${footage.dir}/${file}`) : `/api/scripts/${id}/footage/${encodeURIComponent(file)}`);
+
+/** Whether downloads can fall back on the person's YouTube sign-in (a cookies file, read silently). */
+export const youtubeSignIn = () =>
+  inTauri() ? invoke<{ saved: boolean; savedAt: number | null }>("youtube_sign_in_status") : http<{ saved: boolean; savedAt: number | null }>("/api/youtube/sign-in");
+/** Copies the YouTube sign-in from the browser into that file, once (Chrome asks macOS for its key this one time). */
+export const saveYoutubeSignIn = () => (inTauri() ? invoke<string>("save_youtube_sign_in") : http<{ browser: string }>("/api/youtube/sign-in", json({})).then((answer) => answer.browser));
