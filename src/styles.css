@@ -62,9 +62,12 @@ html, body, #root { height: 100%; margin: 0; }
 h1, h2, h3, p { margin: 0; }
 button, input, textarea { font: inherit; color: inherit; }
 ::selection { background: #ffffff33; }
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #222; border-radius: 99px; border: 3px solid transparent; background-clip: content-box; }
-::-webkit-scrollbar-track { background: transparent; }
+/* No native scrollbars, ever (macOS can draw them with a track): a thin thumb shows only while something scrolls (scrollbars.ts). */
+* { scrollbar-width: none; }
+::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.scroll-thumb { position: fixed; z-index: 1000; width: 6px; height: 6px; border-radius: 99px; background: rgba(255, 255, 255, 0.28); opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+.scroll-thumb.on { opacity: 1; pointer-events: auto; cursor: default; }
+.scroll-thumb.on:hover { background: rgba(255, 255, 255, 0.42); }
 
 button {
   display: inline-flex;
