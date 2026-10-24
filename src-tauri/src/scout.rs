@@ -275,14 +275,16 @@ pub fn find(app: &AppHandle, id: &str) -> Result<(String, f64), String> {
     let transcribed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let relay = crate::net::Relay::new(&settings).ok();
     let proxy = || relay.as_ref().and_then(|relay| relay.proxy().ok().flatten());
-    // A video YouTube won't give captions for is heard instead, a few a search.
+    // A video YouTube won't give captions for is heard instead, a few a search,
+    // listening for the story's names as researched (spelling.rs).
     let hearings = AtomicUsize::new(0);
+    let keyterms = crate::spelling::research(&dir, &script).map(|names| crate::spelling::keyterms(&names)).unwrap_or_default();
     let captions = each(&finds.videos, 2, |video| {
         let mut lines = if video.problem.is_some() { Err(String::new()) } else { captions(&video.id, &captions_dir, &proxy) };
         if let Err(problem) = &lines {
             let short = video.duration_ms > 0 && video.duration_ms <= MAX_HEARD_MS;
             if !problem.is_empty() && short && hearings.fetch_add(1, Ordering::SeqCst) < MAX_HEARD {
-                lines = heard(video, &captions_dir, &settings).map(|lines| {
+                lines = heard(video, &captions_dir, &settings, &keyterms).map(|lines| {
                     if let Ok(mut heard) = transcribed.lock() {
                         heard.push(video.id.clone());
                     }
@@ -751,7 +753,7 @@ fn group(words: Vec<(u64, String, bool)>) -> Vec<Line> {
 /// downloaded and transcribed as footage is. The lines heard are kept, and
 /// the audio is dropped once they are; until then, what was downloaded and
 /// heard stays for a retry, so nothing is paid for twice.
-fn heard(video: &Video, dir: &Path, settings: &crate::settings::Settings) -> Result<Vec<Line>, String> {
+fn heard(video: &Video, dir: &Path, settings: &crate::settings::Settings, keyterms: &[String]) -> Result<Vec<Line>, String> {
     let kept = dir.join(format!("{}.heard.json", video.id));
     if let Some(lines) = fs::read(&kept).ok().and_then(|bytes| serde_json::from_slice::<Vec<Line>>(&bytes).ok()) {
         return Ok(lines);
@@ -773,7 +775,7 @@ fn heard(video: &Video, dir: &Path, settings: &crate::settings::Settings) -> Res
             audio().ok_or("Its audio didn't download.")?
         }
     };
-    let words = crate::transcribe::hear_span(&path, settings, &folder, (0, video.duration_ms), &[], "v", &|_, _| {})?;
+    let words = crate::transcribe::hear_span(&path, settings, &folder, (0, video.duration_ms), keyterms, "v", &|_, _| {})?;
     let mut last: Option<String> = None;
     let lines = group(
         words

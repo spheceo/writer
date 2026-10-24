@@ -369,10 +369,20 @@ pub fn structured(model: &str, system: &str, schema: &Value, prompt: &str) -> Re
     turn.plan.ok_or_else(|| "Claude did not answer in the expected shape.".into())
 }
 
+/// One structured answer that may search the web (WebSearch, WebFetch), as
+/// research does (spelling.rs): through `claude -p`, whatever the engine.
+pub(crate) fn searching_turn(model: &str, system: &str, schema: &str, prompt: &str) -> Result<Turn, String> {
+    patiently(|| ask_with(model, system, schema, prompt, None, None, true))
+}
+
 fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>, read: Option<&std::path::Path>) -> Result<Turn, Trouble> {
     if engine() == crate::settings::Engine::Sdk {
         return ask_sdk(model, system, schema, prompt, resume, read);
     }
+    ask_with(model, system, schema, prompt, resume, read, false)
+}
+
+fn ask_with(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&str>, read: Option<&std::path::Path>, web: bool) -> Result<Turn, Trouble> {
     let read_dir = read.map(|dir| dir.to_string_lossy().into_owned());
     let mut args = vec![
         "-p",
@@ -381,7 +391,7 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
         "--safe-mode",
         "--strict-mcp-config",
         "--tools",
-        if read_dir.is_some() { "Read" } else { "" },
+        if web { "WebSearch,WebFetch" } else if read_dir.is_some() { "Read" } else { "" },
         "--permission-prompts",
         "none",
         "--system-prompt",
@@ -391,6 +401,9 @@ fn ask(model: &str, system: &str, schema: &str, prompt: &str, resume: Option<&st
         "--output-format",
         "json",
     ];
+    if web {
+        args.extend(["--allowedTools", "WebSearch", "WebFetch"]);
+    }
     if let Some(session) = resume {
         args.push("--resume");
         args.push(session);

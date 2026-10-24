@@ -225,6 +225,16 @@ fn text_path(dir: &Path, id: &str) -> PathBuf {
     sources_dir(dir).join(format!("{id}.txt"))
 }
 
+/// A source's text replaced (spelling.rs corrects names in it).
+pub fn write_text(dir: &Path, id: &str, text: &str) -> Result<(), String> {
+    let path = text_path(dir, id);
+    if !path.is_file() {
+        return Err(format!("Source {id}'s text is missing."));
+    }
+    let tmp = path.with_extension("txt.tmp");
+    fs::write(&tmp, text).and_then(|_| fs::rename(&tmp, &path)).map_err(|error| error.to_string())
+}
+
 pub fn read_text(dir: &Path, id: &str) -> Result<String, String> {
     fs::read_to_string(text_path(dir, id)).map_err(|_| format!("Source {id}'s text is missing. Remove it and add it again."))
 }
@@ -902,6 +912,10 @@ pub struct Built {
 /// the same session for a plan the checks refuse. `lessons` are what past
 /// reviews taught (feedback.rs), read with the guide.
 pub fn build(dir: &Path, script: &Script, note: &str, lessons: &str) -> Result<Built, String> {
+    // Names spelled right in the recordings first (researched, cached): the script quotes them.
+    if let Err(error) = crate::spelling::correct(dir, script) {
+        crate::log::warn("spelling", format!("{}: names couldn't be checked ({error}); building from the transcripts as they are", crate::log::named(&script.id, &script.title)));
+    }
     let note = note.trim();
     // Comments read back from the Doc can run long.
     if note.chars().count() > 8_000 {

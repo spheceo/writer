@@ -6,6 +6,7 @@ mod agent;
 mod avatar;
 mod steps;
 mod footage;
+mod spelling;
 mod archive;
 mod blocks;
 mod chat;

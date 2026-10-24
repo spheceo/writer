@@ -194,6 +194,14 @@ fn route(
             let draft = serde_json::from_value(value["draft"].clone()).ok();
             json_result(stream, crate::teach_with(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["mode"].as_str().unwrap_or("build"), draft, value["request"].as_str().unwrap_or("")))
         }
+        // Debug builds only: research a commentary's names and correct its machine-heard sources (spelling.rs).
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "spelling"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let dir = store::script_dir(&data_dir(&app)?, value["id"].as_str().unwrap_or(""))?;
+            let script = store::read(&dir)?;
+            json_result(stream, crate::spelling::correct(&dir, &script).map(|said| json!({ "corrected": said, "kept": crate::spelling::summary(&dir) })))
+        }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "copy-script"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
