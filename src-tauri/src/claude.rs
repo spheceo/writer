@@ -507,6 +507,12 @@ pub(crate) fn off_target(script: &Script, format: &Format, done: &Compiled) -> O
     if format.foia() && done.below_floor {
         return Some("The cut runs under a FOIA video's ten-minute floor even with every pause kept. Keep more of the footage.".into());
     }
+    if format.foia() && !format.compilation {
+        let flags = crate::house::text_flags(script, &done.clips, &purposes(&done.clips, format, Opening::OneRun), false);
+        if !flags.is_empty() {
+            return Some(format!("Writer's house rules would flag this: {}", flags.join(" ")));
+        }
+    }
     None
 }
 
@@ -515,6 +521,12 @@ const TEASER_PAUSE_MS: u64 = 1_500;
 /// Longest the opening's clips run before the first cut-in, and a case's intro clips.
 const OPENING_MS: u64 = 45_000;
 const CASE_INTRO_MS: u64 = 40_000;
+/// Longest one intro clip runs (the guide: 1-8 seconds), with a beat of slack.
+const INTRO_CLIP_MS: u64 = 8_500;
+/// Longest a case's first block after its case opening runs (house rules: one to two minutes).
+const FIRST_BLOCK_MS: u64 = 150_000;
+/// Words an intro clip can say and still be filler.
+const FILLER: [&str; 20] = ["um", "uh", "that's", "that", "so", "okay", "ok", "yeah", "like", "the", "a", "and", "i", "oh", "hey", "well", "you", "know", "mm", "hmm"];
 
 /// What the team flagged in past compilations that a count can find
 /// (formats.rs TEAM_COMPILATION has the rules in their words), one line
@@ -622,18 +634,73 @@ pub(crate) fn team_flags(script: &Script, format: &Format, clips: &[Clip]) -> Ve
         .filter_map(|(clip, purpose)| {
             let text = clip.narration.as_deref()?.trim();
             let first = text.split(|c: char| !c.is_alphanumeric()).next()?.to_lowercase();
-            MID.contains(&first.as_str()).then(|| format!("a {} opening \"{}\"", purpose.replace('-', " "), text.chars().take(50).collect::<String>()))
+            // "That case was already disturbing, but the next one…" is Repack's own transition: it names what it means.
+            let names_it = text.split_whitespace().nth(1).is_some_and(|second| second.trim_matches(|c: char| !c.is_alphanumeric()).eq_ignore_ascii_case("case"));
+            (MID.contains(&first.as_str()) && !names_it).then(|| format!("a {} opening \"{}\"", purpose.replace('-', " "), text.chars().take(50).collect::<String>()))
         })
         .collect();
     if !mid.is_empty() {
         flags.push(format!("{} starts mid-thought ({}). The team: \"It seems like we start in the middle of something.\" Open it so it stands on its own: who, what, where.", if mid.len() == 1 { "A cut-in".to_string() } else { format!("{} cut-ins", mid.len()) }, mid.join("; ")));
     }
+    // Writer's house rules (guides/house.md): intro clips are short, strong and play again in the body.
+    let reused = |clip: &Clip| script.parts.get(part_at(&script.parts, clip.start_ms)).is_some_and(|part| part.reuse.is_some());
+    let intros: Vec<&Clip> = clips.iter().zip(&roles).filter(|(clip, role)| !clip.is_cut_in() && **role != Role::Body).map(|(clip, _)| clip).collect();
+    let long: Vec<String> = intros.iter().filter(|clip| clip.end_ms.saturating_sub(clip.start_ms) > INTRO_CLIP_MS).map(|clip| range(clip)).collect();
+    if !long.is_empty() {
+        flags.push(format!("Intro clips over 8 s: {}. Each intro clip is one strong moment of 1 to 8 seconds.", long.join(", ")));
+    }
+    let filler: Vec<String> = intros
+        .iter()
+        .filter(|clip| {
+            let said: Vec<String> = script.words.iter().filter(|word| word.start_ms >= clip.start_ms && word.end_ms <= clip.end_ms).map(|word| word.text.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric() && c != '\'').to_string()).filter(|word| !word.is_empty()).collect();
+            said.iter().filter(|word| !FILLER.contains(&word.as_str())).count() < 2
+        })
+        .map(|clip| range(clip))
+        .collect();
+    if !filler.is_empty() {
+        flags.push(format!("Intro clips with no line in them: {}. An intro clip says something that lands, never a stammer or a stretch with no words.", filler.join(", ")));
+    }
+    let body: Vec<&Clip> = clips.iter().zip(&roles).filter(|(clip, role)| !clip.is_cut_in() && **role == Role::Body).map(|(clip, _)| clip).collect();
+    let unplayed: Vec<String> = intros.iter().filter(|clip| !reused(clip) && replayed_ms(clip, &body) * 2 < clip.end_ms.saturating_sub(clip.start_ms)).map(|clip| range(clip)).collect();
+    if !unplayed.is_empty() {
+        flags.push(format!("Intro clips that never play in the body: {}. Every intro clip is a promise: its moment plays again in that case's body, where it happens.", unplayed.join(", ")));
+    }
+    let mut first_blocks = Vec::new();
+    let mut cue = 0;
+    let mut after_opening = false;
+    let mut run: u64 = 0;
+    let mut from: Option<&Clip> = None;
+    for clip in clips {
+        if clip.is_cut_in() {
+            if after_opening && run > FIRST_BLOCK_MS {
+                first_blocks.push(format!("{} from {}", clock(run), from.map(range).unwrap_or_default()));
+            }
+            after_opening = purposes.get(cue).copied() == Some("case-opening");
+            run = 0;
+            from = None;
+            cue += 1;
+        } else if after_opening {
+            from.get_or_insert(clip);
+            run += clip.end_ms.saturating_sub(clip.start_ms);
+        }
+    }
+    if !first_blocks.is_empty() {
+        flags.push(format!("A case's first block runs long ({}). After the case opening, the first block runs one to two minutes, then a cut-in.", first_blocks.join("; ")));
+    }
+    let empty: Vec<String> = clips.iter().filter(|clip| !clip.is_cut_in() && clip.end_ms.saturating_sub(clip.start_ms) < 500).map(|clip| range(clip)).collect();
+    if !empty.is_empty() {
+        flags.push(format!("Clips under half a second: {}. Take them out.", empty.join(", ")));
+    }
+    flags.extend(crate::house::text_flags(script, clips, &purposes, true));
     flags
 }
 
 /// What the team would flag on a footage script as it's saved, shown before sharing.
 pub fn audit(script: &Script) -> Vec<String> {
     let format = Format::new(script.kind, script.compilation, &script.title);
+    if format.foia() && !format.compilation {
+        return crate::house::text_flags(script, &script.clips, &purposes(&script.clips, &format, Opening::OneRun), false);
+    }
     team_flags(script, &format, &script.clips)
 }
 
@@ -1371,7 +1438,9 @@ mod tests {
         ];
         let format = crate::formats::Format::new(script.kind, true, &script.title);
         let flags = super::team_flags(&script, &format, &clips);
-        assert_eq!(flags.len(), 3, "{flags:?}");
+        // The team's three, then the house rules' footage checks on the same clips.
+        assert_eq!(flags.len(), 5, "{flags:?}");
+        assert!(flags[3].starts_with("Intro clips with no line in them") && flags[4].starts_with("Intro clips that never play in the body"));
         assert!(flags[0].contains("(0:00-0:03) (2.2 s)") && flags[0].contains("Dead space"));
         assert!(flags[1].contains("(0:10-0:15) after (0:26-0:30)"));
         assert!(flags[2].contains("a transition opening \"So this one"));

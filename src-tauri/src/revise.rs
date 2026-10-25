@@ -567,6 +567,29 @@ pub fn settle(clips: &[Clip], proposals: Vec<Proposal>) -> Vec<Proposal> {
         .collect()
 }
 
+/// A compilation's edits keep it inside its 6 to 7 pages (proposals counted
+/// as accepted), unless it was already outside them: tightening every
+/// cut-in to the house rules can lose a page without anyone counting.
+fn keeps_length(script: &Script, format: &Format, done: (Vec<Clip>, BTreeMap<String, String>, Vec<Proposal>)) -> Result<(Vec<Clip>, BTreeMap<String, String>, Vec<Proposal>), String> {
+    if !format.compilation {
+        return Ok(done);
+    }
+    let (least, most) = crate::pages::COMPILATION_PAGES;
+    let before = crate::pages::count(script, &script.clips);
+    let mut accepted = done.0.clone();
+    for proposal in &done.2 {
+        if let Some(clip) = accepted.iter_mut().find(|clip| clip.id == proposal.cut_in) {
+            clip.narration = Some(proposal.after.clone());
+        }
+    }
+    let after = crate::pages::count(script, &accepted);
+    if (least..=most).contains(&before) && !(least..=most).contains(&after) {
+        let change = if after < least { "Bring it back up with sourced context the viewer lacks or more of the strongest footage, never padding" } else { "Bring it back down: tighter footage ranges or a cut-in the story doesn't need" };
+        return Err(format!("With these edits the script would run {after} Letter pages; it ran {before}, and a compilation runs {least} to {most}. {change}, keeping every other change."));
+    }
+    Ok(done)
+}
+
 /// Opus carries out one request on a built script: one answer with its
 /// edits, then at most two repair turns on the same session for edits the
 /// app refused. Nothing changes until every edit applies.
@@ -602,7 +625,7 @@ pub fn revise(script: &Script, request: &str, focus: &Focus, chat: &str, researc
             }
             Some(plan) => {
                 let edits = plan["edits"].as_array().cloned().unwrap_or_default();
-                match apply(script, &edits, peaks, direct) {
+                match apply(script, &edits, peaks, direct).and_then(|done| keeps_length(script, &format, done)) {
                     Ok((clips, corrections, proposals)) => {
                         let answer = plan["answer"].as_str().unwrap_or("").trim().chars().take(4_000).collect::<String>();
                         return Ok(Revised { clips, corrections, proposals, answer: if answer.is_empty() { "Done.".into() } else { answer }, cost_usd: cost, start_over: false });

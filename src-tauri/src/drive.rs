@@ -406,3 +406,47 @@ mod live_tests {
         let _ = std::fs::remove_file(&dest);
     }
 }
+
+/// Debug builds only: a Doc's comments (with replies, the words they're on,
+/// resolved or not) and its suggested edits, read with Repack's Drive account.
+#[cfg(debug_assertions)]
+pub fn doc_review(settings: &Settings, doc: &str) -> Result<Value, String> {
+    if doc.is_empty() || !doc.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("That isn't a Doc id.".into());
+    }
+    let token = access_token(settings)?;
+    let mut comments = Vec::new();
+    let mut page = String::new();
+    loop {
+        let url = format!("{API}/files/{doc}/comments?pageSize=100&includeDeleted=false&fields=nextPageToken,comments(id,author/displayName,content,quotedFileContent/value,resolved,createdTime,modifiedTime,replies(author/displayName,content,action,createdTime)){page}");
+        let found = get_json(&token, &url)?;
+        comments.extend(found["comments"].as_array().cloned().unwrap_or_default());
+        match found["nextPageToken"].as_str() {
+            Some(next) => page = format!("&pageToken={next}"),
+            None => break,
+        }
+    }
+    let name = get_json(&token, &format!("{API}/files/{doc}?fields=name,modifiedTime"))?;
+    // Suggested edits live only in the Docs API's document, each run marked with the suggestion it belongs to.
+    let body = get_json(&token, &format!("https://docs.googleapis.com/v1/documents/{doc}?suggestionsViewMode=SUGGESTIONS_INLINE&includeTabsContent=true")).unwrap_or(Value::Null);
+    let mut suggestions: Vec<Value> = Vec::new();
+    let mut walk: Vec<&Value> = vec![&body];
+    while let Some(node) = walk.pop() {
+        match node {
+            Value::Object(map) => {
+                if let Some(run) = map.get("textRun") {
+                    let text = run["content"].as_str().unwrap_or("");
+                    for (kind, key) in [("insert", "suggestedInsertionIds"), ("delete", "suggestedDeletionIds")] {
+                        for id in run[key].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                            suggestions.push(serde_json::json!({ "id": id, "kind": kind, "text": text }));
+                        }
+                    }
+                }
+                walk.extend(map.values());
+            }
+            Value::Array(items) => walk.extend(items.iter().rev()),
+            _ => {}
+        }
+    }
+    Ok(serde_json::json!({ "name": name["name"], "modified": name["modifiedTime"], "comments": comments, "suggestions": suggestions, "docsApi": !body.is_null() }))
+}

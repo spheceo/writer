@@ -464,8 +464,13 @@ pub fn remove_range(clips: Vec<Clip>, start_ms: u64, end_ms: u64) -> Vec<Clip> {
         .collect()
 }
 
+/// The longest spill of a clip into the next recording that is left out.
+const SPILL_MS: u64 = 1_000;
+
 /// Splits a footage clip running across two recordings, so each clip is cut
-/// from one. A piece under 100 ms is left out.
+/// from one. A piece under 100 ms is left out, and so is a spill under a
+/// second beside a longer piece: an edge padded past a recording's end is
+/// not a moment of the next one (it showed as "[0:00–0:00]").
 pub fn fit_to_parts(clips: Vec<Clip>, parts: &[Part]) -> Vec<Clip> {
     if parts.len() < 2 {
         return clips;
@@ -485,6 +490,16 @@ pub fn fit_to_parts(clips: Vec<Clip>, parts: &[Part]) -> Vec<Clip> {
                 }
                 let (id, notes) = if pieces.is_empty() { (clip.id.clone(), clip.notes.clone()) } else { (uuid::Uuid::new_v4().to_string(), Vec::new()) };
                 pieces.push(Clip { id, start_ms, end_ms, notes, ..clip.clone() });
+            }
+            if pieces.len() > 1 {
+                let longest = pieces.iter().map(|piece| piece.end_ms - piece.start_ms).max().unwrap_or(0);
+                let notes = pieces[0].notes.clone();
+                let id = pieces[0].id.clone();
+                pieces.retain(|piece| piece.end_ms - piece.start_ms >= SPILL_MS || piece.end_ms - piece.start_ms == longest);
+                if let Some(first) = pieces.first_mut() {
+                    first.id = id;
+                    first.notes = notes;
+                }
             }
             pieces
         })
