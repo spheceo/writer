@@ -759,6 +759,9 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
             .map(|reuse| {
                 let place = if reuse.after == 0 { "before Video 1".to_string() } else { format!("after Video {}", reuse.after) };
                 let mut line = format!("- {place}: \"{}\" ({})", if reuse.title.is_empty() { "Reused case" } else { reuse.title.as_str() }, reuse.url);
+                if let Some(earlier) = reuse.script_title.as_deref() {
+                    line.push_str(&format!(", a case of the channel's earlier compilation \"{earlier}\""));
+                }
                 // A reused case given as its earlier script's Doc: write its transition from what that script says.
                 if let Some(narration) = reuse.narration.as_deref().filter(|text| !text.trim().is_empty()) {
                     line.push_str(&format!(
@@ -1488,7 +1491,7 @@ mod tests {
         let mut many = script();
         many.compilation = true;
         many.title = "Cops Who Got It Wrong".into();
-        many.reuses = vec![crate::model::Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1, footage: None, narration: None }];
+        many.reuses = vec![crate::model::Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1, ..Default::default() }];
         let plan = |link: &str| json!({ "items": [
             { "kind": "clip", "firstWordId": "w0", "lastWordId": "w3" },
             { "kind": "cut-in", "narration": "Intro." },
@@ -1514,7 +1517,7 @@ mod tests {
         many.title = "When Liars Get Caught".into();
         many.source_kind = "compilation".into();
         let old = "https://youtu.be/old".to_string();
-        many.reuses = vec![crate::model::Reuse { url: old.clone(), title: "An earlier case".into(), after: 1, footage: None, narration: None }];
+        many.reuses = vec![crate::model::Reuse { url: old.clone(), title: "An earlier case".into(), after: 1, ..Default::default() }];
         many.parts = vec![
             crate::model::Part { title: "One".into(), start_ms: 0, duration_ms: 4_000, ..Default::default() },
             crate::model::Part { title: "Two".into(), start_ms: 4_000, duration_ms: 3_000, ..Default::default() },

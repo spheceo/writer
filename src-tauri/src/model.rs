@@ -72,7 +72,7 @@ pub struct Creator {
 
 /// A reused case in a compilation: its link, its title, and how many of the
 /// compilation's own videos come before it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reuse {
     pub url: String,
@@ -87,6 +87,16 @@ pub struct Reuse {
     /// from. It is never rewritten here: the editor lifts the segment whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narration: Option<String>,
+    /// Where the channel's earlier script of this case is, as the card says:
+    /// the earlier compilation's Trello card (or its Doc) and the case's
+    /// number there ("https://trello.com/c/U0FrQAUk case 4").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earlier: Option<String>,
+    /// That earlier script's Doc, once found, and what it was called.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_title: Option<String>,
 }
 
 /// A rewrite of narration the producer had already saved, waiting for them

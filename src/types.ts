@@ -101,7 +101,8 @@ export type Script = {
   corrections?: Record<string, string>;
   /** A compilation's reused cases: each takes only its transition, carrying its link. */
   /** A reused case given as its earlier script's Doc carries the footage it lists and its narration. */
-  reuses?: { url: string; title: string; after: number; footage?: string; narration?: string }[];
+  /** `earlier`: the earlier compilation's card (or Doc) and case, as the card gave them; `script`: that compilation's Doc, once read. */
+  reuses?: { url: string; title: string; after: number; footage?: string; narration?: string; earlier?: string; script?: string; scriptTitle?: string }[];
   /** Rewrites of saved narration waiting for the producer to accept or decline. */
   proposals?: Proposal[];
   /** The last full export to Google Docs. */
@@ -444,7 +445,7 @@ export type TrelloCard = {
 };
 export type TrelloList = "raw" | "comp";
 export type TrelloCards = { list: string; cards: TrelloCard[] };
-export type VideoCheck = { url: string; reuse: boolean; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };
+export type VideoCheck = { url: string; reuse: boolean; earlier?: string; earlierFound?: string; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };
 
 /** A script's review link on Repack (reviews.rs), once shared. */
 export type ReviewLink = { reviewId: string; token: string; url: string; version: number; revision: number; sharedAt: number };

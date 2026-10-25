@@ -96,7 +96,7 @@ pub fn card(settings: &Settings, link: &str, titles: &[String]) -> Result<Card, 
         kind: if videos >= 2 { "compilation" } else { "video" },
         footage: None,
         article: None,
-        lines: links.iter().map(|link| if link.reuse { format!("REUSE {}", link.url) } else { link.url.clone() }).collect(),
+        lines: links.iter().map(Link::line).collect(),
         videos,
         reuses: links.len() - videos,
         problem: None,
@@ -144,7 +144,7 @@ fn parse(card: &Value, compilation: bool, titles: &[String]) -> Option<Card> {
         let links = compilation_links(desc);
         found.videos = links.iter().filter(|link| !link.reuse).count();
         found.reuses = links.len() - found.videos;
-        found.lines = links.iter().map(|link| if link.reuse { format!("REUSE {}", link.url) } else { link.url.clone() }).collect();
+        found.lines = links.iter().map(Link::line).collect();
         found.problem = (found.videos < 2).then(|| {
             if found.videos == 0 { "No video links in the description.".into() } else { "Only one video to import; a compilation needs two.".into() }
         });
@@ -161,6 +161,20 @@ fn parse(card: &Value, compilation: bool, titles: &[String]) -> Option<Card> {
 pub struct Link {
     pub url: String,
     pub reuse: bool,
+    /// A reused case's earlier script, as the card points to it: the earlier
+    /// compilation's card (or Doc) and the case's number there.
+    pub earlier: Option<String>,
+}
+
+impl Link {
+    /// The line New script takes: "REUSE <video> <earlier card> case N".
+    pub fn line(&self) -> String {
+        match (self.reuse, &self.earlier) {
+            (true, Some(earlier)) => format!("REUSE {} {earlier}", self.url),
+            (true, None) => format!("REUSE {}", self.url),
+            (false, _) => self.url.clone(),
+        }
+    }
 }
 
 /// "case 1 - Reuse:", "Case 4:", "**CASE #2**", "- case no. 3".
@@ -197,7 +211,8 @@ pub fn compilation_links(description: &str) -> Vec<Link> {
         if case_line(line) {
             in_case = true;
         } else if heading_line(line) {
-            in_case = false;
+            // "Reused:" heads more of the cases.
+            in_case = in_case && says_reuse(line);
         }
         if in_case {
             cases.push(line);
@@ -208,45 +223,103 @@ pub fn compilation_links(description: &str) -> Vec<Link> {
 }
 
 /// The video and script links in some text, in order. A link is a reuse when
-/// its line says so ("REUSE https://…") or the line above it holds that word
-/// and no link, as Repack reads them; a Google Doc is always one, a script
-/// the channel already made.
+/// its line says so ("REUSE https://…"), the line above it holds that word
+/// and no link, as Repack reads them, or it's under a heading that does
+/// ("Reused:"); a Google Doc is always one, a script the channel already
+/// made. A reused video followed by another Trello card and "case N" (or a
+/// Doc) is a case of that earlier compilation: where its script is.
 pub fn links_in(text: &str) -> Vec<Link> {
     let mut found: Vec<Link> = Vec::new();
     let mut marked = false;
+    // Under a heading that says reuse, until the next heading.
+    let mut section = false;
+    // The last link found can still take the earlier card on a line after it.
+    let mut open = false;
     for line in text.lines() {
-        let urls = urls(line);
+        let urls: Vec<String> = urls(line).iter().map(|raw| unwrap_redirect(raw)).collect();
         let mut words = line.to_string();
         for url in &urls {
             words = words.replace(url.as_str(), " ");
         }
         let says = says_reuse(&words);
+        let wordy = words.chars().any(char::is_alphanumeric);
         if urls.is_empty() {
+            // "Reused:" heads a section; "case 2 - Reuse:" only its own case.
+            if case_line(line) {
+                section = false;
+            } else if heading_line(line) {
+                section = says;
+            }
             // Blank lines between the word and its link change nothing.
             if says {
                 marked = true;
-            } else if words.chars().any(char::is_alphanumeric) {
+            } else if wordy {
                 marked = false;
+                open = false;
             }
             continue;
         }
-        for raw in urls {
-            let url = unwrap_redirect(&raw);
-            let doc = url.contains("docs.google.com/document/d/");
-            let usable = doc
-                || crate::youtube::check_url(&url).is_ok()
-                || matches!(crate::drive::parse(&url), Ok(crate::drive::Link::File(_)));
-            if !usable {
-                continue;
+        let videos: Vec<&String> = urls
+            .iter()
+            .filter(|url| crate::youtube::check_url(url).is_ok() || matches!(crate::drive::parse(url), Ok(crate::drive::Link::File(_))))
+            .collect();
+        let marked_here = says || marked || section;
+        // A Doc beside a reused video is that case's earlier script; any other Doc is a reused case of its own.
+        let (beside, docs): (Vec<&String>, Vec<&String>) = urls.iter().filter(|url| crate::reuse::is_doc(url)).partition(|_| marked_here && !videos.is_empty());
+        // The earlier compilation this case was in: its card or Doc, and the case's number there.
+        let earlier = urls
+            .iter()
+            .find_map(|url| card_id(url).filter(|_| url.contains("trello.com/c/")).map(|id| format!("https://trello.com/c/{id}")))
+            .or_else(|| beside.first().map(|doc| doc.to_string()))
+            .map(|link| match case_number(&words) {
+                Some(case) => format!("{link} case {case}"),
+                None => link,
+            });
+        if videos.is_empty() && docs.is_empty() && beside.is_empty() {
+            // "https://trello.com/c/… (Case 4)" under the reused video it belongs to.
+            if let (true, Some(earlier), Some(last)) = (open, earlier, found.last_mut()) {
+                if last.earlier.is_none() && !crate::reuse::is_doc(&last.url) && (last.reuse || earlier.contains(" case ")) {
+                    last.reuse = true;
+                    last.earlier = Some(earlier);
+                }
             }
-            let reuse = doc || says || marked;
-            if !found.iter().any(|known| same_video(&known.url, &url) && known.reuse == reuse) {
-                found.push(Link { url, reuse });
+            open = false;
+            continue;
+        }
+        for doc in &docs {
+            if !found.iter().any(|known| same_video(&known.url, doc)) {
+                found.push(Link { url: doc.to_string(), reuse: true, earlier: None });
             }
+        }
+        if videos.is_empty() {
+            open = false;
+        } else {
+            for url in videos {
+                let reuse = marked_here || earlier.as_deref().is_some_and(|link| link.contains(" case "));
+                if !found.iter().any(|known| same_video(&known.url, url) && known.reuse == reuse) {
+                    found.push(Link { url: url.clone(), reuse, earlier: if reuse { earlier.clone() } else { None } });
+                }
+            }
+            open = found.last().is_some_and(|last| last.earlier.is_none());
         }
         marked = false;
     }
     found
+}
+
+/// "(Case 4)", "**case 2**", "case #3": the case's number in an earlier compilation.
+fn case_number(words: &str) -> Option<usize> {
+    let lower = words.to_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find("case") {
+        let after = rest[at + 4..].trim_start_matches(|c: char| c.is_whitespace() || c == '#' || c == '*' || c == '.' || c == ':' || c == 'n' || c == 'o');
+        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+        if (1..=2).contains(&digits.len()) {
+            return digits.parse().ok().filter(|case| *case > 0);
+        }
+        rest = &rest[at + 4..];
+    }
+    None
 }
 
 fn says_reuse(words: &str) -> bool {
@@ -257,7 +330,7 @@ fn says_reuse(words: &str) -> bool {
 }
 
 /// The links in a line, without the punctuation a sentence leaves after one.
-fn urls(line: &str) -> Vec<String> {
+pub fn urls(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = line;
     while let Some(at) = rest.find("http") {
@@ -277,7 +350,7 @@ fn urls(line: &str) -> Vec<String> {
 }
 
 /// Google's "https://www.google.com/url?q=…" redirect, taken off.
-fn unwrap_redirect(url: &str) -> String {
+pub fn unwrap_redirect(url: &str) -> String {
     if url.contains("google.com/url?") {
         if let Some(target) = url.split(['?', '&']).find_map(|pair| pair.strip_prefix("q=")) {
             return crate::research::percent_decode(target);
@@ -358,12 +431,40 @@ mod tests {
         assert_eq!(
             links,
             vec![
-                Link { url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(), reuse: false },
-                Link { url: "https://youtu.be/bbbbbbbbbbb?t=40".into(), reuse: true },
-                Link { url: "https://drive.google.com/file/d/1abcdefghijklmnop/view".into(), reuse: false },
-                Link { url: "https://docs.google.com/document/d/1docdocdocdocdocdoc/edit".into(), reuse: true },
+                Link { url: "https://www.youtube.com/watch?v=aaaaaaaaaaa".into(), reuse: false, earlier: None },
+                Link { url: "https://youtu.be/bbbbbbbbbbb?t=40".into(), reuse: true, earlier: None },
+                Link { url: "https://drive.google.com/file/d/1abcdefghijklmnop/view".into(), reuse: false, earlier: None },
+                Link { url: "https://docs.google.com/document/d/1docdocdocdocdocdoc/edit".into(), reuse: true, earlier: None },
             ]
         );
+    }
+
+    #[test]
+    fn a_reused_heading_covers_its_cases_and_their_earlier_cards() {
+        // Card 996, as Trello gives it: three reused cases, each with the earlier compilation it was in.
+        let desc = "Cases:\n\n\u{200c}\n\nOfficers Traumatized By What These Parents Did To Their Kids:\n\n\
+                    [Parents Keep 2y/o Trapped](https://www.youtube.com/watch?v=UxAuydwwtbQ \"\u{200c}\")\n\n\
+                    [Police Rescue Child](https://www.youtube.com/watch?v=uJlVqE3UWjY \"\u{200c}\")\n\n\u{200c}\n\nReused:\n\n\
+                    [Police RESCUE 5 Kids](https://www.youtube.com/watch?v=5cN67V8lkeE \"\u{200c}\")\n\n\
+                    [https://trello.com/c/U0FrQAUk](https://trello.com/c/U0FrQAUk \"smartCard-inline\")    (Case 4)\n\n\u{200c}\n\n\
+                    [DCF Steps In](https://www.youtube.com/watch?v=pWoE9YSIxMw \"\u{200c}\")\n\n\
+                    [https://trello.com/c/FsehmKPF](https://trello.com/c/FsehmKPF \"smartCard-inline\")    (Case 2)\n";
+        let lines: Vec<String> = compilation_links(desc).iter().map(Link::line).collect();
+        assert_eq!(
+            lines,
+            [
+                "https://www.youtube.com/watch?v=UxAuydwwtbQ",
+                "https://www.youtube.com/watch?v=uJlVqE3UWjY",
+                "REUSE https://www.youtube.com/watch?v=5cN67V8lkeE https://trello.com/c/U0FrQAUk case 4",
+                "REUSE https://www.youtube.com/watch?v=pWoE9YSIxMw https://trello.com/c/FsehmKPF case 2",
+            ]
+        );
+        // Card 938's way: the earlier card on the reused video's own line.
+        let desc = "Cases:\n\n1. [**A**](https://www.youtube.com/watch?v=J572aDTcZdE \"\u{200c}\")\n2. [**B**](https://www.youtube.com/watch?v=pWoE9YSIxMw \"\u{200c}\")\n\n**Reuse:**\n\n\
+                    1. [**C**](https://www.youtube.com/watch?v=U0MFeMW3R8s \"\u{200c}\") [https://trello.com/c/bAmtOq5N/615-when-good-cops](https://trello.com/c/bAmtOq5N/615-when-good-cops \"smartCard-inline\")  **case 2**";
+        let lines: Vec<String> = compilation_links(desc).iter().map(Link::line).collect();
+        assert_eq!(lines.last().map(String::as_str), Some("REUSE https://www.youtube.com/watch?v=U0MFeMW3R8s https://trello.com/c/bAmtOq5N case 2"));
+        assert_eq!(lines.len(), 3);
     }
 
     #[test]

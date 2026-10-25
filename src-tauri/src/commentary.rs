@@ -819,6 +819,13 @@ fn doc_text(html: &str) -> String {
                     out.push('\n');
                 }
             }
+            // A rule between a compilation's cases, as Google's own text export writes it.
+            "hr" => {
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push_str("________________\n");
+            }
             "li" if !closing => {
                 if !out.is_empty() && !out.ends_with('\n') {
                     out.push('\n');

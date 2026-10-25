@@ -914,7 +914,7 @@ function ImportDialog({
     }
   };
   // The checked list, as lines again: a row toggled to a reuse or removed changes the import.
-  const checkedLines = (rows: VideoCheck[]) => rows.map((row) => (row.reuse ? `REUSE ${row.url}` : row.url));
+  const checkedLines = (rows: VideoCheck[]) => rows.map((row) => (row.reuse ? ["REUSE", row.url, row.earlier].filter(Boolean).join(" ") : row.url));
   const imported = checked?.filter((row) => !row.reuse) ?? [];
   const totalMs = imported.reduce((sum, row) => sum + (row.durationMs ?? 0), 0);
   const blocked = !checked
@@ -1153,7 +1153,7 @@ function ImportDialog({
                           {isDoc(row.url)
                             ? (row.problem ?? `Reused script Doc: kept as written; it takes only its transition.${row.warning ? ` ${row.warning}` : ""}`)
                             : row.reuse
-                            ? "Reused case: not imported; it takes only its transition."
+                            ? `Reused case: not imported; it takes only its transition.${row.earlierFound ? ` ${row.earlierFound}` : ""}`
                             : (row.problem ?? row.warning ?? [row.durationMs ? clock(row.durationMs) : "", row.channel].filter(Boolean).join(" · "))}
                         </span>
                       </span>

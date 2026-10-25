@@ -85,6 +85,15 @@ export function at(link: string, ms: number) {
   }
 }
 
+/** A reused case's comment: its link, and where the channel's earlier script of it is, when the card said. */
+export function reuseNote(script: Pick<Script, "reuses">, url: string) {
+  const reuse = script.reuses?.find((item) => item.url === url);
+  if (!reuse?.script) return `Reuse: ${url}`;
+  const casePart = /\bcase (\d+)$/i.exec(reuse.earlier ?? "")?.[1];
+  const name = reuse.scriptTitle ? `“${reuse.scriptTitle}”` : "the earlier script";
+  return `Reuse: ${url}\nIts script: ${casePart ? `case ${casePart} of ` : ""}${name} ${reuse.script}`;
+}
+
 const isLink = (value: string | undefined): value is string => !!value && /^https?:\/\/\S+$/i.test(value);
 
 /**
@@ -187,7 +196,7 @@ export function footageContent(script: Script, copy = false): DocContent {
       // Running on, a cut-in with no footage before it still needs a space after what came before.
       if (inline && content.text && !/\s$/.test(content.text)) append(" ");
       const from = here();
-      if (block.cue.clip.reuse) note(from, from + narration.length, `Reuse: ${block.cue.clip.reuse}`);
+      if (block.cue.clip.reuse) note(from, from + narration.length, reuseNote(script, block.cue.clip.reuse));
       for (const [a, b] of blurSpans(narration)) note(from + a, from + b, BLUR_NOTE);
       for (const written of block.cue.clip.notes ?? []) {
         const anchor = written.anchor;

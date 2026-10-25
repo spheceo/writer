@@ -59,7 +59,20 @@ pub fn sticky_proxy(url: &str) -> String {
     out
 }
 
+/// Titles the New script check just read, by link, so the import that
+/// follows it doesn't ask YouTube again, one video at a time.
+static CHECKED: std::sync::Mutex<Option<std::collections::HashMap<String, (String, std::time::Instant)>>> = std::sync::Mutex::new(None);
+
+fn checked_title(url: &str) -> Option<String> {
+    let checked = CHECKED.lock().ok()?;
+    let (title, at) = checked.as_ref()?.get(url)?;
+    (at.elapsed() < Duration::from_secs(3_600)).then(|| title.clone())
+}
+
 pub fn title(url: &str, proxy_file: Option<&Path>) -> String {
+    if let Some(title) = checked_title(url) {
+        return title;
+    }
     let mut args = vec!["--no-playlist", "--skip-download", "--print", "%(title)s"];
     let config = proxy_file.map(|path| path.to_string_lossy().into_owned());
     if config.is_some() {
@@ -111,6 +124,13 @@ pub fn probe(url: &str) -> Probe {
         return Probe { problem: Some("YouTube didn't say what this video is.".into()), ..Default::default() };
     };
     let title: String = info["title"].as_str().unwrap_or("YouTube video").chars().take(180).collect();
+    if info["title"].is_string() {
+        if let Ok(mut checked) = CHECKED.lock() {
+            let checked = checked.get_or_insert_with(Default::default);
+            checked.retain(|_, (_, at)| at.elapsed() < Duration::from_secs(3_600));
+            checked.insert(url.to_string(), (title.clone(), std::time::Instant::now()));
+        }
+    }
     let channel = info["channel"].as_str().or(info["uploader"].as_str()).unwrap_or("").to_string();
     let duration_ms = info["duration"].as_f64().filter(|seconds| *seconds > 0.0).map(|seconds| (seconds * 1000.0) as u64);
     let live = info["live_status"].as_str().unwrap_or("");

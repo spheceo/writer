@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { blocks, clipRange, duration, generatedHeading, heading, isCutIn, keptMs } from "./clips";
-import { BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary } from "./doc-export";
+import { BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, reuseNote } from "./doc-export";
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import { wordDiff } from "./diff";
@@ -160,6 +160,12 @@ export function FootageDoc({
                   <a href={block.cue.clip.reuse} target="_blank" rel="noreferrer">
                     {block.cue.clip.reuse}
                   </a>
+                  {reuseNote(script, block.cue.clip.reuse).split("\n").slice(1).map((line) => (
+                    <span key={line}>
+                      <br />
+                      {line}
+                    </span>
+                  ))}
                 </span>
               </div>,
             ]

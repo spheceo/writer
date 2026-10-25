@@ -230,6 +230,13 @@ fn route(
             let draft = serde_json::from_value(value["draft"].clone()).map_err(|_| "Send the draft to use.".to_string())?;
             json_result(stream, crate::use_draft_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), draft))
         }
+        // Debug builds only: a Trello card as the relay sends it, before Writer parses it.
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "trello-card"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let id = crate::trello::card_id(value["link"].as_str().unwrap_or("")).ok_or("That isn't a Trello card link.")?;
+            json_result(stream, crate::net::Relay::new(&crate::settings::load(&data_dir(&app)?)).and_then(|relay| relay.trello_card(&id)))
+        }
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
         #[cfg(debug_assertions)]

@@ -116,6 +116,7 @@ fn parse_doc(name: &str, text: &str) -> DocCase {
             || lower.starts_with("total length")
             || assets.is_some_and(|at| index > at && !linked(line).is_empty() && line.chars().count() < 120)
             || lower.starts_with("note to editor")
+            || rule(line)
             || comment_mark(line).is_some();
         if skip {
             continue;
@@ -135,6 +136,119 @@ fn parse_doc(name: &str, text: &str) -> DocCase {
         narration.push_str(&plain);
     }
     DocCase { title, footage, narration }
+}
+
+/// "https://trello.com/c/U0FrQAUk case 4" (or a Doc's link): where a reused
+/// case's earlier script is, and its case's number there.
+pub fn earlier_link(text: &str) -> Option<(String, Option<usize>)> {
+    let mut words = text.split_whitespace();
+    let link = words.next()?;
+    let link = if is_doc(link) {
+        link.to_string()
+    } else {
+        format!("https://trello.com/c/{}", crate::trello::card_id(link).filter(|_| link.contains("trello.com/c/"))?)
+    };
+    let rest: Vec<&str> = words.collect();
+    let case = match rest.as_slice() {
+        [] => None,
+        [word, number] if word.eq_ignore_ascii_case("case") => Some(number.trim_start_matches('#').parse::<usize>().ok().filter(|case| (1..=40).contains(case))?),
+        _ => return None,
+    };
+    Some((link, case))
+}
+
+/// A reused case's part of the channel's earlier script: the Doc it's in,
+/// what that Doc is called, and the case's narration, as written.
+pub struct Earlier {
+    pub doc: String,
+    pub title: String,
+    pub narration: String,
+}
+
+/// Follows a reused case's earlier card to the script Doc on it, and reads
+/// the case's own part of that Doc (or all of it, given no case number).
+/// The case is the one its number names, unless the Doc's timestamps say
+/// otherwise: a case whose clips link to `video` is that video's case.
+pub fn read_earlier(earlier: &str, video: &str, settings: &settings::Settings) -> Result<Earlier, String> {
+    let (link, case) = earlier_link(earlier).ok_or("That isn't a Trello card or Doc link with a case number.")?;
+    let doc = if is_doc(&link) { link } else { script_on_card(&link, settings)? };
+    let (name, text) = crate::commentary::fetch(&doc, settings).map_err(|error| format!("The earlier script couldn't be read: {error}"))?;
+    let title = name.trim().trim_start_matches("(DRAFT)").trim().to_string();
+    let cases = case_sections(&text);
+    let narration = match pick_case(&cases, case, video) {
+        // parse_doc passes over its first line, the Doc's name.
+        Some(section) => parse_doc(&name, &format!("{name}\n{section}")).narration,
+        None if cases.len() < 2 => parse_doc(&name, &text).narration,
+        None => match case {
+            Some(case) => return Err(format!("“{title}” has {} cases; case {case} isn't one of them.", cases.len())),
+            None => return Err(format!("No case in “{title}” is this video's; add its case number after the card link.")),
+        },
+    };
+    if narration.trim().is_empty() {
+        return Err(format!("Case {} of “{title}” holds no script.", case.unwrap_or(1)));
+    }
+    Ok(Earlier { doc, title, narration })
+}
+
+/// The script Doc on an earlier compilation's card: attached, linked in its
+/// description, or left in a comment.
+fn script_on_card(link: &str, settings: &settings::Settings) -> Result<String, String> {
+    let id = crate::trello::card_id(link).ok_or("That isn't a Trello card link.")?;
+    let card = crate::net::Relay::new(settings)?.trello_card(&id)?;
+    let listed = |field: &str| card[field].as_array().cloned().unwrap_or_default().into_iter().filter_map(|item| item.as_str().map(str::to_string)).collect::<Vec<_>>();
+    let all: Vec<String> = [listed("attachments"), vec![card["desc"].as_str().unwrap_or("").to_string()], listed("comments"), listed("checklists")].concat();
+    let name = card["name"].as_str().unwrap_or("The earlier card").trim().to_string();
+    all.iter()
+        .flat_map(|text| text.lines().flat_map(crate::trello::urls).collect::<Vec<_>>())
+        .map(|url| crate::trello::unwrap_redirect(&url))
+        .find(|url| is_doc(url))
+        .ok_or_else(|| format!("“{name}” has no script Doc on it."))
+}
+
+/// The case of `video` among an earlier compilation's: the one whose clips
+/// link to it, else the one its number names.
+fn pick_case<'a>(cases: &'a [String], case: Option<usize>, video: &str) -> Option<&'a String> {
+    let id = crate::handoff::youtube_id(video);
+    let links_to = |section: &String| id.as_deref().is_some_and(|id| section.contains(&format!("youtu.be/{id}")) || section.contains(&format!("v={id}")));
+    let numbered = case.and_then(|case| cases.get(case.checked_sub(1)?));
+    match numbered {
+        Some(section) if links_to(section) => Some(section),
+        _ => cases.iter().find(|section| links_to(section)).or(numbered),
+    }
+}
+
+/// A line Google draws between a compilation's cases.
+fn rule(line: &str) -> bool {
+    line.chars().count() >= 5 && line.chars().all(|c| c == '_')
+}
+
+/// An earlier compilation's cases, in order, each its own text. The Doc's
+/// opening (teasers, the hook, "These were the moments…") comes first and
+/// is no case. Cases are what lies between the Doc's rules, or, with none,
+/// each paragraph after the opening's "These were…" line, a case a
+/// paragraph, as the channel writes them. A reused case's transition alone
+/// is a case too, so the numbers stay the Doc's.
+pub fn case_sections(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|line| !line.is_empty()).filter(|line| comment_mark(line).is_none()).collect();
+    if lines.iter().any(|line| rule(line)) {
+        let mut chunks: Vec<Vec<&str>> = vec![Vec::new()];
+        for line in &lines {
+            if rule(line) {
+                chunks.push(Vec::new());
+            } else if let Some(chunk) = chunks.last_mut() {
+                chunk.push(line);
+            }
+        }
+        return chunks.into_iter().skip(1).filter(|chunk| !chunk.is_empty()).map(|chunk| chunk.join("\n")).collect();
+    }
+    let opening = lines.iter().position(|line| {
+        let lower = line.to_lowercase();
+        ["these were", "these are", "here are", "here were"].iter().any(|start| lower.starts_with(start))
+    });
+    match opening {
+        Some(at) => lines[at + 1..].iter().map(|line| line.to_string()).collect(),
+        None => Vec::new(),
+    }
 }
 
 /// Where a Google Doc's export puts a comment: "[a]" to "[zz]", at its words
@@ -487,6 +601,50 @@ fn placed(script: &Script, lines: &[Vec<usize>], moment: &Value) -> Option<Highl
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_earlier_compilation_splits_into_its_cases() {
+        // Card 402's Doc: no rules, a case a paragraph after "These were…".
+        let text = "When HERO Cops Save Kids\n(2:55-3:00[a]) Parenthood requires care.\nThese were the moments when hero cops saved kids.\n\
+                    Starting off with a shocking case…(0:34-0:40[h]) On December 26, 2022, officers responded.\n\
+                    Moving on to another case…(2:47-2:51[u]) On May 12, 2025, officers were called.\n\
+                    If you thought Austin showed poor parenting… On October 29, 2024, officers responded.\n\
+                    Moving on to another case of unfit parenting… On February 28, 2020, Bunnell, Florida, deputies.\n\
+                    From one intense situation to another…[bf]\n[a]ummm, he isn't injured\n[bf]reuse case 0:00 https://youtu.be/Y6A531KEfhM";
+        let cases = case_sections(text);
+        assert_eq!(cases.len(), 5);
+        assert!(cases[3].contains("February 28, 2020"));
+        // Card 938's Doc: cases between rules, many paragraphs each.
+        let text = "When Evil Parents\n(9:47-9:52[a]) Some parents hide.\nThese were the moments…\n________________\n\
+                    We begin with the case…\n(6:50-6:58[f])\nOn June 18, 2021, officers.\n________________\n\
+                    Next, a mother's quick trip…\n(4:53-4:56[u])\nOn March 28, 2023, officers.\nIn the end, the mother was arrested.\n________________\n\
+                    Next, a father who kept stalling… (Reuse[bn])\n________________\n[a]clip words";
+        let cases = case_sections(text);
+        assert_eq!(cases.len(), 3);
+        assert!(cases[1].starts_with("Next, a mother's quick trip") && cases[1].ends_with("the mother was arrested."));
+        let narration = parse_doc("When Evil Parents", &format!("When Evil Parents\n{}", cases[1])).narration;
+        assert!(narration.contains("On March 28, 2023") && !narration.contains("4:53"));
+    }
+
+    #[test]
+    fn a_case_is_found_by_its_video() {
+        let cases = vec!["One (0:10 <https://youtu.be/aaaaaaaaaaa?t=10>)".to_string(), "Two (0:20 <https://youtu.be/bbbbbbbbbbb?t=20>)".to_string(), "Three, no links".to_string()];
+        assert_eq!(pick_case(&cases, Some(2), "https://www.youtube.com/watch?v=bbbbbbbbbbb").map(String::as_str), Some(cases[1].as_str()));
+        // A wrong number, put right by the clips' links.
+        assert_eq!(pick_case(&cases, Some(1), "https://www.youtube.com/watch?v=bbbbbbbbbbb").map(String::as_str), Some(cases[1].as_str()));
+        assert_eq!(pick_case(&cases, None, "https://youtu.be/aaaaaaaaaaa").map(String::as_str), Some(cases[0].as_str()));
+        assert_eq!(pick_case(&cases, Some(3), "https://youtu.be/ccccccccccc").map(String::as_str), Some(cases[2].as_str()));
+        assert_eq!(pick_case(&cases, None, "https://youtu.be/ccccccccccc"), None);
+    }
+
+    #[test]
+    fn reads_an_earlier_link() {
+        assert_eq!(earlier_link("https://trello.com/c/U0FrQAUk case 4"), Some(("https://trello.com/c/U0FrQAUk".into(), Some(4))));
+        assert_eq!(earlier_link("https://trello.com/c/U0FrQAUk/402-when-hero-cops"), Some(("https://trello.com/c/U0FrQAUk".into(), None)));
+        assert_eq!(earlier_link("https://docs.google.com/document/d/1abc/edit case 2").map(|(_, case)| case), Some(Some(2)));
+        assert_eq!(earlier_link("https://example.com case 2"), None);
+        assert_eq!(earlier_link("https://trello.com/c/U0FrQAUk case four"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -512,7 +670,7 @@ mod tests {
         }))
         .unwrap();
         script.compilation = true;
-        script.reuses = vec![Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1, footage: None, narration: None }];
+        script.reuses = vec![Reuse { url: "https://youtu.be/old".into(), title: "An earlier case".into(), after: 1, ..Default::default() }];
         let said = ["I", "did", "not", "do", "it.", "You", "did,", "we", "have", "video."];
         script.words = said
             .iter()

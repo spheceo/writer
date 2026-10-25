@@ -156,6 +156,7 @@ impl Documents {
                 url: document.url.clone(),
                 summary: document.summary.clone(),
                 facts: document.facts.clone(),
+                video: None,
             })
             .collect()
     }

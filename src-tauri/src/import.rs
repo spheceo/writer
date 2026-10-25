@@ -138,6 +138,11 @@ fn lines_for(lines: &[String], case: bool) -> Result<(Vec<String>, Vec<crate::mo
             Some((mark, rest)) if mark.eq_ignore_ascii_case("reuse") || mark.eq_ignore_ascii_case("reuse:") => (true, rest.trim()),
             _ => (false, line),
         };
+        // "REUSE <video> <earlier card or Doc> case N": where the case's earlier script is.
+        let (url, earlier) = match url.split_once(char::is_whitespace) {
+            Some((video, rest)) if reuse && crate::reuse::earlier_link(rest).is_some() => (video, Some(rest.trim().to_string())),
+            _ => (url, None),
+        };
         // A Google Doc is the script of a case the channel already made: a reused case, always.
         let doc = crate::reuse::is_doc(url);
         if doc {
@@ -152,7 +157,7 @@ fn lines_for(lines: &[String], case: bool) -> Result<(Vec<String>, Vec<crate::mo
             youtube::check_url(url)?;
         }
         if reuse || doc {
-            reuses.push(crate::model::Reuse { url: url.to_string(), title: String::new(), after: urls.len(), footage: None, narration: None });
+            reuses.push(crate::model::Reuse { url: url.to_string(), title: String::new(), after: urls.len(), earlier, ..Default::default() });
         } else {
             urls.push(url.to_string());
         }
@@ -180,22 +185,28 @@ fn lines_for(lines: &[String], case: bool) -> Result<(Vec<String>, Vec<crate::mo
 pub struct VideoCheck {
     pub url: String,
     pub reuse: bool,
+    /// A reused case's earlier card and case ("https://trello.com/c/… case 4"), as given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earlier: Option<String>,
+    /// What was found there: "Case 4 of “When HERO Cops…”", or why nothing was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub earlier_found: Option<String>,
     #[serde(flatten)]
     pub probe: youtube::Probe,
 }
 
 pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, String> {
     let (urls, reuses) = compilation_lines(lines)?;
-    let mut wanted: Vec<(String, bool)> = Vec::new();
+    let mut wanted: Vec<(String, bool, Option<String>)> = Vec::new();
     let mut reuse = reuses.iter().peekable();
     for (index, url) in urls.iter().enumerate() {
         while let Some(found) = reuse.next_if(|item| item.after == index) {
-            wanted.push((found.url.clone(), true));
+            wanted.push((found.url.clone(), true, found.earlier.clone()));
         }
-        wanted.push((url.clone(), false));
+        wanted.push((url.clone(), false, None));
     }
-    wanted.extend(reuse.map(|item| (item.url.clone(), true)));
-    if wanted.iter().any(|(url, _)| !url.contains("drive.google.com") && !crate::reuse::is_doc(url)) {
+    wanted.extend(reuse.map(|item| (item.url.clone(), true, item.earlier.clone())));
+    if wanted.iter().any(|(url, _, _)| !url.contains("drive.google.com") && !crate::reuse::is_doc(url)) {
         ensure_yt_dlp()?;
     }
     let settings = settings::load(data);
@@ -204,7 +215,7 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
         for lane in 0..4 {
             let (wanted, checks, settings) = (&wanted, &checks, &settings);
             scope.spawn(move || {
-                for (index, (url, reuse)) in wanted.iter().enumerate().skip(lane).step_by(4) {
+                for (index, (url, reuse, earlier)) in wanted.iter().enumerate().skip(lane).step_by(4) {
                     let probe = if crate::reuse::is_doc(url) {
                         match crate::reuse::read_doc(url, settings) {
                             Ok(doc) => Probe {
@@ -230,8 +241,18 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
                     } else {
                         youtube::probe(url)
                     };
+                    let earlier_found = earlier.as_deref().map(|earlier| match crate::reuse::read_earlier(earlier, url, settings) {
+                        Ok(found) => {
+                            let case = crate::reuse::earlier_link(earlier).and_then(|(_, case)| case);
+                            match case {
+                                Some(case) => format!("Its script is case {case} of “{}”, read for its transition.", found.title),
+                                None => format!("Its script is “{}”, read for its transition.", found.title),
+                            }
+                        }
+                        Err(error) => format!("Its earlier script wasn't found: {error}"),
+                    });
                     if let Ok(mut slot) = checks[index].lock() {
-                        *slot = Some(VideoCheck { url: url.clone(), reuse: *reuse, probe });
+                        *slot = Some(VideoCheck { url: url.clone(), reuse: *reuse, earlier: earlier.clone(), earlier_found, probe });
                     }
                 }
             });
@@ -1033,6 +1054,10 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
                         problem = Some("Couldn't be read as video or audio, so it was dropped.".into());
                     }
                 }
+                // Its piece of the preview, while the other recordings still come down; one recording alone is the footage itself.
+                if problem.is_none() && wanted.len() > 1 {
+                    encode_piece(dir, &dest, &format!("{} · {}", crate::log::named(&script_id, &script_title), recording.name));
+                }
                 pulled[step].store(recording.size, Ordering::Relaxed);
                 let done = finished.fetch_add(1, Ordering::Relaxed) + 1;
                 match &problem {
@@ -1088,8 +1113,43 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
     Ok(Fetched::Joined)
 }
 
+/// A recording's own 480p piece of the preview, encoded in its download's
+/// lane as soon as it lands (`encode_piece`), so the preview is copied
+/// together at the end instead of encoded after the last download.
+fn piece_path(dir: &Path, source: &Path) -> PathBuf {
+    dir.join("pieces").join(source.file_name().unwrap_or_default())
+}
+
+/// Encodes one recording's piece as `join_preview` would encode it in the
+/// whole, at the length it holds. A piece that fails is only logged: the
+/// preview is then encoded whole, as before.
+fn encode_piece(dir: &Path, source: &Path, label: &str) {
+    let Ok(found) = media::streams(source) else { return };
+    let held = media::playable_ms(source, found.duration_ms);
+    let piece = piece_path(dir, source);
+    if preview_fits(&piece, held) {
+        return;
+    }
+    let began = Instant::now();
+    let partial = piece.with_extension("partial.mp4");
+    let part = media::JoinPart { path: source, streams: media::Streams { duration_ms: held, ..found } };
+    let made = fs::create_dir_all(piece.parent().unwrap_or(dir))
+        .map_err(|error| error.to_string())
+        .and_then(|_| media::join(&[part], &partial, &|_| {}))
+        .and_then(|_| fs::rename(&partial, &piece).map_err(|error| error.to_string()));
+    match made {
+        Ok(()) => crate::log::info("import", format!("{label}: its preview piece ({}) encoded in {}", clock(held), crate::log::since_start(began))),
+        Err(error) => {
+            let _ = fs::remove_file(&partial);
+            crate::log::warn("import", format!("{label}: its preview piece couldn't be encoded, so the preview is encoded whole: {error}"));
+        }
+    }
+}
+
 /// Joins recordings, or a compilation's videos, into one preview, each at the
-/// length it actually holds, and records where each one sits.
+/// length it actually holds, and records where each one sits. Pieces encoded
+/// while the downloads ran are copied end to end; without them all, the
+/// preview is encoded whole.
 fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(String, PathBuf, Option<String>)], what: &str) -> Result<(), String> {
     let count = items.len();
     let mut parts = Vec::with_capacity(count);
@@ -1113,13 +1173,23 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
     let (id, title) = (script.id.clone(), script.title.clone());
     let proxy = store::proxy_path(dir);
     let began = Instant::now();
-    media::join(&join, &proxy, &|percent| {
-        emit_parts(app, &id, &title, "processing", 40 + (u32::from(percent) * 18 / 100) as u8, &detail);
-    })
-    .inspect(|_| crate::log::info("import", format!("{}: {count} {what} joined into the preview ({}) in {}", crate::log::named(&id, &title), clock(start_ms), crate::log::since_start(began))))
-    .inspect_err(|_| {
-        let _ = fs::remove_file(&proxy);
-    })?;
+    let on_percent = |percent: u8| emit_parts(app, &id, &title, "processing", 40 + (u32::from(percent) * 18 / 100) as u8, &detail);
+    let pieces: Vec<PathBuf> = items.iter().map(|(_, path, _)| piece_path(dir, path)).collect();
+    let copied = if count > 1 && pieces.iter().zip(&parts).all(|(piece, part)| preview_fits(piece, part.duration_ms)) {
+        let more: Vec<&Path> = pieces[1..].iter().map(PathBuf::as_path).collect();
+        media::append(&pieces[0], &more, &proxy, &on_percent)
+    } else {
+        media::join(&join, &proxy, &on_percent).map(|_| false)
+    };
+    copied
+        .inspect(|copied| {
+            let how = if *copied { ", copied from the pieces encoded as they came down" } else { "" };
+            crate::log::info("import", format!("{}: {count} {what} joined into the preview ({}) in {}{how}", crate::log::named(&id, &title), clock(start_ms), crate::log::since_start(began)))
+        })
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&proxy);
+        })?;
+    let _ = fs::remove_dir_all(dir.join("pieces"));
     script.parts = parts;
     script.original_path = proxy.to_string_lossy().into_owned();
     store::write(dir, script)
@@ -1287,6 +1357,20 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
                 youtube::title(&url, None)
             };
             script.reuses[index].title = title;
+            // The card named the earlier compilation it was a case of: its own part of that script, read once.
+            if let Some(earlier) = script.reuses[index].earlier.clone() {
+                match crate::reuse::read_earlier(&earlier, &url, settings) {
+                    Ok(found) => {
+                        let case = crate::reuse::earlier_link(&earlier).and_then(|(_, case)| case).map(|case| format!("case {case} of ")).unwrap_or_default();
+                        crate::log::info("import", format!("{}: reused case {url}'s script read from {case}“{}” ({} characters)", crate::log::named(&script.id, &script.title), found.title, found.narration.len()));
+                        let reuse = &mut script.reuses[index];
+                        reuse.script = Some(found.doc);
+                        reuse.script_title = Some(found.title);
+                        reuse.narration = Some(found.narration);
+                    }
+                    Err(error) => crate::log::warn("import", format!("{}: reused case {url}'s earlier script ({earlier}) couldn't be read: {error}", crate::log::named(&script.id, &script.title))),
+                }
+            }
         }
         store::write(dir, script)?;
     }
@@ -1332,6 +1416,10 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
                 }).and_then(|_| if readable(&dest) { Ok(dest.clone()) } else { Err("Couldn't be read as video, so it was dropped.".into()) });
                 if result.is_err() && !readable(&dest) && pulled(&dest) == 0 {
                     let _ = fs::remove_file(&dest);
+                }
+                // Its piece of the preview, while the other videos still come down.
+                if result.is_ok() {
+                    encode_piece(dir, &dest, &format!("{} · video {}", crate::log::named(&id, &title), index + 1));
                 }
                 if let Ok(mut slots) = results.lock() { slots[step] = Some(result); }
             });
