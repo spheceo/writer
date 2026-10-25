@@ -3,6 +3,13 @@ import { openPage } from "./api";
 import { clock } from "./clips";
 import { Icon } from "./ui";
 
+export function useChatDraft(id: string) {
+  const key = `writer.chat-draft.${id}`;
+  const [text, setText] = useState(() => localStorage.getItem(key) ?? "");
+  useEffect(() => { if (text) localStorage.setItem(key, text); else localStorage.removeItem(key); }, [key, text]);
+  return [text, setText] as const;
+}
+
 /** Time since a moment, ticking each second. */
 export function Elapsed({ since }: { since: number | null }) {
   const [now, setNow] = useState(Date.now());
@@ -17,15 +24,61 @@ export function Elapsed({ since }: { since: number | null }) {
 /** The conversation, following itself down as it grows. */
 export function ChatLog({ trigger, children }: { trigger: string; children: ReactNode }) {
   const log = useRef<HTMLDivElement>(null);
+  const pinned = useRef(true);
+  const [away, setAway] = useState(false);
   useEffect(() => {
     const node = log.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [trigger]);
+    if (!node) return;
+    const scroll = () => {
+      pinned.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
+      setAway(!pinned.current);
+    };
+    const follow = () => { if (pinned.current) node.scrollTop = node.scrollHeight; scroll(); };
+    const resize = new ResizeObserver(follow);
+    const observe = () => {
+      resize.disconnect();
+      resize.observe(node);
+      for (const child of node.children) resize.observe(child);
+      follow();
+    };
+    const mutation = new MutationObserver(observe);
+    mutation.observe(node, { childList: true, subtree: true, characterData: true });
+    observe();
+    node.addEventListener("scroll", scroll, { passive: true });
+    return () => { mutation.disconnect(); resize.disconnect(); node.removeEventListener("scroll", scroll); };
+  }, []);
+  useEffect(() => { if (pinned.current && log.current) log.current.scrollTop = log.current.scrollHeight; }, [trigger]);
   return (
-    <div className="chat-log" ref={log}>
-      {children}
+    <div className="chat-scroll-area">
+      <div className="chat-log" ref={log} role="log" aria-label="Agent conversation" aria-live="polite" tabIndex={-1}>{children}</div>
+      {away && <button type="button" className="chat-latest" aria-label="Scroll to latest message" onClick={() => {
+        pinned.current = true;
+        setAway(false);
+        log.current?.scrollTo({ top: log.current.scrollHeight, behavior: "smooth" });
+      }}><Icon name="down" size={14} /> Latest</button>}
     </div>
   );
+}
+
+export async function copyMessage(text: string) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* Plain HTTP uses the Mac's older clipboard command. */ }
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.cssText = "position:fixed;opacity:0";
+  document.body.append(area);
+  area.select();
+  const done = document.execCommand("copy");
+  area.remove();
+  return done;
+}
+
+function MessageActions({ text, at, onRetry }: { text: string; at?: number; onRetry?: () => void }) {
+  const [copied, setCopied] = useState(false);
+  return <div className="message-actions">
+    {onRetry && <button type="button" className="icon-tool sm" aria-label="Retry message" title="Retry message" onClick={onRetry}><Icon name="reset" size={13} /></button>}
+    <button type="button" className="icon-tool sm" aria-label={copied ? "Copied" : "Copy message"} title={copied ? "Copied" : "Copy message"} onClick={() => void copyMessage(text).then((done) => { if (done) { setCopied(true); window.setTimeout(() => setCopied(false), 1500); } })}><Icon name={copied ? "check" : "copy"} size={13} /></button>
+    {at && <time dateTime={new Date(at).toISOString()} title={new Date(at).toLocaleString()}>{new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time>}
+  </div>;
 }
 
 /** Claude at work: what it is on, and for how long. */
@@ -45,10 +98,12 @@ export function Working({ stage, since, hint }: { stage: string; since: number |
 }
 
 /** What the producer asked, as their side of the conversation. */
-export function Asked({ text }: { text: string }) {
+export function Asked({ text, at, onRetry }: { text: string; at?: number; onRetry?: () => void }) {
+  const quoted = /^Quoted from narration (\d+) \(clip [^\n]+\):\n“([\s\S]*?)”\n\n([\s\S]*)$/.exec(text);
   return (
     <div className="user">
-      <div className="bubble">{text}</div>
+      <div className="bubble">{quoted ? <><span className="bubble-quote"><span>Quoted from narration {quoted[1]}</span><span>{quoted[2]}</span></span>{quoted[3]}</> : text}</div>
+      <MessageActions text={text} at={at} onRetry={onRetry} />
     </div>
   );
 }
@@ -109,12 +164,13 @@ export function ResetAsk({ state, busy, onAnswer }: { state: "pending" | "accept
 }
 
 /** What Claude said, a paragraph at a time. */
-export function Said({ text, failed }: { text: string; costUsd?: number; failed?: boolean }) {
+export function Said({ text, failed, at }: { text: string; costUsd?: number; failed?: boolean; at?: number }) {
   return (
     <div className={failed ? "turn failed" : "turn"}>
       {text.split(/\n{2,}/).map((part, index) => (
         <p key={index}>{linked(part)}</p>
       ))}
+      <MessageActions text={text} at={at} />
     </div>
   );
 }
@@ -132,6 +188,9 @@ export function Composer({
   extra,
   label,
   model = "Opus 5.5",
+  quote,
+  onClearQuote,
+  onStop,
   onNewChat,
   onChange,
   onSend,
@@ -146,6 +205,9 @@ export function Composer({
   label: string;
   /** The model the message goes to. */
   model?: string;
+  quote?: string;
+  onClearQuote?: () => void;
+  onStop?: () => void;
   /** Starts the conversation again (Repack's New session, beside the model); absent while there's none. */
   onNewChat?: () => void;
   onChange: (value: string) => void;
@@ -160,6 +222,7 @@ export function Composer({
   }, [value]);
   return (
     <div className="composer">
+      {quote && <div className="composer-quote"><blockquote>{quote}</blockquote><button type="button" className="icon-tool sm" aria-label="Remove quoted text" onClick={onClearQuote}><Icon name="close" size={13} /></button></div>}
       <textarea
         ref={area}
         rows={2}
@@ -193,9 +256,7 @@ export function Composer({
         {extra}
         <span className="spacer" />
         {hint && <span className="faint composer-hint">{hint}</span>}
-        <button type="button" className="send" aria-label={label} title={label} disabled={!canSend} onClick={onSend}>
-          <Icon name="send" size={15} />
-        </button>
+        {onStop ? <button type="button" className="send" aria-label="Stop response" title="Stop response" onClick={onStop}><span className="stop-square" /></button> : <button type="button" className="send" aria-label={label} title={label} disabled={!canSend} onClick={onSend}><Icon name="send" size={15} /></button>}
       </div>
     </div>
   );

@@ -1,12 +1,14 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { blocks, clipRange, duration, generatedHeading, heading, isCutIn, keptMs } from "./clips";
-import { assetLinks, BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, rangeUrl } from "./doc-export";
+import { BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary } from "./doc-export";
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
 import { editedPosition, type Playhead, usePlayheadValue } from "./playback";
 import { wordDiff } from "./diff";
-import type { Clip, Note, Proposal, Script } from "./types";
+import type { Clip, Note, Script } from "./types";
 import { type Band, bandProps, isEditNote } from "./review";
 import { Icon } from "./ui";
+import { ScriptSelectionActions, type ScriptSelection } from "./script-selection";
+import { noteRange } from "./notes";
 
 /**
  * The script as Repack's Script view shows it: Letter pages in the exported
@@ -24,7 +26,8 @@ export function FootageDoc({
   disabled,
   onNarration,
   onHeading,
-  onDecline,
+  onResolve,
+  onChat,
   onNotes,
   onPreview,
   bands,
@@ -39,8 +42,8 @@ export function FootageDoc({
   onNarration: (id: string, text: string) => void;
   /** The producer's own heading; empty puts the generated one back. */
   onHeading: (text: string) => void;
-  /** Declines a proposed rewrite. Accepting writes it as the narration. */
-  onDecline: (proposal: Proposal) => void;
+  onResolve: (ids: string[], accept: boolean) => void;
+  onChat: (selection: { id: string; quote: string; start: number; end: number; narrationNumber: number }) => void;
   /** The comments on a timestamp, as they now stand. */
   onNotes: (id: string, notes: Note[]) => void;
   onPreview: (index: number) => void;
@@ -61,18 +64,19 @@ export function FootageDoc({
   // The timestamp last clicked, which can take a comment, as in Repack.
   const [chosen, setChosen] = useState<string | null>(null);
   // The timestamp a comment is being written on, and its words so far.
-  const [writing, setWriting] = useState<{ id: string; text: string } | null>(null);
+  const [writing, setWriting] = useState<{ id: string; text: string; anchor?: Note["anchor"] } | null>(null);
+  const [selection, setSelection] = useState<ScriptSelection | null>(null);
+  const [botNotes, setBotNotes] = useState(false);
   const saveNote = () => {
     if (!writing?.text.trim()) return setWriting(null);
     const clip = clips.find((item) => item.id === writing.id);
-    if (clip) onNotes(clip.id, [...(clip.notes ?? []), { id: crypto.randomUUID(), text: writing.text.trim().slice(0, 2000), at: Date.now() }]);
+    if (clip) onNotes(clip.id, [...(clip.notes ?? []), { id: crypto.randomUUID(), text: writing.text.trim().slice(0, 2000), at: Date.now(), anchor: writing.anchor }]);
     setWriting(null);
   };
   const clicked = useRef(false);
   useEffect(() => window.localStorage.setItem(`writer.comments.${zoomKey}`, comments ? "on" : "off"), [zoomKey, comments]);
 
   const parts = blocks(clips);
-  const assets = assetLinks(script);
   const cases = caseStarts(script);
   const nowId = usePlayheadValue(playhead, (p) => (follow && !p.auditioning ? (editedPosition(clips, p.ms)?.clip.id ?? null) : null));
 
@@ -103,10 +107,25 @@ export function FootageDoc({
   const cues = clips.filter(isCutIn);
   const words = cues.reduce((sum, cue) => sum + (cue.narration ?? "").split(/\s+/).filter(Boolean).length, 0);
 
+  const notesFor = (clip: Clip, anchor: string) => [
+    ...(clip.notes ?? []).map((note) => <div className="comment human" key={note.id} data-card={anchor} data-state={active === clip.id ? "active" : undefined} data-edit={isEditNote(note.text) || undefined}>
+      <span className="card-head"><span className="avatar">Y</span><span className="comment-author">You</span>
+        <button type="button" className="icon-tool sm card-remove" aria-label="Delete comment" disabled={disabled} onClick={() => onNotes(clip.id, (clip.notes ?? []).filter((item) => item.id !== note.id))}><Icon name="close" size={12} /></button>
+      </span>
+      {note.anchor && <blockquote className="card-quote">{note.anchor.quote}</blockquote>}
+      <span className="card-text">{note.text}</span>
+    </div>),
+    writing?.id === clip.id ? <form className="comment human writing" key={`write-${clip.id}`} data-card={anchor} onSubmit={(event) => { event.preventDefault(); saveNote(); }}>
+      {writing.anchor && <blockquote className="card-quote">{writing.anchor.quote}</blockquote>}
+      <textarea autoFocus aria-label="Comment on selected section" rows={3} maxLength={2000} value={writing.text} placeholder="Add a comment…" onChange={(event) => setWriting({ ...writing, text: event.target.value })} onKeyDown={(event) => { if (event.key === "Escape") setWriting(null); if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); saveNote(); } }} />
+      <span className="card-actions"><button type="button" className="sm ghost" onClick={() => setWriting(null)}>Cancel</button><button type="submit" className="sm primary" disabled={disabled || !writing.text.trim()}>Comment</button></span>
+    </form> : chosen === clip.id && !disabled ? <button type="button" className="comment add" key={`add-${clip.id}`} data-card={anchor} onClick={() => setWriting({ id: clip.id, text: "" })}>+ Add comment</button> : null,
+  ];
+
   const rail = comments
     ? parts.flatMap((block) => [
         ...block.clips.flatMap(({ clip }) => [
-          <button
+          ...(botNotes ? [<button
             type="button"
             className="comment"
             key={clip.id}
@@ -125,63 +144,10 @@ export function FootageDoc({
               <span className="comment-author">{COMMENT_AUTHOR}</span>
             </span>
             <span className="card-text">{boundary(clip, script.words, script.corrections)}</span>
-          </button>,
-          ...(clip.notes ?? []).map((written) => (
-            <div className="comment human" key={written.id} data-card={clip.id} data-edit={isEditNote(written.text) || undefined}>
-              <span className="card-head">
-                <span className="avatar">{isEditNote(written.text) ? "E" : "Y"}</span>
-                <span className="comment-author">{isEditNote(written.text) ? "For Edit" : "You"}</span>
-                <button
-                  type="button"
-                  className="link-button faint card-remove"
-                  aria-label="Delete comment"
-                  title="Delete comment"
-                  disabled={disabled}
-                  onClick={() => onNotes(clip.id, (clip.notes ?? []).filter((item) => item.id !== written.id))}
-                >
-                  ×
-                </button>
-              </span>
-              <span className="card-text">{written.text}</span>
-              <span className="faint card-where">
-                {isEditNote(written.text) ? "Edit's agent follows this in this section. It goes into the Google Doc too." : `Goes into the Google Doc on this timestamp, as ${COMMENT_AUTHOR}.`}
-              </span>
-            </div>
-          )),
-          writing?.id === clip.id ? (
-            <form
-              className="comment human writing"
-              key={`write-${clip.id}`}
-              data-card={clip.id}
-              onSubmit={(event) => {
-                event.preventDefault();
-                saveNote();
-              }}
-            >
-              <textarea
-                // biome-ignore lint/a11y/noAutofocus: opened by the button just clicked
-                autoFocus
-                rows={3}
-                maxLength={2000}
-                value={writing.text}
-                placeholder="A note to the editor on this timestamp…"
-                onChange={(event) => setWriting({ id: clip.id, text: event.target.value })}
-                onKeyDown={(event) => {
-                  if (event.key === "Escape") setWriting(null);
-                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) saveNote();
-                }}
-              />
-              <span className="card-actions">
-                <button type="button" className="sm ghost" onClick={() => setWriting(null)}>Cancel</button>
-                <button type="submit" className="sm primary" disabled={!writing.text.trim()}>Comment</button>
-              </span>
-            </form>
-          ) : chosen === clip.id && !disabled ? (
-            <button type="button" className="comment add" key={`add-${clip.id}`} data-card={clip.id} onClick={() => setWriting({ id: clip.id, text: "" })}>
-              + Comment on this timestamp
-            </button>
-          ) : null,
+          </button>] : []),
+          ...notesFor(clip, clip.id),
         ]),
+        ...(block.cue ? notesFor(block.cue.clip, `cue-${block.cue.clip.id}`) : []),
         ...(block.cue?.clip.reuse
           ? [
               <div className="comment" key={`reuse-${block.cue.clip.id}`} data-card={`cue-${block.cue.clip.id}`}>
@@ -232,7 +198,7 @@ export function FootageDoc({
           data-anchor={clip.id}
           data-now={nowId === clip.id || undefined}
           data-state={active === clip.id ? "active" : undefined}
-          data-plain={comments ? undefined : ""}
+          data-plain={botNotes || clip.notes?.length ? undefined : ""}
           {...bandProps(bands?.get(clip.id))}
           onMouseEnter={() => setActive(clip.id)}
           onMouseLeave={() => setActive(null)}
@@ -240,7 +206,7 @@ export function FootageDoc({
           (
           <button
             type="button"
-            title={rangeUrl(script, clip) ? `Preview · ${rangeUrl(script, clip)}` : "Preview"}
+            title="Play this clip"
             aria-label={`Preview ${clipRange(clip, script.parts, " to ")}`}
             onClick={() => {
               clicked.current = true;
@@ -255,43 +221,41 @@ export function FootageDoc({
       </Fragment>
     ));
 
-  /** A cut-in's narration, and any rewrite Claude proposed for it. */
   const narration = (cue: Clip, index: number) => {
-    const placeholder = cue.reuse ? "REUSE (a reused case's transition; write it, or leave REUSE)" : "Write the narration for this cut-in…";
     const proposal = script.proposals?.find((item) => item.cutIn === cue.id);
-    return (
-      <>
-        <Grow className="narration" label={`Narration ${index + 1}`} value={cue.narration ?? ""} disabled={disabled} placeholder={placeholder} bands={bands?.get(cue.id)} onCommit={(text) => onNarration(cue.id, text)} />
-        {proposal && (
-          <div className="proposal" aria-label="Proposed rewrite">
-            <p className="proposal-text">
-              {wordDiff(proposal.before, proposal.after).map((piece, at) =>
-                piece.kind === "same" ? <span key={at}>{piece.text}</span> : piece.kind === "add" ? <ins key={at}>{piece.text}</ins> : <del key={at}>{piece.text}</del>,
-              )}
-            </p>
-            <div className="proposal-actions">
-              <span className="faint">Claude proposed this rewrite.</span>
-              <button type="button" className="sm primary" disabled={disabled} onClick={() => onNarration(cue.id, proposal.after)}>
-                Accept
-              </button>
-              <button type="button" className="sm" disabled={disabled} onClick={() => onDecline(proposal)}>
-                Decline
-              </button>
-            </div>
-          </div>
-        )}
-      </>
-    );
+    const text = cue.narration ?? "";
+    const localBands: Band[] = (cue.notes ?? []).flatMap((note) => {
+      if (!note.anchor) return [];
+      const span = noteRange(text, note.anchor);
+      return span ? [{ ...span, notes: [], kind: "note" as const }] : [];
+    });
+    return proposal ? <section className="proposed-narration" aria-label={`Proposed narration ${index + 1}`}>
+      {wordDiff(proposal.before, proposal.after).map((piece, at) => piece.kind === "same" ? <span key={at}>{piece.text}</span> : piece.kind === "add" ? <ins key={at}>{piece.text}</ins> : <del key={at}>{piece.text}</del>)}
+    </section> : <Grow className="narration" label={`Narration ${index + 1}`} value={text} disabled={disabled} placeholder="Write the narration for this cut-in…" bands={[...(bands?.get(cue.id) ?? []), ...localBands]} onCommit={(text) => onNarration(cue.id, text)} onWords={(start, end, _rect, input) => setSelection({ id: cue.id, input, start, end, quote: input.value.slice(start, end) })} />;
+  };
+  const proposals = script.proposals ?? [];
+  const quoteToChat = (picked: Pick<ScriptSelection, "id" | "start" | "end" | "quote">) => {
+    const narrationNumber = parts.findIndex((block) => block.cue?.clip.id === picked.id) + 1;
+    onChat({ ...picked, narrationNumber });
   };
 
   return (
     <section className="document" aria-label="Script document">
+      {selection && <ScriptSelectionActions selection={selection} scroller={canvas} onDismiss={() => setSelection(null)} onComment={() => {
+        const { id, start, end, quote } = selection;
+        setComments(true);
+        setChosen(id);
+        setWriting({ id, text: "", anchor: { start, end, quote } });
+        setSelection(null);
+      }} onChat={() => { quoteToChat(selection); setSelection(null); }} />}
       <header className="doc-toolbar">
         <ZoomTools zoom={zoom} scale={scale} page={page} pages={pages} onZoom={setZoom} />
         <div className="doc-actions">
           <span className="doc-stats">
             {cues.length} cut-ins · {words.toLocaleString()} words
           </span>
+          <button type="button" className="icon-tool" aria-label="Add comment on selected timestamp" title={chosen ? "Add comment on selected timestamp" : "Select a timestamp to add a comment"} disabled={disabled || !chosen} onClick={() => { if (chosen) { setComments(true); setWriting({ id: chosen, text: "" }); } }}><Icon name="plus" size={15} /></button>
+          {comments && <button type="button" className="icon-tool" aria-label="Show transcript boundary comments" title="Transcript boundary comments" aria-pressed={botNotes} onClick={() => setBotNotes(!botNotes)}><Icon name="file" size={15} /></button>}
           <button
             type="button"
             className="icon-tool"
@@ -304,6 +268,14 @@ export function FootageDoc({
           </button>
         </div>
       </header>
+      {proposals.length > 0 && <div className="proposal-review" role="region" aria-label="Suggested changes">
+        <div><strong>Suggested changes</strong><span><del>Removed</del> <ins>Added</ins> · {proposals.length} {proposals.length === 1 ? "paragraph" : "paragraphs"}</span></div>
+        <div className="proposal-review-actions">
+          <button type="button" className="tool" disabled={disabled} onClick={() => quoteToChat({ id: proposals[0].cutIn, start: 0, end: proposals[0].before.length, quote: proposals[0].before })}><Icon name="note" size={14} /> Follow up</button>
+          <button type="button" className="tool" disabled={disabled} onClick={() => onResolve(proposals.map((item) => item.id), false)}><Icon name="close" size={14} /> Reject</button>
+          <button type="button" className="tool accept-changes" disabled={disabled} onClick={() => onResolve(proposals.map((item) => item.id), true)}><Icon name="check" size={14} /> Accept changes</button>
+        </div>
+      </div>}
       <div className="canvas" ref={canvas} onScroll={(event) => setPage(pageInView(event.currentTarget, scale, LETTER))}>
         <Paper sheet={LETTER} scale={scale} rail={rail} version={comments} onPages={setPages}>
           <h1 className="doc-title" data-block>
@@ -317,18 +289,6 @@ export function FootageDoc({
             />
           </h1>
           <section className="assets" data-block>
-            {assets.length > 0 && (
-              <>
-                <h2>Assets:</h2>
-                <ul>
-                  {assets.map((asset) => (
-                    <li key={asset.label}>
-                      <a href={asset.url} target="_blank" rel="noreferrer">{asset.label}</a>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
             <p>Total Duration: {duration(keptMs(clips))}</p>
           </section>
           {parts.length === 0 && (

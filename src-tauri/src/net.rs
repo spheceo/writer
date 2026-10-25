@@ -120,9 +120,13 @@ impl Relay {
 
     /// A JSON POST to the relay that may take minutes, with its refusal said plainly.
     fn post_json(&self, path: &str, body: &Value, minutes: u64) -> Result<Value, Failed> {
+        self.post_json_timed(path, body, Duration::from_secs(minutes * 60))
+    }
+
+    fn post_json_timed(&self, path: &str, body: &Value, timeout: Duration) -> Result<Value, Failed> {
         let slow = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(30))
-            .timeout(Duration::from_secs(minutes * 60))
+            .timeout(timeout)
             .user_agent("Writer")
             .build();
         let bytes = serde_json::to_vec(body).map_err(|error| Failed::Unsent(error.to_string()))?;
@@ -136,9 +140,14 @@ impl Relay {
     /// Gemini watches a window of footage: `system` and `text` say what to
     /// answer, `clip` is the MP4 in base64, `schema` the answer's shape. The
     /// relay picks the model and holds the key. Answers the gateway's JSON.
+    #[cfg(test)]
     pub fn watch(&self, system: &str, text: &str, clip: &str, schema: &Value) -> Result<Value, Failed> {
+        self.watch_until(system, text, clip, schema, Duration::from_secs(300))
+    }
+
+    pub fn watch_until(&self, system: &str, text: &str, clip: &str, schema: &Value, timeout: Duration) -> Result<Value, Failed> {
         let body = serde_json::json!({ "system": system, "text": text, "clip": clip, "schema": schema });
-        self.post_json("/v1/watch", &body, 5)
+        self.post_json_timed("/v1/watch", &body, timeout)
     }
 
     /// Gemini answers on text alone, in `schema`'s shape (the case's names for the transcriber).

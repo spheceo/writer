@@ -1,6 +1,7 @@
 import { blocks, clipRange, clock, duration, heading, isCutIn, keptMs, partAt } from "./clips";
 import { isClip, liveMarks, noteLines, totalLine } from "./commentary";
 import type { DocContent } from "./docx";
+import { noteRange } from "./notes";
 import type { Cite, Clip, Draft, Script, Source, Word } from "./types";
 
 /** The name on the notes Writer writes on a Doc, as Repack signs its own. */
@@ -188,6 +189,12 @@ export function footageContent(script: Script, copy = false): DocContent {
       const from = here();
       if (block.cue.clip.reuse) note(from, from + narration.length, `Reuse: ${block.cue.clip.reuse}`);
       for (const [a, b] of blurSpans(narration)) note(from + a, from + b, BLUR_NOTE);
+      for (const written of block.cue.clip.notes ?? []) {
+        const anchor = written.anchor;
+        const span = anchor ? noteRange(narration, anchor) : { start: 0, end: narration.length };
+        if (span) note(from + span.start, from + span.end, written.text);
+        else note(from, from + narration.length, `${anchor ? `“${anchor.quote}”\n` : ""}${written.text}`);
+      }
       append(running ? narration : `${narration}\n\n`);
     }
   }

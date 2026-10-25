@@ -552,6 +552,42 @@ pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, S
     Ok(store::detail(script, &dir))
 }
 
+/// Replaces the latest shared version with the script as it is now, on the
+/// same link and under the same number: its snapshot is written again and
+/// its page data replaced (`reviews:setMeta`), so the page shows the script
+/// now as that version. For a version reviewers haven't noted yet, or one
+/// the producer wants corrected in place rather than shared as the next.
+pub fn replace_latest(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String> {
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    let link = script.review.clone().ok_or("Share the script first: there's no version to replace.")?;
+    if script.commentary.is_none() {
+        return Err("Only a commentary's version can be replaced in place.".into());
+    }
+    if let Some(draft) = script.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()) {
+        if draft.ensure_ids() {
+            store::write(&dir, &script)?;
+        }
+    }
+    let found = blocks::of(&script);
+    if found.is_empty() {
+        return Err("There's nothing in the script to share yet.".into());
+    }
+    let key = format!("writer/reviews/{id}/v{}/script.json", link.version);
+    cloud::put_bytes(data, &key, &serde_json::to_vec(&script).map_err(|error| error.to_string())?, "application/json")?;
+    let texts: BTreeMap<String, String> = found.iter().map(|block| (block.id.clone(), block.text.clone())).collect();
+    let count = found.len();
+    let meta = meta_of(data, id, &script, found)?;
+    cloud::call(data, "mutation", "reviews:setMeta", json!({ "sourceId": id, "version": link.version, "meta": meta }))?;
+    crate::log::info("review", format!("{}: v{} replaced in place ({count} blocks, revision {}) at {}", crate::log::named(id, &script.title), link.version, script.revision, link.url));
+    script.review = Some(Link { revision: script.revision, shared_at: now_ms(), ..link.clone() });
+    store::write(&dir, &script)?;
+    let _ = std::fs::write(dir.join(SHARED_TEXT), serde_json::to_vec(&json!({ "version": link.version, "blocks": texts })).unwrap_or_default());
+    crate::footage::soon(data.to_path_buf(), id.to_string());
+    poll_soon();
+    Ok(store::detail(script, &dir))
+}
+
 /// The most a version's meta may be (Repack's cap is 512 KB).
 const META_BYTES: usize = 480_000;
 

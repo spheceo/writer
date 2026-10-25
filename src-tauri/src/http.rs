@@ -225,6 +225,12 @@ fn route(
             json_result(stream, crate::copy_script_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), value["title"].as_str().unwrap_or("Untitled"), draft))
         }
         #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "use-draft"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            let draft = serde_json::from_value(value["draft"].clone()).map_err(|_| "Send the draft to use.".to_string())?;
+            json_result(stream, crate::use_draft_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), draft))
+        }
+        #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "renew"]) => json_result(stream, crate::account::renew_now()),
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "transcribe"]) => {
@@ -274,19 +280,22 @@ fn route(
         ("POST", ["api", "scripts", "file"]) => {
             let path = json_str(body, "path")?;
             let article = json_str(body, "article").ok();
-            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path), article.as_deref()))
+            let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
+            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path), article.as_deref(), kind))
         }
         ("POST", ["api", "scripts", "youtube"]) => {
             let url = json_str(body, "url")?;
             let article = json_str(body, "article").ok();
-            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url, article.as_deref()))
+            let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
+            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url, article.as_deref(), kind))
         }
         ("POST", ["api", "scripts", "compilation"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let title = value["title"].as_str().unwrap_or("").to_string();
             let urls: Vec<String> = value["urls"].as_array().into_iter().flatten().filter_map(|url| url.as_str().map(str::to_string)).collect();
             let case = value["case"].as_bool().unwrap_or(false);
-            json_result(stream, crate::import::from_compilation(&app, &data_dir(&app)?, &title, &urls, case))
+            let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
+            json_result(stream, crate::import::from_compilation(&app, &data_dir(&app)?, &title, &urls, case, kind))
         }
         ("POST", ["api", "videos", "check"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
@@ -297,7 +306,8 @@ fn route(
             let url = json_str(body, "url")?;
             let article = json_str(body, "article").ok();
             let title = json_str(body, "title").ok();
-            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref(), title.as_deref()))
+            let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
+            json_result(stream, crate::import::from_drive(&app, &data_dir(&app)?, &url, article.as_deref(), title.as_deref(), kind))
         }
         ("GET", ["api", "youtube", "sign-in"]) => write_json(stream, 200, &json!(crate::youtube_sign_in_now(&data_dir(&app)?))),
         ("POST", ["api", "youtube", "sign-in"]) => json_result(stream, crate::youtube::sign_in(&data_dir(&app)?).map(|browser| json!({ "browser": browser }))),
@@ -450,6 +460,7 @@ fn route(
                 None => write_json(stream, 404, &json!({ "error": "No such footage." })),
             }
         }
+        ("POST", ["api", "scripts", id, "review", "replace"]) => json_result(stream, crate::replace_shared_now(&data_dir(&app)?, id)),
         ("POST", ["api", "scripts", id, "share"]) => json_result(stream, crate::share_now(&data_dir(&app)?, id)),
         // Shares the recordings and words with Edit now, without marking the script sent.
         ("POST", ["api", "scripts", id, "edit-share"]) => json_result(stream, crate::handoff::share(&data_dir(&app)?, id, true)),
@@ -481,6 +492,14 @@ fn route(
         ("DELETE", ["api", "scripts", id, "proposals", proposal]) => {
             json_result(stream, crate::decline_proposal_now(&data_dir(&app)?, id, proposal))
         }
+        ("POST", ["api", "scripts", id, "proposals"]) => {
+            #[derive(serde::Deserialize)]
+            struct Review { revision: u32, proposals: Vec<String>, accept: bool }
+            let review: Review = serde_json::from_slice(body).map_err(|_| "The proposed changes could not be read.")?;
+            json_result(stream, crate::resolve_proposals_now(&data_dir(&app)?, id, review.revision, &review.proposals, review.accept))
+        }
+        ("POST", ["api", "scripts", id, "speakers", "retry"]) => json_result(stream, crate::jobs::start(app, id.to_string(), crate::jobs::Work::Speakers)),
+        ("POST", ["api", "scripts", id, "build", "stop"]) => json_result(stream, crate::jobs::stop(&data_dir(&app)?, id).map(|_| json!({ "ok": true }))),
         ("PUT", ["api", "scripts", id, "corrections"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let revision = value["revision"].as_u64().ok_or("Missing revision.")? as u32;

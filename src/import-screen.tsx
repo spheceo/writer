@@ -7,12 +7,14 @@ const STEPS: { key: string; label: string; hint: string }[] = [
   { key: "download", label: "Download", hint: "The footage comes down from YouTube, Drive or this Mac." },
   { key: "preview", label: "Preview", hint: "Joined into one timeline and cut to a 480p preview the editors play." },
   { key: "research", label: "Research", hint: "The article and any case files are read for names and facts." },
-  { key: "transcribe", label: "Transcribe", hint: "Every recording is heard, its words timed and who speaks checked." },
-  { key: "speakers", label: "Speakers", hint: "Each voice gets a name or a role." },
+  { key: "transcribe", label: "Transcribe", hint: "Every recording is heard and its words timed." },
+  { key: "watch", label: "Check speakers", hint: "The footage is watched to check who says each line. Saved checks are reused after a restart." },
+  { key: "speakers", label: "Name speakers", hint: "Each voice gets a name or a role." },
 ];
 
 function stepOf(item: ImportProgress) {
   const said = `${item.stage} ${item.detail}`.toLowerCase();
+  if (/who speaks|saved checks/.test(said)) return "watch";
   if (/naming the speakers|speaker/.test(said)) return "speakers";
   if (/transcrib|hearing|who speaks|heard/.test(said)) return "transcribe";
   if (/research|pdf|article|case file/.test(said)) return "research";
@@ -36,20 +38,23 @@ export function ImportScreen({ item, onLeave }: { item: ImportProgress | null; o
   const current = shown.current;
   // When each step was first seen, for its time.
   const [began, setBegan] = useState<Record<string, number>>({});
+  const timedId = useRef<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const step = current ? stepOf(current) : "download";
   useEffect(() => {
     if (!current) return;
-    setBegan((times) => (times[step] ? times : { ...times, [step]: Date.now(), ...(times.start ? {} : { start: Date.now() }) }));
+    const changed = timedId.current !== current.id;
+    timedId.current = current.id;
+    setBegan((previous) => {
+      const times = changed ? {} : previous;
+      return times[step] ? times : { ...times, [step]: Date.now(), ...(times.start ? {} : { start: Date.now() }) };
+    });
   }, [current?.id, step]);
-  useEffect(() => {
-    setBegan({});
-  }, [current?.id]);
   useEffect(() => {
     if (!item) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
-  }, [item]);
+  }, [!!item]);
   const at = STEPS.findIndex((candidate) => candidate.key === step);
   const percent = Math.max(0, Math.min(100, current?.percent ?? 0));
   return (

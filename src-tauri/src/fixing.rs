@@ -812,7 +812,7 @@ fn editor_note(script: &Script, note: &Note) -> Option<(Script, String)> {
     } else {
         at
     };
-    out.clips[target].notes.push(crate::model::Note { id: uuid::Uuid::new_v4().to_string(), text: text.clone(), at: now_ms() });
+    out.clips[target].notes.push(crate::model::Note { id: uuid::Uuid::new_v4().to_string(), text: text.clone(), at: now_ms(), anchor: None });
     Some((out, format!("Added for the editor: \"{text}\".")))
 }
 

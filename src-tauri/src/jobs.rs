@@ -8,13 +8,51 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
 use crate::model::now_ms;
+
+thread_local! { static CANCELLING: std::cell::RefCell<Option<Arc<AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
+fn cancellations() -> &'static Mutex<HashMap<String, Arc<AtomicBool>>> {
+    static FLAGS: OnceLock<Mutex<HashMap<String, Arc<AtomicBool>>>> = OnceLock::new();
+    FLAGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+pub fn cancelled() -> bool { CANCELLING.with(|slot| slot.borrow().as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed))) }
+pub(crate) fn cancellation_flag() -> Option<Arc<AtomicBool>> { CANCELLING.with(|slot| slot.borrow().clone()) }
+pub fn check_cancelled() -> Result<(), String> { if cancelled() { Err("Stopped by you. Completed work is saved.".into()) } else { Ok(()) } }
+pub fn wait(duration: std::time::Duration) -> Result<(), String> {
+    let until = std::time::Instant::now() + duration;
+    loop {
+        check_cancelled()?;
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() { return Ok(()); }
+        std::thread::sleep(left.min(std::time::Duration::from_millis(120)));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn with_cancellation<T>(flag: Arc<AtomicBool>, run: impl FnOnce() -> T) -> T {
+    CANCELLING.with(|slot| *slot.borrow_mut() = Some(flag));
+    let result = run();
+    CANCELLING.with(|slot| *slot.borrow_mut() = None);
+    result
+}
+
+pub fn stop(data: &Path, id: &str) -> Result<(), String> {
+    crate::can::require_id(data, id)?;
+    if !running(id) { return Ok(()); }
+    let flags = cancellations().lock().map_err(|_| "The job lock failed.")?;
+    let flag = flags.get(id).ok_or("This job is already finishing.")?;
+    flag.store(true, Ordering::Relaxed);
+    drop(flags);
+    stage(id, "Stopping…");
+    Ok(())
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +178,8 @@ pub enum Work {
     Review { notes: Vec<String>, ready: Option<String> },
     /// Bring an archived script's footage back (archive.rs).
     Restore,
+    /// Explicitly retry only visual speaker checks that did not finish.
+    Speakers,
 }
 
 /// What the signed-in person may do to this script (can.rs): see it, write
@@ -176,6 +216,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                 Work::Learn(_) => "Learning from the feedback".into(),
                 Work::Review { .. } => "Fixing review notes".into(),
                 Work::Restore => "Bringing the footage back".into(),
+                Work::Speakers => "Checking speakers".into(),
                 Work::Build { .. } => "Starting".into(),
             },
             started_at: now_ms(),
@@ -201,11 +242,15 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         Work::Learn(_) => "learning from the feedback".to_string(),
         Work::Review { notes, .. } => format!("fixing {} review {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }),
         Work::Restore => "bringing the footage back".to_string(),
+        Work::Speakers => "retrying unfinished speaker checks".to_string(),
     };
     let name = crate::log::named(&id, &title);
     crate::log::info("agent", format!("{name}: started: {what}"));
     let began = std::time::Instant::now();
+    let cancelling = Arc::new(AtomicBool::new(false));
+    cancellations().lock().map_err(|_| "The job lock failed.")?.insert(id.clone(), cancelling.clone());
     thread::spawn(move || {
+        CANCELLING.with(|slot| *slot.borrow_mut() = Some(cancelling));
         // A bug in a build ends it as a failed build, never one that reads
         // as running forever.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &work {
@@ -216,8 +261,10 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
             Work::Learn(step) => crate::feedback::run(&app, &id, step),
             Work::Review { notes, ready } => crate::fixing::run(&app, &id, notes, ready.as_deref()),
             Work::Restore => crate::archive::restore(&app, &id),
+            Work::Speakers => crate::watch::retry(&app, &id),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
+        let result = check_cancelled().and(result);
         if let Ok(mut jobs) = jobs().lock() {
             if let Some(job) = jobs.get_mut(&id) {
                 job.running = false;
@@ -229,7 +276,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                         job.report = Some(report);
                         job.cost_usd = Some(cost);
                         // A commentary's clips may have changed: their footage comes down now.
-                        if !matches!(work, Work::Restore) {
+                        if !matches!(work, Work::Restore | Work::Speakers) {
                             let _ = crate::footage::now(&data, &id);
                         }
                     }
@@ -239,8 +286,10 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                     }
                 }
                 keep(&data, &id, job);
+                if let Ok(mut flags) = cancellations().lock() { flags.remove(&id); }
             }
         }
+        CANCELLING.with(|slot| *slot.borrow_mut() = None);
     });
     Ok(job)
 }

@@ -42,6 +42,14 @@ test("finds a clip's first and last words as Repack notes them", () => {
   expect(boundary({ startMs: 5_000, endMs: 6_000 }, words)).toBe("...");
 });
 
+test("narration comments keep their selected words in a Google Doc export", () => {
+  const next = structuredClone(script);
+  next.clips[1].notes = [{ id: "note", text: "Check this charge.", at: 0, anchor: { start: 7, end: 14, quote: "charged" } }];
+  const content = footageContent(next);
+  const note = content.notes.find((note) => note.text === "Check this charge.")!;
+  expect(content.text.slice(note.start - 1, note.end - 1)).toBe("charged");
+});
+
 test("links a compilation's ranges to their own videos and divides its cases", () => {
   const compilation = {
     ...script,

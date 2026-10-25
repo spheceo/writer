@@ -1,7 +1,7 @@
 import { open as pickFile } from "@tauri-apps/plugin-dialog";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ChatLog, Composer, Elapsed, ResetAsk, Said, Working } from "./agent";
-import { addSource, getChat, previewSrc, resetScript, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
+import { ChatLog, Composer, Elapsed, ResetAsk, Said, Working, useChatDraft } from "./agent";
+import { stopJob, addSource, getChat, previewSrc, resetScript, buildStatus, findClips, footageUrl, getFeedback, getFinds, getFootage, getScript, startLearning, setPacing, inTauri, listScripts, message, removeSource, saveDraft, sourceText, startBuild, startRevision, updateSource } from "./api";
 import { clock } from "./clips";
 import { commentaryDocument, liveMarks, narrationWords, noteLines, timing, totalLine, WORDS_PER_MINUTE } from "./commentary";
 import { seen, useSplit, useView, type View, ViewTabs } from "./editor";
@@ -208,7 +208,7 @@ export function CommentaryEditor({
   const [finding, setFinding] = useState(false);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [learning, setLearning] = useState(false);
-  const [note, setNote] = useState("");
+  const [note, setNote] = useChatDraft(script.id);
   // What was asked of the build that is running, shown as the producer's message.
   const [sent, setSent] = useState<string | null>(null);
   const [savedView, setView] = useView("commentary", "script");
@@ -528,13 +528,10 @@ export function CommentaryEditor({
             <Icon name="panel" />
           </button>
           <ReviewButton script={script} open={openNotes} approved={review.approved} onClick={() => setReviewOpen(true)} />
-          <button type="button" className="secondary sm" disabled={!draft} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
-            <Icon name="doc" size={14} />
-            Google Doc
-          </button>
           <Menu
             label="More"
             items={[
+              { label: "Google Doc", icon: "doc", disabled: !draft, onSelect: () => setDocsOpen(true) },
               { label: copied ? "Copied" : "Copy script text", icon: "copy", disabled: !draft, onSelect: () => void copy() },
               { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", onSelect: () => setShortcutsOpen(true) },
             ]}
@@ -747,6 +744,7 @@ export function CommentaryEditor({
                 />
               </div>
               <Composer
+                onStop={working ? () => void stopJob(script.id).catch((cause) => setError(message(cause))) : undefined}
                 value={note}
                 disabled={busy}
                 canSend={!busy && ready && (!draft || !!note.trim())}

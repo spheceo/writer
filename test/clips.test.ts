@@ -1,8 +1,21 @@
 import { expect, test } from "bun:test";
-import { breathe, insertAt, keptMs, lift, moveItems, splitAt } from "../src/clips";
+import { breathe, insertAt, keptMs, lift, moveItems, recordingSpans, splitAt } from "../src/clips";
 import type { Clip } from "../src/types";
 
 const whole: Clip[] = [{ id: "a", startMs: 0, endMs: 10_000 }];
+
+test("recording boundaries follow trimmed and reordered footage without changing its edits", () => {
+  const parts = [
+    { title: "First", startMs: 0, durationMs: 5_000, audio: false },
+    { title: "Second", startMs: 5_000, durationMs: 5_000, audio: false },
+  ];
+  expect(recordingSpans({ id: "trimmed", startMs: 3_000, endMs: 8_000 }, parts)).toEqual([
+    { index: 0, title: "First", startMs: 3_000, endMs: 5_000 },
+    { index: 1, title: "Second", startMs: 5_000, endMs: 8_000 },
+  ]);
+  expect(recordingSpans({ id: "later", startMs: 6_000, endMs: 10_000 }, parts).map((part) => part.index)).toEqual([1]);
+  expect(recordingSpans({ ...whole[0], kind: "cut-in" }, parts)).toEqual([]);
+});
 
 test("split keeps both halves", () => {
   const next = splitAt(whole, 4_000);

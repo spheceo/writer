@@ -242,7 +242,7 @@ fn patiently(run: impl Fn() -> Result<Turn, Trouble>) -> Result<Turn, String> {
     match run() {
         Ok(turn) => Ok(turn),
         Err(Trouble::Again(_)) => {
-            std::thread::sleep(Duration::from_secs(60));
+            crate::jobs::wait(Duration::from_secs(60))?;
             run().map_err(|trouble| match trouble {
                 Trouble::Again(reason) | Trouble::Stop(reason) => reason,
             })

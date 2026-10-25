@@ -81,6 +81,8 @@ const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
   // Synced with the review page: a fix checked from Writer, and one review read whole (its notes, fix and computer).
   "reviews:check": "review.share",
   "reviews:get": "read",
+  // A shared version's page data replaced in place: the script fixed and shown as the same version.
+  "reviews:setMeta": "review.share",
   "edit:getMedia": "read",
   "edit:putMedia": "any",
 };

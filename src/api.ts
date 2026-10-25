@@ -40,19 +40,19 @@ export const getScript = (id: string) =>
   inTauri() ? invoke<Script>("get_script", { id }) : http<Script>(`/api/scripts/${id}`);
 
 /** The footage, and an optional article about the case, read in place of research, as Repack takes it. */
-export const importFile = (path: string, article?: string) =>
-  inTauri() ? invoke<Script>("import_file", { path, article: article || null }) : http<Script>("/api/scripts/file", json({ path, article }));
+export const importFile = (path: string, article?: string, kind?: Kind) =>
+  inTauri() ? invoke<Script>("import_file", { path, article: article || null, kind }) : http<Script>("/api/scripts/file", json({ path, article, kind }));
 
-export const importYoutube = (url: string, article?: string) =>
+export const importYoutube = (url: string, article?: string, kind?: Kind) =>
   inTauri()
-    ? invoke<Script>("import_youtube", { url, article: article || null })
-    : http<Script>("/api/scripts/youtube", json({ url, article }));
+    ? invoke<Script>("import_youtube", { url, article: article || null, kind })
+    : http<Script>("/api/scripts/youtube", json({ url, article, kind }));
 
 /** A title given (a Trello card's) is kept in place of the folder's name. */
-export const importDrive = (url: string, article?: string, title?: string) =>
+export const importDrive = (url: string, article?: string, title?: string, kind?: Kind) =>
   inTauri()
-    ? invoke<Script>("import_drive", { url, article: article || null, title: title || null })
-    : http<Script>("/api/scripts/drive", json({ url, article, title }));
+    ? invoke<Script>("import_drive", { url, article: article || null, title: title || null, kind })
+    : http<Script>("/api/scripts/drive", json({ url, article, title, kind }));
 
 /** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
 /** The card a pasted Trello link names, read for its videos (any board Repack's Trello reads). */
@@ -137,6 +137,15 @@ export const pullFeedback = (id: string) =>
 
 /** What a note from Writer says beyond its text: the words it's on, its intent, a suggestion's new words. */
 export type NoteDetails = { anchor?: { kind: "text"; blockId: string; start: number; end: number; quote: string }; intent?: string; replacement?: string };
+
+export const resolveProposals = (id: string, revision: number, proposals: string[], accept: boolean) =>
+  inTauri() ? invoke<Script>("resolve_proposals", { id, revision, proposals, accept }) : http<Script>(`/api/scripts/${id}/proposals`, json({ revision, proposals, accept }));
+
+export const retrySpeakers = (id: string) =>
+  inTauri() ? invoke<BuildStatus>("retry_speakers", { id }) : http<BuildStatus>(`/api/scripts/${id}/speakers/retry`, json({}));
+
+export const stopJob = (id: string) =>
+  inTauri() ? invoke<void>("stop_job", { id }) : http<void>(`/api/scripts/${id}/build/stop`, json({}));
 
 /** Leaves a note on the script's review page from Writer: the same note a reviewer leaves there. */
 export const addReviewNote = (id: string, text: string, details?: NoteDetails) =>
@@ -259,10 +268,10 @@ export const researchAgain = (id: string) =>
     : http<Research>(`/api/scripts/${id}/research`, { method: "POST" });
 
 /** Videos joined in order: a compilation, one case each, or (`kase`) one Courtroom case across them. */
-export const importCompilation = (title: string, urls: string[], kase = false) =>
+export const importCompilation = (title: string, urls: string[], kase = false, kind?: Kind) =>
   inTauri()
-    ? invoke<Script>("import_compilation", { title, urls, case: kase })
-    : http<Script>("/api/scripts/compilation", json({ title, urls, case: kase }));
+    ? invoke<Script>("import_compilation", { title, urls, case: kase, kind })
+    : http<Script>("/api/scripts/compilation", json({ title, urls, case: kase, kind }));
 
 /** A compilation's lines checked before anything downloads, as Repack checks its videos. */
 export const checkVideos = (lines: string[]) =>

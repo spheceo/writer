@@ -592,6 +592,8 @@ const EDIT_PATHS: Record<string, ReactNode> = {
       <path d="M9 11h6" />
     </>
   ),
+  down: <path d="M12 4v16m-6-6 6 6 6-6" />,
+  quote: <path d="M3 6h7v7H5c0 3 2 5 5 5M14 6h7v7h-5c0 3 2 5 5 5" />,
 };
 
 export function Icon({ name, size = 16 }: { name: keyof typeof PATHS | string; size?: number }) {

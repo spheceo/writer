@@ -164,7 +164,7 @@ fn footage_blocks(script: &Script) -> Vec<Block> {
             if clip.is_cut_in() {
                 let text = clip.narration.clone().unwrap_or_default();
                 let read = read_ms(&text);
-                Block { id: clip.id.clone(), kind: "narration".into(), read_ms: Some(read), duration_ms: Some(read), text, ..Default::default() }
+                Block { id: clip.id.clone(), kind: "narration".into(), read_ms: Some(read), duration_ms: Some(read), text, edit_notes: edit_lines(clip.notes.iter().map(|note| note.text.as_str())), ..Default::default() }
             } else {
                 let inside = word_spans(script, clip, Side::Text);
                 let context = |side| {

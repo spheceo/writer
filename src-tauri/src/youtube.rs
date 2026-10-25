@@ -270,7 +270,9 @@ pub fn write_proxy_file(dir: &Path, proxy: &str) -> Result<std::path::PathBuf, S
     if proxy.chars().any(|c| c.is_control()) || proxy.contains('"') {
         return Err("The proxy URL has a character yt-dlp's config can't take.".into());
     }
-    let path = dir.join("proxy.conf");
+    // Downloads of different videos share a folder and may run together.
+    // Each owns its config until yt-dlp exits and its guard removes it.
+    let path = dir.join(format!("proxy-{}.conf", uuid::Uuid::new_v4()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -313,6 +315,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = write_proxy_file(&dir, "http://user;ttl.120:secret@gw.dataimpulse.com:10001").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "--proxy \"http://user;ttl.120:secret@gw.dataimpulse.com:10001\"\n");
+        let other = write_proxy_file(&dir, "http://other:example@gw.dataimpulse.com:10002").unwrap();
+        assert_ne!(path, other);
+        std::fs::remove_file(other).unwrap();
+        assert!(path.is_file(), "finishing one download must not remove another's proxy config");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1,10 +1,9 @@
 import { type CSSProperties, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Asked, ChatLog, Composer, ResetAsk, Said, Working } from "./agent";
-import { buildStatus, clearChat, correctWord, declineProposal, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, restoreVersion, retryTranscribe, saveClips, setHeading, startBuild, startRevision } from "./api";
+import { Asked, ChatLog, Composer, ResetAsk, Said, Working, useChatDraft } from "./agent";
+import { buildStatus, clearChat, correctWord, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, retryTranscribe, saveClips, setHeading, startBuild, startRevision, stopJob } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { UpdateButton } from "./update";
-import { useGrants } from "./can";
 import { DocsDialog } from "./docs-dialog";
 import { VersionsDialog } from "./versions-dialog";
 import { scriptText } from "./doc-export";
@@ -17,7 +16,7 @@ import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript
 import type { BuildStatus, ChatTurn, Clip, Highlight, Kind, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { BandTip, bandsOf, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
-import { Dialog, Icon, Menu, Select } from "./ui";
+import { Dialog, Icon, Menu } from "./ui";
 
 export type View = "video" | "script" | "split";
 const VIEWS: { value: View; label: string }[] = [
@@ -162,11 +161,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [clearing, setClearing] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
-  const [note, setNote] = useState("");
-  const [kind, setKind] = useState<Kind>(script.kind ?? "interrogation");
-  // The formats this person may write this script as (can.ts): a compilation's or a single case's.
-  const grants = useGrants();
-  const kinds = KINDS.filter((item) => (script.compilation ? grants.compilationKinds : grants.singleKinds).includes(item.value));
+  const [note, setNote] = useChatDraft(script.id);
+  const [quote, setQuote] = useState<{ id: string; quote: string; start: number; end: number; narrationNumber: number } | null>(null);
+  const [resolving, setResolving] = useState(false);
   const split = useSplit();
 
   // One playhead per player, made together, so a reload of the code keeps them paired.
@@ -199,7 +196,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // Claude (or a restore) is at work; an archived script is read-only as well.
   const working = started !== null;
   const archived = !!script.archive;
-  const busy = working || archived;
+  const busy = working || archived || resolving;
 
   // Undo and redo: up to 30 earlier timelines, cut edits and narration alike.
   // A fresh build goes on the list too, so it can be undone.
@@ -454,12 +451,12 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.id]);
 
-  const build = async () => {
+  const build = async (request = note) => {
     setError(null);
     setStage("Starting");
     try {
-      const job = await startBuild(script.id, note, kind);
-      setSent(note.trim() ? `Build the script. ${note.trim()}` : "Build the script.");
+      const job = await startBuild(script.id, request);
+      setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
       setNote("");
       follow(job.startedAt);
     } catch (cause) {
@@ -469,19 +466,21 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
 
   // Once the script is built, a message asks Opus for targeted edits, as
   // Repack's chat does, with what the producer has selected as "this".
-  const revise = async () => {
-    const request = note.trim();
+  const revise = async (retry?: string) => {
+    const words = (retry ?? note).trim();
+    const request = quote && !retry ? `Quoted from narration ${quote.narrationNumber} (clip ${quote.id}, characters ${quote.start}–${quote.end}):\n“${quote.quote}”\n\n${words}` : words;
     if (!request) return;
     setError(null);
     setStage("Editing the script");
     try {
       const job = await startRevision(script.id, request, {
-        selected,
+        selected: quote && !retry ? [quote.id] : selected,
         picked: picked ? [picked.startMs, picked.endMs] : null,
         playheadMs: Math.round(playhead.ms),
       });
       setSent(request);
       setNote("");
+      setQuote(null);
       follow(job.startedAt);
     } catch (cause) {
       setError(message(cause));
@@ -529,6 +528,19 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     return run;
   };
 
+  const reviewChanges = async (ids: string[], accept: boolean) => {
+    if (busy) return;
+    setResolving(true);
+    try {
+      await change(async () => {
+        const before = shown.current;
+        const saved = await resolveProposals(script.id, revision.current, ids, accept);
+        if (accept) remember(before);
+        return saved;
+      });
+    } finally { setResolving(false); }
+  };
+
   const copy = async () => {
     const text = scriptText(script);
     try {
@@ -564,6 +576,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           <span>Scripts</span>
           <span>/</span>
           <h1>{script.title}</h1>
+          <span className="script-format">{KINDS.find((item) => item.value === script.kind)?.label ?? "Interrogation"}{script.compilation ? " compilation" : ""}</span>
           <Avatar creator={script.createdBy} size={24} />
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
@@ -593,13 +606,11 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             <Icon name="panel" />
           </button>
           <ReviewButton script={script} open={openNotes} approved={review.approved} onClick={() => setReviewOpen(true)} />
-          <button type="button" className="secondary sm" disabled={!cueCount} title="Export to Google Docs, see earlier exports and read comments" onClick={() => setDocsOpen(true)}>
-            <Icon name="doc" size={14} />
-            Google Doc
-          </button>
           <Menu
             label="More"
             items={[
+              { label: "Google Doc", icon: "doc", disabled: !cueCount, onSelect: () => setDocsOpen(true) },
+              ...(script.speakerCheck && (script.speakerCheck.failed.length || script.speakerCheck.needsApply) ? [{ label: "Retry unfinished speaker checks", icon: "reset", disabled: busy, onSelect: () => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause))) }] : []),
               { label: "Versions", icon: "history", onSelect: () => setVersionsOpen(true) },
               { label: copied ? "Copied" : "Copy script text", icon: "copy", disabled: !cueCount, onSelect: () => void copy() },
               { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", onSelect: () => setShortcutsOpen(true) },
@@ -632,10 +643,15 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             follow={view === "split"}
             zoomKey={view}
             disabled={busy}
-            onPreview={preview}
+            onPreview={(index) => view === "script" ? player.seek(clipStarts(clips)[index] ?? 0) : preview(index)}
             onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
             onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
-            onDecline={(proposal) => void change(() => declineProposal(script.id, proposal.id))}
+            onResolve={(ids, accept) => void reviewChanges(ids, accept)}
+            onChat={(picked) => {
+              setQuote(picked);
+              setAgentShown(true);
+              window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus(), 0);
+            }}
             onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
             bands={bands}
           />
@@ -795,6 +811,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                     <li key={text}>{text}</li>
                   ))}
                 </ul>
+                {!!script.speakerCheck?.failed.length && <button type="button" className="tool" disabled={busy} onClick={() => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause)))}>Retry unfinished speaker checks</button>}
                 <button type="button" className="link-button faint" onClick={() => setNotesShown(false)}>
                   Dismiss
                 </button>
@@ -802,11 +819,11 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             )}
             {chat.map((turn, index) =>
               turn.role === "producer" ? (
-                <Asked key={`${turn.at}-${index}`} text={turn.text} />
+                <Asked key={`${turn.at}-${index}`} text={turn.text} at={turn.at} onRetry={!busy && (index === chat.length - 1 || (index === chat.length - 2 && !!chat[index + 1].failed)) ? () => void (cueCount ? revise(turn.text) : build(turn.text.replace(/^Build the script\.?\s*/i, ""))) : undefined} />
               ) : (
                 <Fragment key={`${turn.at}-${index}`}>
                   {/* A reset asks with its own line and card, as Edit does, not a reply. */}
-                  {!turn.reset && <Said text={turn.text} costUsd={turn.costUsd} failed={turn.failed} />}
+                  {!turn.reset && <Said text={turn.text} at={turn.at} costUsd={turn.costUsd} failed={turn.failed} />}
                   {turn.reset && (
                     <ResetAsk
                       state={turn.reset}
@@ -864,25 +881,25 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             )}
           </ChatLog>
           <Composer
+            onStop={working ? () => void stopJob(script.id).catch((cause) => setError(message(cause))) : undefined}
             value={note}
             disabled={busy}
             canSend={!busy && ready && (!cueCount || !!note.trim())}
             label={cueCount ? "Ask for a change" : "Build the script"}
             model="Opus 5.5"
+            quote={quote ? `Narration ${quote.narrationNumber}: “${quote.quote}”` : undefined}
+            onClearQuote={() => setQuote(null)}
             onNewChat={chat.length > 0 ? () => setClearing(true) : undefined}
             placeholder={
               archived
                 ? "The footage is archived: restore it to change the script"
                 : busy
                 ? "Claude is working…"
-                : cueCount
+                : quote ? "What should we do with this passage?" : cueCount
                   ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
                   : "Notes for the build (optional), e.g. aim for 30 minutes…"
             }
             hint={!ready ? "Transcribe the footage first" : undefined}
-            extra={
-              !cueCount ? <Select size="sm" value={kind} disabled={busy} label="The format Claude writes in" options={kinds} onChange={setKind} /> : undefined
-            }
             onChange={setNote}
             onSend={() => void (cueCount ? revise() : build())}
           />

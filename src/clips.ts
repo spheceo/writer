@@ -11,6 +11,16 @@ export function clock(ms: number) {
 
 export const isCutIn = (clip: Clip) => clip.kind === "cut-in";
 
+/** Recording boundaries inside a footage clip, even when the sequence keeps it joined. */
+export function recordingSpans(clip: Clip, parts?: Part[]) {
+  if (isCutIn(clip) || !parts || parts.length < 2) return [];
+  return parts.flatMap((part, index) => {
+    const startMs = Math.max(clip.startMs, part.startMs);
+    const endMs = Math.min(clip.endMs, part.startMs + part.durationMs);
+    return endMs > startMs ? [{ index, title: part.title, startMs, endMs }] : [];
+  });
+}
+
 /** Length of the edited video: every footage range and every cut-in card. */
 export function keptMs(clips: Clip[]) {
   return clips.reduce((sum, clip) => sum + (clip.endMs - clip.startMs), 0);

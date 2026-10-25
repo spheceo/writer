@@ -35,7 +35,12 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [settings, setSettings] = useState(false);
   const [logs, setLogs] = useState(false);
+  const [importNotice, setImportNotice] = useState<{ id: string; title: string } | null>(null);
   const [account] = useAccount();
+  const acceptScript = (fresh: Script) => setOpen((current) => {
+    if (current?.id === fresh.id && (fresh.revision < current.revision || (fresh.revision === current.revision && fresh.updatedAt < current.updatedAt))) return current;
+    return fresh;
+  });
   // ⌘⇧L opens the Logs window, ⌘, Settings, from anywhere.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -100,7 +105,9 @@ export function App() {
 
   useEffect(() => {
     if (route.name !== "script" || !ready) return;
-    void getScript(route.id).then(setOpen).catch((cause) => setError(message(cause)));
+    let gone = false;
+    void getScript(route.id).then((fresh) => { if (!gone) acceptScript(fresh); }).catch((cause) => { if (!gone) setError(message(cause)); });
+    return () => { gone = true; };
   }, [route, ready]);
 
   // A script open here that another Mac changed comes down through the cloud
@@ -110,18 +117,46 @@ export function App() {
   shown.current = opened_;
   useEffect(() => {
     if (route.name !== "script" || !ready) return;
-    const timer = window.setInterval(() => {
+    let gone = false;
+    const ask = () => {
       const now = shown.current;
       if (!now || document.hidden) return;
       void getScript(now.id)
         .then((fresh) => {
           const current = shown.current;
-          if (current && fresh.id === current.id && fresh.updatedAt > current.updatedAt && fresh.revision !== current.revision) setOpen(fresh);
+          // Imports save words, speakers and status without making an edit revision.
+          if (!gone && current && fresh.id === current.id && fresh.updatedAt > current.updatedAt && fresh.revision >= current.revision) {
+            acceptScript(fresh);
+            if (current.status === "processing" && fresh.status === "ready") setImportNotice({ id: fresh.id, title: fresh.title });
+          }
         })
         .catch(() => {});
-    }, 8000);
-    return () => window.clearInterval(timer);
+    };
+    const timer = window.setInterval(ask, 4000);
+    const back = () => { if (!document.hidden) ask(); };
+    document.addEventListener("visibilitychange", back);
+    window.addEventListener("focus", back);
+    return () => {
+      gone = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", back);
+      window.removeEventListener("focus", back);
+    };
   }, [route, ready]);
+
+  const previousImports = useRef<ImportProgress[]>([]);
+  useEffect(() => {
+    const finished = previousImports.current.filter((item) => !progress.some((now) => now.id === item.id));
+    previousImports.current = progress;
+    for (const item of finished) {
+      void getScript(item.id).then((fresh) => {
+        if (fresh.status !== "ready") return;
+        setImportNotice({ id: fresh.id, title: fresh.title });
+        if (shown.current?.id === fresh.id) acceptScript(fresh);
+        refresh();
+      }).catch(() => {});
+    }
+  }, [progress]);
 
   // Scripts that come, go or change behind the list's back (the cloud, the
   // local API) show up straight away, and the list catches up when the window comes back.
@@ -159,19 +194,20 @@ export function App() {
   const opened = route.name === "script" && open && open.id === route.id ? open : null;
   // The open script still importing: its progress shows over the project, which loads when it's done.
   const importing = route.name === "script" ? (progress.find((item) => item.id === route.id) ?? null) : null;
-  const wasImporting = useRef(false);
+  const wasImporting = useRef<string | null>(null);
   useEffect(() => {
     if (route.name !== "script" || !ready) return;
+    let gone = false;
+    const load = () => void getScript(route.id).then((fresh) => { if (!gone) acceptScript(fresh); }).catch((cause) => { if (!gone) setError(message(cause)); });
     if (importing) {
-      wasImporting.current = true;
+      wasImporting.current = route.id;
       // Its script.json may not be there for the first moments.
-      if (!opened) void getScript(route.id).then(setOpen).catch(() => {});
-      return;
+      if (!opened) load();
+    } else if (wasImporting.current === route.id) {
+      wasImporting.current = null;
+      load();
     }
-    if (wasImporting.current) {
-      wasImporting.current = false;
-      void getScript(route.id).then(setOpen).catch((cause) => setError(message(cause)));
-    }
+    return () => { gone = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [!!importing, importing?.stage, route, ready]);
   // Signed out, the whole window is the sign-in.
@@ -186,9 +222,9 @@ export function App() {
   return (
     <>
       {opened?.commentary ? (
-        <CommentaryEditor script={opened} onChange={setOpen} onBack={home} />
+        <CommentaryEditor key={opened.id} script={opened} onChange={setOpen} onBack={home} />
       ) : opened ? (
-        <Editor script={opened} onChange={setOpen} onBack={home} />
+        <Editor key={opened.id} script={opened} onChange={setOpen} onBack={home} />
       ) : route.name === "script" ? (
         <div className="studio">
           <header className="topbar" data-tauri-drag-region>
@@ -212,6 +248,11 @@ export function App() {
         />
       )}
       <ImportScreen item={importing} onLeave={home} />
+      {importNotice && <div className="toasts"><div className="toast import-complete" role="status">
+        <span><b>Import finished</b> · {importNotice.title}</span>
+        <button type="button" className="tool" onClick={() => { setRoute({ name: "script", id: importNotice.id }); setImportNotice(null); }}>Open script</button>
+        <button type="button" className="icon-tool" aria-label="Dismiss import notification" onClick={() => setImportNotice(null)}><Icon name="close" size={14} /></button>
+      </div></div>}
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <LitStyle />
       <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />

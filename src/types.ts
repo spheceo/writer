@@ -20,7 +20,7 @@ export type Clip = {
   notes?: Note[];
 };
 
-export type Note = { id: string; text: string; at: number };
+export type Note = { id: string; text: string; at: number; anchor?: { start: number; end: number; quote: string } };
 
 /** One recording of a joined Drive folder, on the joined clock. */
 export type Part = {
@@ -65,6 +65,7 @@ export type Check = { name: string; ok: boolean; detail: string };
 export type Creator = { sub: string; name: string; email?: string; picture?: string | null };
 
 export type Script = {
+  speakerCheck?: { total: number; checked: number; failed: string[]; at: number; needsApply?: boolean };
   id: string;
   title: string;
   sourceKind: string;

@@ -12,23 +12,27 @@ const GAP = 16;
 const RAIL_GAP = 12;
 export const RAIL_W = 300;
 
-export type Zoom = "fit" | number;
+export type Zoom = "fit" | "width" | number;
 export const ZOOMS: { value: Zoom; label: string }[] = [
   { value: "fit", label: "Fit page" },
+  { value: "width", label: "Fit width" },
+  { value: 0.25, label: "25%" },
   { value: 0.5, label: "50%" },
   { value: 0.75, label: "75%" },
-  { value: 0.9, label: "90%" },
   { value: 1, label: "100%" },
   { value: 1.25, label: "125%" },
+  { value: 1.5, label: "150%" },
+  { value: 2, label: "200%" },
 ];
 
 /** A zoom kept per view, so Script and Split each open as they were left. */
 export function useZoom(key: string) {
   const [zoom, setZoom] = useState<Zoom>(() => {
     const saved = window.localStorage.getItem(`writer.zoom.${key}`);
-    if (!saved || saved === "fit") return "fit";
+    if (!saved) return key.endsWith("split") ? "width" : "fit";
+    if (saved === "fit" || saved === "width") return saved;
     const value = Number(saved);
-    return ZOOMS.some((option) => option.value === value) ? value : "fit";
+    return Number.isFinite(value) && value >= 0.01 && value <= 4 ? value : "fit";
   });
   useEffect(() => window.localStorage.setItem(`writer.zoom.${key}`, String(zoom)), [key, zoom]);
   return [zoom, setZoom] as const;
@@ -40,21 +44,22 @@ export function useScale(canvas: RefObject<HTMLDivElement | null>, zoom: Zoom, s
   useEffect(() => {
     const node = canvas.current;
     if (!node) return;
-    const spread = sheet.width + (rail ? RAIL_GAP + RAIL_W : 0);
-    const fit = () => setScale(zoom === "fit" ? Math.max(0.3, Math.min(1.5, (node.clientWidth - 48) / spread)) : zoom);
+    const fit = () => {
+      const width = (node.clientWidth - 48 - (rail ? RAIL_GAP + RAIL_W : 0)) / sheet.width;
+      const height = (node.clientHeight - 48) / sheet.height;
+      setScale(typeof zoom === "number" ? zoom : Math.max(0.1, Math.min(width, zoom === "fit" ? height : Infinity)));
+    };
     fit();
     const observer = new ResizeObserver(fit);
     observer.observe(node);
     return () => observer.disconnect();
-  }, [canvas, zoom, sheet.width, rail]);
+  }, [canvas, zoom, sheet.width, sheet.height, rail]);
   return scale;
 }
 
 function step(zoom: Zoom, scale: number, by: 1 | -1): Zoom {
-  const fixed = ZOOMS.map((option) => option.value).filter((value): value is number => typeof value === "number");
-  const now = zoom === "fit" ? scale : zoom;
-  const next = by > 0 ? fixed.find((value) => value > now + 0.001) : [...fixed].reverse().find((value) => value < now - 0.001);
-  return next ?? zoom;
+  const now = typeof zoom === "number" ? zoom : scale;
+  return Math.min(4, Math.max(0.01, (Math.round(now * 10) + by) / 10));
 }
 
 /** The document toolbar's left side, as Repack's: step, choose, the scale, and the page in view. */
@@ -71,6 +76,7 @@ export function ZoomTools({
   pages: number;
   onZoom: (zoom: Zoom) => void;
 }) {
+  const sizes = [...new Set([...ZOOMS.flatMap((option) => typeof option.value === "number" ? [option.value] : []), ...(typeof zoom === "number" ? [zoom] : [])])].sort((a, b) => a - b);
   return (
     <div className="zoom">
       <div className="zoom-tools">
@@ -82,14 +88,14 @@ export function ZoomTools({
           className="zoom-select"
           value={String(zoom)}
           label="Script zoom"
-          options={ZOOMS.map((option) => ({ value: String(option.value), label: option.label }))}
-          onChange={(value) => onZoom(value === "fit" ? "fit" : Number(value))}
+          options={[{ value: "fit", label: "Fit page" }, { value: "width", label: "Fit width" }, ...sizes.map((value) => ({ value: String(value), label: `${Math.round(value * 100)}%` }))]}
+          onChange={(value) => onZoom(value === "fit" || value === "width" ? value : Number(value))}
         />
         <button type="button" aria-label="Zoom in" onClick={() => onZoom(step(zoom, scale, 1))}>
           <Icon name="plus" size={13} />
         </button>
       </div>
-      <span className="zoom-value">{Math.round(scale * 100)}%</span>
+      {typeof zoom !== "number" && <span className="zoom-value">{Math.round(scale * 100)}%</span>}
       <span className="page-of">Page {Math.min(page, pages)} of {pages}</span>
     </div>
   );
@@ -163,12 +169,12 @@ export function Paper({
       const anchor = root.querySelector<HTMLElement>(`[data-anchor="${card.dataset.card}"]`);
       const top = Math.max(anchor ? MARGIN + within(anchor, root) - 10 : below, below);
       card.style.top = `${top}px`;
-      below = top + card.offsetHeight + 8;
+      below = top + (card.offsetHeight + 8) / scale;
     }
   };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: lays out again on every change it is told of
-  useLayoutEffect(() => layout.current(), [version, children, rail]);
+  useLayoutEffect(() => layout.current(), [version, children, rail, scale]);
   useEffect(() => {
     const root = body.current;
     if (!root) return;
@@ -178,7 +184,7 @@ export function Paper({
   }, []);
 
   const height = pages * stride - GAP;
-  const width = sheet.width + (rail ? RAIL_GAP + RAIL_W : 0);
+  const width = sheet.width + (rail ? (RAIL_GAP + RAIL_W) / scale : 0);
   return (
     <div className="sheet" style={{ width: width * scale, height: height * scale }}>
       <div className="spread" style={{ width, height, transform: `scale(${scale})`, ["--inverse" as string]: 1 / scale }}>
@@ -191,7 +197,7 @@ export function Paper({
           </div>
         </article>
         {rail ? (
-          <aside className="doc-rail" ref={cards} style={{ height }}>
+          <aside className="doc-rail" ref={cards} style={{ height, width: RAIL_W / scale, marginLeft: RAIL_GAP / scale }}>
             {rail}
           </aside>
         ) : null}
@@ -222,7 +228,7 @@ export function Grow({
   /** Review bands on the text (review.tsx): drawn under it, their notes shown on hover. */
   bands?: Band[];
   /** Words selected (snapped to whole words, as the review page snaps them): where, and where on screen. */
-  onWords?: (start: number, end: number, rect: DOMRect) => void;
+  onWords?: (start: number, end: number, rect: DOMRect, input: HTMLTextAreaElement) => void;
   onCommit: (text: string) => void;
 }) {
   const [text, setText] = useState(value);
@@ -284,6 +290,7 @@ export function Grow({
         if (ids.length) openNote(ids[0]);
       }}
       onKeyUp={(event) => event.shiftKey && picked(event.currentTarget)}
+      onSelect={(event) => picked(event.currentTarget)}
     />
   );
   function markAt(x: number, y: number) {
@@ -299,7 +306,7 @@ export function Grow({
     while (end < node.value.length && /[\p{L}\p{N}'’-]/u.test(node.value[end])) end += 1;
     while (start < end && /\s/.test(node.value[start])) start += 1;
     while (end > start && /\s/.test(node.value[end - 1])) end -= 1;
-    if (end > start) onWords(start, end, node.getBoundingClientRect());
+    if (end > start) onWords(start, end, node.getBoundingClientRect(), node);
   }
   if (!banded || !bands) return textarea;
   return (

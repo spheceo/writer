@@ -89,7 +89,7 @@ fn article(link: Option<&str>) -> Result<Option<crate::research::Research>, Stri
     link.map(str::trim).filter(|link| !link.is_empty()).map(crate::research::provided).transpose()
 }
 
-pub fn from_file(app: &AppHandle, data: &Path, source: &Path, link: Option<&str>) -> Result<ScriptDetail, String> {
+pub fn from_file(app: &AppHandle, data: &Path, source: &Path, link: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     let source = fs::canonicalize(source).map_err(|_| "That file can't be opened.".to_string())?;
     if !source.is_file() {
         return Err("That file can't be opened.".into());
@@ -100,23 +100,23 @@ pub fn from_file(app: &AppHandle, data: &Path, source: &Path, link: Option<&str>
         .unwrap_or_else(|| "Untitled".into());
     let path = source.to_string_lossy().into_owned();
     let found = article(link)?;
-    start(app, data, new_script(title, "file", path.clone(), path), found)
+    start(app, data, new_script(title, "file", path.clone(), path), found, kind)
 }
 
-pub fn from_youtube(app: &AppHandle, data: &Path, url: &str, link: Option<&str>) -> Result<ScriptDetail, String> {
+pub fn from_youtube(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     youtube::check_url(url)?;
     let found = article(link)?;
-    start(app, data, new_script("YouTube video".into(), "youtube", url.trim().to_string(), String::new()), found)
+    start(app, data, new_script("YouTube video".into(), "youtube", url.trim().to_string(), String::new()), found, kind)
 }
 
 /// A Drive file, or a folder of recordings joined in name order, as Repack
 /// takes them. Downloads go straight from Google to this Mac.
 /// A title given (a Trello card's) is kept in place of the folder's name.
-pub fn from_drive(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, title: Option<&str>) -> Result<ScriptDetail, String> {
+pub fn from_drive(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, title: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     drive::parse(url)?;
     let found = article(link)?;
     let title = title.map(|title| title.trim().chars().take(180).collect::<String>()).filter(|title| !title.is_empty());
-    start(app, data, new_script(title.unwrap_or_else(|| "Google Drive footage".into()), "drive", url.trim().to_string(), String::new()), found)
+    start(app, data, new_script(title.unwrap_or_else(|| "Google Drive footage".into()), "drive", url.trim().to_string(), String::new()), found, kind)
 }
 
 /// Several videos, one case each, joined as one compilation. The title sets
@@ -244,7 +244,7 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
 /// one Courtroom case whose hearing runs across them, as Repack's Courtroom
 /// takes a case's YouTube links. A link's `t` is kept as a hint to where the
 /// case starts in that video.
-pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[String], case: bool) -> Result<ScriptDetail, String> {
+pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[String], case: bool, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 180 {
         return Err("Give it a title (up to 180 characters).".into());
@@ -256,19 +256,22 @@ pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[Strin
         script.kind = crate::formats::Kind::Courtroom;
     }
     script.reuses = reuses;
-    start(app, data, script, None)
+    start(app, data, script, None, kind)
 }
 
-fn start(app: &AppHandle, data: &Path, mut script: Script, article: Option<crate::research::Research>) -> Result<ScriptDetail, String> {
+fn start(app: &AppHandle, data: &Path, mut script: Script, article: Option<crate::research::Research>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     // Only kinds of script this person may write (can.rs), starting as the first format they may.
-    script.kind = if script.compilation {
-        crate::can::first_compilation_kind()?
-    } else if script.source_kind == "compilation" {
-        crate::can::require(crate::can::COURTROOM)?;
+    script.kind = if script.source_kind == "compilation" && !script.compilation {
+        if kind.is_some_and(|kind| kind != crate::formats::Kind::Courtroom) { return Err("Videos of one Courtroom case must use the Courtroom format.".into()); }
         crate::formats::Kind::Courtroom
+    } else if let Some(kind) = kind {
+        kind
+    } else if script.compilation {
+        crate::can::first_compilation_kind()?
     } else {
         crate::can::first_single_kind()?
     };
+    crate::can::require_kind(&script, script.kind)?;
     let _busy = Busy::start(script.id.clone())?;
     let dir = store::script_dir(data, &script.id)?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
@@ -520,6 +523,9 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
             }
             Err(error) => return Err(error),
         }
+        // Keep the transcript before the optional visual check, so a stopped
+        // import has its content on disk too, not only Scribe's pieces.
+        store::write(dir, script)?;
         // Who speaks each line, by watching the footage, then names for the
         // voices, so the transcript reads with them. Neither can stop the
         // import: a failure leaves the voices as heard, or "Speaker 1", and
@@ -557,9 +563,9 @@ fn watch_speakers(app: &AppHandle, dir: &Path, script: &mut Script, settings: &S
     script.progress = 90;
     emit(app, script, "Checking who speaks.");
     let (id, title) = (script.id.clone(), script.title.clone());
-    let on_window = |done: usize, count: usize| {
+    let on_window = |done: usize, count: usize, cached: usize| {
         let percent = 90 + ((done * 8) / count.max(1)) as u8;
-        let detail = if count > 1 { format!("Checking who speaks: {done} of {count} stretches watched.") } else { "Checking who speaks.".into() };
+        let detail = format!("Checking who speaks: {done} of {count} stretches checked.{}", if cached > 0 { format!(" {cached} saved checks reused.") } else { String::new() });
         emit_parts(app, &id, &title, "transcribing", percent, &detail);
     };
     let before = script.clone();
@@ -568,15 +574,16 @@ fn watch_speakers(app: &AppHandle, dir: &Path, script: &mut Script, settings: &S
     match outcome {
         Ok(None) => false,
         Ok(Some(report)) => {
+            crate::log::info("import", format!("{}: speaker check: {} stretches, {} saved answers reused, {} unchecked, {} lines corrected", crate::log::named(&script.id, &script.title), report.windows, report.cached, report.failed.len(), report.lines_changed));
             if !report.failed.is_empty() {
                 note(script, format!(
-                    "{} of {} stretches of footage couldn't be watched to check who speaks ({}); their speakers are as heard.",
+                    "The transcript is ready. Visual speaker checks couldn't finish for {} of {} footage stretches ({}). Those stretches keep their audio-based speaker labels, which may combine or split voices incorrectly; no transcript words were removed.",
                     report.failed.len(),
                     report.windows,
                     report.failed[0]
                 ));
             }
-            let _ = store::write(dir, script);
+            if store::write(dir, script).is_ok() { crate::watch::applied(dir); }
             true
         }
         Err(error) => {
@@ -1299,25 +1306,43 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         return Err(if script.compilation { "A compilation needs at least two videos." } else { "A case across videos needs at least two of them." }.into());
     }
     let count = wanted.len();
-    let mut failed = Vec::new();
-    let mut items = Vec::new();
-    for (step, (index, video)) in wanted.iter().enumerate() {
-        let dest = folder.join(format!("{index:02}.mp4"));
-        let base = 5 + (step * 33 / count) as u8;
-        let span = (33 / count).max(1) as u8;
-        let detail = format!("Downloading video {} of {count}.", step + 1);
-        let (id, title) = (script.id.clone(), script.title.clone());
-        let result = fetch_video(data, &video.url, &dest, settings, &|percent, said| {
-            emit_parts(app, &id, &title, "downloading", base + (u32::from(percent) * u32::from(span) / 100) as u8, said.unwrap_or(&detail));
-        });
-        match result.and_then(|_| if readable(&dest) { Ok(()) } else { Err("Couldn't be read as video, so it was dropped.".into()) }) {
-            Ok(()) => items.push((video.title.clone(), dest, Some(video.url.clone()))),
-            Err(error) => {
-                if !readable(&dest) && pulled(&dest) == 0 {
+    if wanted.iter().any(|(_, video)| !video.url.contains("drive.google.com")) {
+        ensure_yt_dlp()?;
+    }
+    // As with Drive folders, fetch up to three recordings together, while
+    // keeping every destination and the final play order tied to its index.
+    let next = AtomicUsize::new(0);
+    let progress: Mutex<Vec<u8>> = Mutex::new(vec![0; count]);
+    let results: Mutex<Vec<Option<Result<PathBuf, String>>>> = Mutex::new((0..count).map(|_| None).collect());
+    let (id, title) = (script.id.clone(), script.title.clone());
+    std::thread::scope(|scope| {
+        for _ in 0..count.min(DRIVE_DOWNLOADS) {
+            scope.spawn(|| loop {
+                let step = next.fetch_add(1, Ordering::Relaxed);
+                let Some((index, video)) = wanted.get(step) else { break };
+                let dest = folder.join(format!("{index:02}.mp4"));
+                let result = fetch_video(data, &video.url, &dest, settings, &|percent, said| {
+                    if let Ok(mut progress) = progress.lock() {
+                        progress[step] = progress[step].max(percent);
+                        let percent = 5 + (progress.iter().map(|value| usize::from(*value)).sum::<usize>() * 33 / (count * 100)) as u8;
+                        let done = progress.iter().filter(|&&value| value == 100).count();
+                        let detail = format!("Downloading videos: {done} of {count} ready.{}", said.map(|text| format!(" {text}")).unwrap_or_default());
+                        emit_parts(app, &id, &title, "downloading", percent, &detail);
+                    }
+                }).and_then(|_| if readable(&dest) { Ok(dest.clone()) } else { Err("Couldn't be read as video, so it was dropped.".into()) });
+                if result.is_err() && !readable(&dest) && pulled(&dest) == 0 {
                     let _ = fs::remove_file(&dest);
                 }
-                failed.push(Failed { id: index.to_string(), title: video.title.clone(), error });
-            }
+                if let Ok(mut slots) = results.lock() { slots[step] = Some(result); }
+            });
+        }
+    });
+    let mut failed = Vec::new();
+    let mut items = Vec::new();
+    for ((index, video), result) in wanted.iter().zip(results.into_inner().map_err(|_| "The download lock failed.")?) {
+        match result.unwrap_or_else(|| Err("The download stopped.".into())) {
+            Ok(dest) => items.push((video.title.clone(), dest, Some(video.url.clone()))),
+            Err(error) => failed.push(Failed { id: index.to_string(), title: video.title.clone(), error }),
         }
     }
     if !failed.is_empty() {

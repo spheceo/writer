@@ -24,7 +24,7 @@ import mark from "./assets/writer-mark.svg";
 import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
 import type { Choice, ClaudeStatus, ImportProgress, Kind, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
-import { Dialog, Icon, Menu, Tabs, type ToastMessage, Toasts } from "./ui";
+import { Dialog, Icon, Menu, Select, Tabs, type ToastMessage, Toasts } from "./ui";
 import { UpdateButton } from "./update";
 
 /** The New script dialog's tabs: one case's video (YouTube, Drive or a file on this Mac), a compilation, a commentary. */
@@ -801,6 +801,12 @@ function ImportDialog({
   const [checked, setChecked] = useState<VideoCheck[] | null>(null);
   // One Courtroom case whose hearing runs across the videos, rather than a case each.
   const [oneCase, setOneCase] = useState(false);
+  const [format, setFormat] = useState<Kind>("interrogation");
+  const formats = source === "compilation" ? (oneCase ? ["courtroom" as Kind] : grants.compilationKinds) : grants.singleKinds;
+  const formatKey = formats.join();
+  useEffect(() => {
+    if (formats.length && !formats.includes(format)) setFormat(formats[0]);
+  }, [formatKey, format]);
   // A source this person can't use isn't offered: move to the first they can.
   useEffect(() => {
     if (sources.length && !sources.includes(source)) setSource(sources[0]);
@@ -966,12 +972,12 @@ function ImportDialog({
     const before = new Set((await getProgress().catch(() => [])).map((item) => item.id));
     const work =
       source === "compilation"
-        ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase)
+        ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase, format)
         : file
-          ? importFile(file, article.trim())
+          ? importFile(file, article.trim(), format)
           : isDrive(input)
-            ? importDrive(input, article.trim(), cardTitle)
-            : importYoutube(input, article.trim());
+            ? importDrive(input, article.trim(), cardTitle, format)
+            : importYoutube(input, article.trim(), format);
     const outcome = work.then(
       (script) => ({ kind: "done" as const, script }),
       (cause: unknown) => ({ kind: "failed" as const, cause }),
@@ -1096,6 +1102,10 @@ function ImportDialog({
           <TrelloPicker list={cards[trello]} problem={cardsProblem} all={allCards} onUse={useCard} />
         ) : (
         <div className="source" key={source} ref={fields}>
+          {source !== "commentary" && <label className="creation-format">
+            <span>{source === "compilation" && !oneCase ? "Compilation type" : "Script type"}</span>
+            <Select value={format} label={source === "compilation" ? "Compilation type" : "Script type"} disabled={busy || oneCase} options={formats.map((value) => ({ value, label: value === "foia" ? "Bodycam" : value === "courtroom" ? "Courtroom" : "Interrogation" }))} onChange={setFormat} />
+          </label>}
           {source === "commentary" ? (
             <>
               <input

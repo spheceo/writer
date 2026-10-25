@@ -84,32 +84,32 @@ fn get_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, path: String, article: Option<String>) -> Result<ScriptDetail, String> {
+async fn import_file(app: AppHandle, path: String, article: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_file(&app, &data, Path::new(&path), article.as_deref())
+        import::from_file(&app, &data, Path::new(&path), article.as_deref(), kind)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn import_youtube(app: AppHandle, url: String, article: Option<String>) -> Result<ScriptDetail, String> {
+async fn import_youtube(app: AppHandle, url: String, article: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_youtube(&app, &data, &url, article.as_deref())
+        import::from_youtube(&app, &data, &url, article.as_deref(), kind)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn import_drive(app: AppHandle, url: String, article: Option<String>, title: Option<String>) -> Result<ScriptDetail, String> {
+async fn import_drive(app: AppHandle, url: String, article: Option<String>, title: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_drive(&app, &data, &url, article.as_deref(), title.as_deref())
+        import::from_drive(&app, &data, &url, article.as_deref(), title.as_deref(), kind)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -150,10 +150,10 @@ async fn check_drive(app: AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>, case: Option<bool>) -> Result<ScriptDetail, String> {
+async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>, case: Option<bool>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_compilation(&app, &data, &title, &urls, case.unwrap_or(false))
+        import::from_compilation(&app, &data, &title, &urls, case.unwrap_or(false), kind)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -593,6 +593,7 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
         ),
     };
     built.report = format!("{}\n\n{found}", built.report.trim());
+    jobs::check_cancelled()?;
     let mut script = store::read(&dir)?;
     let before = script.clone();
     script.clips = match check_clips(built.clips, script.duration_ms) {
@@ -623,6 +624,7 @@ pub(crate) fn footage_path(dir: &Path, script: &model::Script) -> PathBuf {
 fn build_commentary(data: &Path, dir: &Path, id: &str, script: &model::Script, note: &str) -> Result<(String, f64), String> {
     jobs::stage(id, "Writing the script");
     let built = commentary::build(dir, script, note, &feedback::lessons_text(data))?;
+    jobs::check_cancelled()?;
     // Sources added or renamed during the build stay; the script is replaced.
     let mut script = store::read(dir)?;
     if let Some(found) = script.commentary.as_mut() {
@@ -743,6 +745,7 @@ pub fn revise_with(app: &AppHandle, id: &str, request: &str, said: &str, focus: 
         }
     };
     // Starting over waits for the producer to confirm it in the chat.
+    jobs::check_cancelled()?;
     if done.start_over {
         chat::ask_reset(&dir, &done.answer, Some(done.cost_usd));
         return Ok((done.answer, done.cost_usd));
@@ -785,6 +788,7 @@ pub fn revise_commentary(data: &Path, dir: &Path, script: &model::Script, reques
     let script = &script;
     chat::add(dir, "producer", said, None, false);
     let done = commentary::revise(dir, script, request, &feedback::lessons_text(data)).inspect_err(|error| chat::add(dir, "editor", error, None, true))?;
+    jobs::check_cancelled()?;
     if done.start_over {
         chat::ask_reset(dir, &done.answer, Some(done.cost_usd));
         return Ok((done.answer, done.cost_usd));
@@ -1032,6 +1036,30 @@ fn forget_lesson(app: AppHandle, lesson: String) -> Result<Vec<feedback::Lesson>
 }
 
 /// Shares the script on a Repack review link, or its next version on the same link.
+/// The latest shared version replaced in place by the script as it is now.
+pub fn replace_shared_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    reviews::replace_latest(data, id)
+}
+
+/// A checked draft put in as the commentary's script (the teaching loop's
+/// result, or a fix made through the debug routes), a new revision.
+#[cfg(debug_assertions)]
+pub fn use_draft_now(data: &Path, id: &str, mut draft: commentary::Draft) -> Result<ScriptDetail, String> {
+    can::require_id(data, id)?;
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    let commentary = script.commentary.as_mut().ok_or("That isn't a commentary script.")?;
+    draft.ensure_ids();
+    commentary.draft = Some(draft);
+    script.revision += 1;
+    script.updated_at = model::now_ms();
+    store::write(&dir, &script)?;
+    store::library_changed();
+    Ok(store::detail(script, &dir))
+}
+
 pub fn share_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
     can::require(can::SHARE)?;
     reviews::share(data, id)
@@ -1411,7 +1439,42 @@ fn clear_chat(app: AppHandle, id: String) -> Result<(), String> {
     clear_chat_now(&data_dir(&app)?, &id)
 }
 
-/// Declines a proposed rewrite: the saved narration stays.
+/// Resolves the selected proposals together against the revision reviewed.
+pub fn resolve_proposals_now(data: &Path, id: &str, revision: u32, proposals: &[String], accept: bool) -> Result<ScriptDetail, String> {
+    can::require_id(data, id)?;
+    if jobs::running(id) || import::importing(id) { return Err("Wait for the current work to finish before reviewing changes.".into()); }
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    if script.revision != revision { return Err("The script changed. Review the latest changes first.".into()); }
+    let before = script.clone();
+    script = resolved_proposals(&script, proposals, accept)?;
+    script.revision += 1;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    versions::keep(&dir, "you", &before, &script);
+    Ok(store::detail(script, &dir))
+}
+
+fn resolved_proposals(original: &model::Script, proposals: &[String], accept: bool) -> Result<model::Script, String> {
+    let mut script = original.clone();
+    if proposals.is_empty() || proposals.iter().any(|id| !script.proposals.iter().any(|item| &item.id == id)) { return Err("These suggested changes are no longer waiting for review.".into()); }
+    if accept {
+        for proposal in script.proposals.iter().filter(|item| proposals.contains(&item.id)) {
+            let cue = script.clips.iter_mut().find(|clip| clip.id == proposal.cut_in && clip.is_cut_in()).ok_or("A proposed paragraph is no longer in the script.")?;
+            if cue.narration.as_deref().unwrap_or("") != proposal.before { return Err("A proposed paragraph changed. Review it again before accepting.".into()); }
+            cue.narration = Some(proposal.after.clone());
+        }
+        script.clips = check_clips(script.clips, script.duration_ms)?;
+    }
+    script.proposals.retain(|item| !proposals.contains(&item.id));
+    Ok(script)
+}
+
+#[tauri::command]
+fn resolve_proposals(app: AppHandle, id: String, revision: u32, proposals: Vec<String>, accept: bool) -> Result<ScriptDetail, String> {
+    resolve_proposals_now(&data_dir(&app)?, &id, revision, &proposals, accept)
+}
+
 pub fn decline_proposal_now(data: &Path, id: &str, proposal: &str) -> Result<ScriptDetail, String> {
     let dir = store::script_dir(data, id)?;
     let mut script = store::read(&dir)?;
@@ -1426,6 +1489,15 @@ fn decline_proposal(app: AppHandle, id: String, proposal: String) -> Result<Scri
     can::require_id(&data_dir(&app)?, &id)?;
     decline_proposal_now(&data_dir(&app)?, &id, &proposal)
 }
+
+#[tauri::command]
+fn retry_speakers(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
+    jobs::start(app, id, jobs::Work::Speakers)
+}
+
+#[tauri::command]
+fn stop_job(app: AppHandle, id: String) -> Result<(), String> { jobs::stop(&data_dir(&app)?, &id) }
 
 /// Respells a transcript word, or puts it back with an empty text. Its timing never changes.
 pub fn correct_word_now(data: &Path, id: &str, revision: u32, word: &str, text: &str) -> Result<ScriptDetail, String> {
@@ -1558,7 +1630,7 @@ pub(crate) fn check_clips(clips: Vec<Clip>, duration_ms: u64) -> Result<Vec<Clip
         if bad_id || bad_range {
             return Err("A clip has invalid boundaries.".into());
         }
-        if clip.notes.len() > 50 || clip.notes.iter().any(|note| note.text.trim().is_empty() || note.text.chars().count() > 2_000 || note.id.is_empty() || note.id.len() > 80) {
+        if clip.notes.len() > 50 || clip.notes.iter().any(|note| note.text.trim().is_empty() || note.text.chars().count() > 2_000 || note.id.is_empty() || note.id.len() > 80 || note.anchor.as_ref().is_some_and(|anchor| anchor.start >= anchor.end || anchor.end > 12_000 || anchor.quote.is_empty() || anchor.quote.chars().count() > 6_000)) {
             return Err("A timestamp holds up to 50 comments of up to 2,000 characters.".into());
         }
         match clip.kind.as_deref() {
@@ -1701,6 +1773,9 @@ pub fn run() {
             clear_chat,
             reset_script,
             decline_proposal,
+            resolve_proposals,
+            retry_speakers,
+            stop_job,
             correct_word,
             set_heading,
             list_versions,
@@ -1727,6 +1802,26 @@ pub fn run() {
 #[cfg(test)]
 mod reset_tests {
     use super::*;
+
+    #[test]
+    fn suggested_changes_accept_or_reject_together_without_overwriting_newer_words() {
+        let mut script: model::Script = serde_json::from_value(serde_json::json!({
+            "id": "a1", "title": "Case", "sourceKind": "file", "sourceUrl": "", "originalPath": "", "status": "ready", "stage": "ready", "progress": 100, "error": null, "durationMs": 10_000, "revision": 3, "createdAt": 0, "updatedAt": 0,
+            "clips": [{"id":"n1","kind":"cut-in","startMs":0,"endMs":3000,"narration":"First paragraph."},{"id":"n2","kind":"cut-in","startMs":0,"endMs":3000,"narration":"Second paragraph."}],
+            "proposals": [{"id":"p1","cutIn":"n1","before":"First paragraph.","after":"First rewrite.","at":0},{"id":"p2","cutIn":"n2","before":"Second paragraph.","after":"Second rewrite.","at":0}]
+        })).unwrap();
+        let ids = vec!["p1".into(), "p2".into()];
+        let rejected = resolved_proposals(&script, &ids, false).unwrap();
+        assert!(rejected.proposals.is_empty());
+        assert_eq!(rejected.clips[0].narration.as_deref(), Some("First paragraph."));
+        let accepted = resolved_proposals(&script, &ids, true).unwrap();
+        assert!(accepted.proposals.is_empty());
+        assert_eq!(accepted.clips[1].narration.as_deref(), Some("Second rewrite."));
+        script.clips[1].narration = Some("A manual edit.".into());
+        assert!(resolved_proposals(&script, &ids, true).is_err());
+        assert_eq!(script.clips[0].narration.as_deref(), Some("First paragraph."));
+        assert!(resolved_proposals(&script, &["old-proposal".into()], false).is_err());
+    }
 
     #[test]
     fn starting_over_clears_the_built_script_only_once_accepted() {

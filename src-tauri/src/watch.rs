@@ -16,7 +16,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,10 +35,27 @@ const SHORTEST_MS: u64 = 150_000;
 const LONGEST_MS: u64 = 330_000;
 /// Footage either side of a window's lines, so their first and last words are seen.
 const PAD_MS: u64 = 1_500;
-/// Windows watched at once; the relay takes 40 a minute from one Mac.
-const AT_ONCE: usize = 4;
+/// Windows watched at once; rate-limited replies still wait before retrying.
+const AT_ONCE: usize = 8;
 /// Tries per window.
 const TRIES: usize = 3;
+/// Includes retries and smaller requests. A difficult stretch cannot fan out indefinitely.
+const REQUESTS_PER_WINDOW: usize = 9;
+
+struct Budget { remaining: AtomicUsize, until: Instant, cancelling: Option<std::sync::Arc<AtomicBool>> }
+impl Budget {
+    fn new(cancelling: Option<std::sync::Arc<AtomicBool>>) -> Self { Self { remaining: AtomicUsize::new(REQUESTS_PER_WINDOW), until: Instant::now() + Duration::from_secs(360), cancelling } }
+    fn time_left(&self) -> Duration { self.until.saturating_duration_since(Instant::now()) }
+    fn take(&self) -> Result<Duration, String> {
+        if self.cancelling.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) { return Err("Stopped by you; completed checks are saved.".into()); }
+        let left = self.remaining.load(Ordering::Relaxed);
+        let time = self.time_left();
+        if left == 0 || time < Duration::from_secs(5) { return Err("this stretch reached its retry limit; its completed checks are saved for a manual retry".into()); }
+        // A parent and its halves run on the same worker, in order.
+        self.remaining.store(left - 1, Ordering::Relaxed);
+        Ok(time.min(Duration::from_secs(300)))
+    }
+}
 /// A clip goes in the request as base64, which the relay caps at 24 MB.
 const MAX_CLIP_BYTES: u64 = 15_000_000;
 
@@ -327,6 +344,8 @@ enum Trouble {
     Window(String),
     /// No window can be: stop the watcher.
     All(String),
+    /// A long inference hit a gateway deadline; try smaller stretches instead.
+    Timeout(String),
 }
 
 fn explain(failed: Failed) -> Trouble {
@@ -338,26 +357,79 @@ fn explain(failed: Failed) -> Trouble {
             match code {
                 503 if said.contains("not configured") => Trouble::All("the watcher isn't set up on Writer's service yet".into()),
                 429 => Trouble::Again(what, 30),
+                504 | 524 => Trouble::Timeout("the speaker check timed out".into()),
                 500..=599 => Trouble::Again(what, 10),
                 _ => Trouble::Window(what),
             }
         }
         Failed::Unsent(reason) => Trouble::Again(format!("couldn't reach Writer's service ({reason})"), 10),
+        Failed::Network(reason) if reason.to_lowercase().contains("timed out") || reason.to_lowercase().contains("timeout") => Trouble::Timeout("the speaker check timed out".into()),
         Failed::Network(reason) => Trouble::Again(format!("the connection broke ({reason})"), 5),
     }
 }
 
+fn cached_answer(folder: &Path, window: &Window, lines: &[Line]) -> Option<Answer> {
+    let bytes = std::fs::read(folder.join(format!("{}.json", cache_key(window, lines)))).ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    let reply = json!({ "choices": [{ "message": { "content": value.get("answer")?.to_string() } }] });
+    read_answer(&reply, lines.len()).ok().map(|(answer, _)| answer)
+}
+
+#[derive(Clone)]
+struct Watched {
+    answers: Vec<(Window, Vec<Line>, Answer)>,
+    cost: f64,
+    cached: bool,
+}
+
+fn cached_watch(folder: &Path, window: &Window, lines: &[Line]) -> Option<Watched> {
+    if let Some(answer) = cached_answer(folder, window, lines) {
+        return Some(Watched { answers: vec![(window.clone(), lines.to_vec(), answer)], cost: 0.0, cached: true });
+    }
+    if !folder.join(format!("{}.split", cache_key(window, lines))).is_file() { return None; }
+    let mut answers = Vec::new();
+    for (part, mine) in halves(window, lines)? {
+        answers.extend(cached_watch(folder, &part, &mine)?.answers);
+    }
+    Some(Watched { answers, cost: 0.0, cached: true })
+}
+
+/// Split only at a transcript line. Each half is applied independently, so
+/// two people's window-local letters can never be mistaken for one person.
+fn halves(window: &Window, lines: &[Line]) -> Option<[(Window, Vec<Line>); 2]> {
+    if lines.len() < 2 || window.end_ms - window.start_ms < 90_000 { return None; }
+    let middle = window.start_ms + (window.end_ms - window.start_ms) / 2;
+    let at = (1..lines.len()).min_by_key(|&n| lines[n].start_ms.abs_diff(middle))?;
+    Some([
+        (Window { end_ms: (lines[at - 1].end_ms + PAD_MS).min(window.end_ms), lines: 0..at, ..window.clone() }, lines[..at].to_vec()),
+        (Window { start_ms: lines[at].start_ms.saturating_sub(PAD_MS).max(window.start_ms), lines: 0..lines.len() - at, ..window.clone() }, lines[at..].to_vec()),
+    ])
+}
+
+fn watch_halves(relay: &Relay, footage: &Path, folder: &Path, title: &str, halves: [(Window, Vec<Line>); 2], stop: &AtomicBool, budget: &Budget) -> Result<Watched, String> {
+    let mut combined = Watched { answers: Vec::new(), cost: 0.0, cached: true };
+    for (window, lines) in halves {
+        let result = watch_window(relay, footage, folder, title, &window, &lines, stop, budget)?;
+        combined.answers.extend(result.answers);
+        combined.cost += result.cost;
+        combined.cached &= result.cached;
+    }
+    Ok(combined)
+}
+
 /// A window watched: its kept answer, else asked (up to three tries) and
 /// kept. Returns the answer, what it cost now, and whether it was kept.
-fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, window: &Window, lines: &[Line], stop: &AtomicBool) -> Result<(Answer, f64, bool), String> {
+fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, window: &Window, lines: &[Line], stop: &AtomicBool, budget: &Budget) -> Result<Watched, String> {
     let key = cache_key(window, lines);
     let kept = folder.join(format!("{key}.json"));
-    if let Some(answer) = std::fs::read(&kept)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|value| serde_json::from_value::<Answer>(value.get("answer")?.clone()).ok())
-    {
-        return Ok((answer, 0.0, true));
+    if let Some(result) = cached_watch(folder, window, lines) {
+        return Ok(result);
+    }
+    let split = folder.join(format!("{key}.split"));
+    if split.is_file() {
+        if let Some(parts) = halves(window, lines) {
+            return watch_halves(relay, footage, folder, title, parts, stop, budget);
+        }
     }
     let clip = folder.join(format!("{key}.mp4"));
     let made = cut(footage, window, &clip).and_then(|_| std::fs::read(&clip).map_err(|error| error.to_string()));
@@ -369,7 +441,8 @@ fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, windo
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let asked = relay.watch(WATCH_SYSTEM, &text, &encoded, &schema());
+        let timeout = budget.take()?;
+        let asked = relay.watch_until(WATCH_SYSTEM, &text, &encoded, &schema(), timeout);
         let wait = match asked {
             Ok(reply) => match read_answer(&reply, lines.len()) {
                 Ok((answer, cost)) => {
@@ -378,7 +451,7 @@ fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, windo
                     if std::fs::write(&tmp, serde_json::to_vec(&saved).unwrap_or_default()).is_ok() {
                         let _ = std::fs::rename(&tmp, &kept);
                     }
-                    return Ok((answer, cost, false));
+                    return Ok(Watched { answers: vec![(window.clone(), lines.to_vec(), answer)], cost, cached: false });
                 }
                 Err(error) => {
                     last = error;
@@ -386,6 +459,16 @@ fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, windo
                 }
             },
             Err(failed) => match explain(failed) {
+                Trouble::Timeout(error) => {
+                    if let Some(parts) = halves(window, lines) {
+                        // Remember the smaller plan across a restart too.
+                        let _ = std::fs::write(&split, b"");
+                        crate::log::warn("import", format!("{title}: speaker check {}–{} timed out; checking smaller stretches", clock(window.start_ms), clock(window.end_ms)));
+                        return watch_halves(relay, footage, folder, title, parts, stop, budget);
+                    }
+                    last = error;
+                    2
+                }
                 Trouble::Again(error, wait) => {
                     last = error;
                     wait
@@ -398,7 +481,8 @@ fn watch_window(relay: &Relay, footage: &Path, folder: &Path, title: &str, windo
             },
         };
         if attempt < TRIES {
-            std::thread::sleep(Duration::from_secs(wait));
+            crate::log::warn("import", format!("{title}: speaker check {}–{}, attempt {attempt}/{TRIES}: {last}; retrying in {wait} s", clock(window.start_ms), clock(window.end_ms)));
+            std::thread::sleep(Duration::from_secs(wait).min(budget.time_left()));
         }
     }
     Err(last)
@@ -547,6 +631,87 @@ pub struct Report {
     pub labels: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status { pub total: usize, pub checked: usize, pub failed: Vec<String>, pub at: i64, #[serde(default)] pub needs_apply: bool }
+
+pub fn status(dir: &Path) -> Option<Status> {
+    serde_json::from_slice(&std::fs::read(dir.join("watch/status.json")).ok()?).ok()
+}
+
+pub fn applied(dir: &Path) {
+    let Some(mut status) = status(dir) else { return };
+    status.needs_apply = false;
+    let tmp = dir.join("watch/status.json.tmp");
+    if let Ok(bytes) = serde_json::to_vec(&status) {
+        if std::fs::write(&tmp, bytes).is_ok() { let _ = std::fs::rename(tmp, dir.join("watch/status.json")); }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct Input { fingerprint: String, words: Vec<Word> }
+
+/// Speaker corrections must not change the next retry's transcript lines,
+/// windows or cache keys. Keep the transcription before any visual changes.
+fn input_fingerprint(script: &Script) -> String {
+    let mut hash = Sha256::new();
+    hash.update(script.duration_ms.to_le_bytes());
+    for part in &script.parts { hash.update(part.start_ms.to_le_bytes()); hash.update(part.duration_ms.to_le_bytes()); hash.update([u8::from(part.audio)]); }
+    for word in &script.words {
+        hash.update(word.start_ms.to_le_bytes()); hash.update(word.end_ms.to_le_bytes());
+        hash.update(word.id.as_bytes()); hash.update([0]); hash.update(word.text.as_bytes()); hash.update([0]);
+    }
+    hash.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn prepare_input(script: &mut Script, dir: &Path) -> Result<(), String> {
+    let folder = dir.join("watch");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let fingerprint = input_fingerprint(script);
+    let path = folder.join("input.json");
+    let kept = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Input>(&bytes).ok());
+    if let Some(input) = kept.filter(|input| input.fingerprint == fingerprint) {
+        script.words = input.words;
+    } else {
+        let input = Input { fingerprint, words: script.words.clone() };
+        let tmp = folder.join("input.json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&input).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        std::fs::rename(tmp, path).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Explicit retry: completed answers are reused; only unfinished checks ask
+/// the service again. Reloading, polling and opening a script never call this.
+pub fn retry(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> {
+    let data = crate::data_dir(app)?;
+    crate::can::require_id(&data, id)?;
+    let dir = store::script_dir(&data, id)?;
+    let mut script = store::read(&dir)?;
+    if crate::archive::state(&data, id).is_some() { return Err("Restore the footage before checking its speakers.".into()); }
+    if !status(&dir).is_some_and(|status| !status.failed.is_empty() || status.needs_apply) { return Err("There are no unfinished speaker checks.".into()); }
+    let revision = script.revision;
+    let _preview = crate::storage::fetch_preview(&data, id)?;
+    let report = run(&mut script, &dir, &crate::settings::load(&data), &|done, total, cached| {
+        crate::jobs::stage(id, &format!("Checking speakers: {done} of {total}; {cached} saved checks reused"));
+    })?.ok_or("There is no video speech to check.")?;
+    crate::jobs::check_cancelled()?;
+    let mut fresh = store::read(&dir)?;
+    if fresh.revision != revision { return Err("The script changed while checking speakers. The check results are saved; retry to apply them.".into()); }
+    let before = fresh.clone();
+    fresh.words = script.words;
+    fresh.speakers = script.speakers;
+    fresh.notes.retain(|note| !note.contains("stretches of footage couldn't be watched") && !note.contains("Visual speaker checks couldn't finish") && !note.starts_with("Writer couldn't watch the footage"));
+    if !report.failed.is_empty() { fresh.notes.push(format!("Visual speaker checks couldn't finish for {} of {} stretches. Retry unfinished speaker checks to continue; the transcript is kept.", report.failed.len(), report.windows)); }
+    fresh.revision += 1;
+    fresh.updated_at = crate::model::now_ms();
+    store::write(&dir, &fresh)?;
+    applied(&dir);
+    crate::versions::keep(&dir, "speaker check", &before, &fresh);
+    store::library_changed();
+    Ok((format!("Checked {} of {} footage stretches. {} saved checks reused; {} still unfinished.", report.windows - report.failed.len(), report.windows, report.cached, report.failed.len()), report.cost))
+}
+
 /// The stretches of footage with a picture, by recording: (group, from, to).
 /// A joined case's audio recordings, or an audio file, have nothing to see.
 fn stretches(script: &Script) -> Vec<(usize, u64, u64)> {
@@ -568,11 +733,12 @@ fn stretches(script: &Script) -> Vec<(usize, u64, u64)> {
 /// voices of `script.words`, and labels for the voices seen in
 /// `script.speakers`. `None` when there is nothing to watch (no picture, no
 /// words); an error when no window could be watched. `on_window` gets how
-/// many windows are done, of how many.
-pub fn run(script: &mut Script, dir: &Path, settings: &Settings, on_window: &(dyn Fn(usize, usize) + Sync)) -> Result<Option<Report>, String> {
+/// many windows are done, of how many, and how many saved answers were reused.
+pub fn run(script: &mut Script, dir: &Path, settings: &Settings, on_window: &(dyn Fn(usize, usize, usize) + Sync)) -> Result<Option<Report>, String> {
     if script.words.is_empty() {
         return Ok(None);
     }
+    prepare_input(script, dir)?;
     let mut plan: Vec<(Window, Vec<Line>)> = Vec::new();
     for (group, from_ms, to_ms) in stretches(script) {
         let found = lines(&script.words, from_ms, to_ms);
@@ -591,42 +757,55 @@ pub fn run(script: &mut Script, dir: &Path, settings: &Settings, on_window: &(dy
     let folder = dir.join("watch");
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
 
-    // Four windows at once. A refusal that no window can get past stops the rest.
+    // Load saved answers before starting any requests. Resuming shows the
+    // work already done immediately, rather than appearing to start again.
     let count = plan.len();
-    let (next, finished, stop) = (AtomicUsize::new(0), AtomicUsize::new(0), AtomicBool::new(false));
-    let results: Mutex<Vec<Option<Result<(Answer, f64, bool), String>>>> = Mutex::new((0..count).map(|_| None).collect());
-    on_window(0, count);
+    let cancelling = crate::jobs::cancellation_flag();
+    let saved: Vec<Option<Watched>> = plan.iter().map(|(window, mine)| cached_watch(&folder, window, mine)).collect();
+    let cached = saved.iter().filter(|answer| answer.is_some()).count();
+    let (next, finished, stop) = (AtomicUsize::new(0), AtomicUsize::new(cached), AtomicBool::new(false));
+    let slots = saved.iter().map(|result| result.clone().map(Ok)).collect();
+    let results: Mutex<Vec<Option<Result<Watched, String>>>> = Mutex::new(slots);
+    on_window(cached, count, cached);
     std::thread::scope(|scope| {
-        for _ in 0..count.min(AT_ONCE) {
+        for _ in 0..(count - cached).min(AT_ONCE) {
             scope.spawn(|| loop {
                 let index = next.fetch_add(1, Ordering::Relaxed);
                 let Some((window, mine)) = plan.get(index) else { break };
+                if saved[index].is_some() { continue; }
+                if cancelling.as_ref().is_some_and(|flag| flag.load(Ordering::Relaxed)) { stop.store(true, Ordering::Relaxed); }
                 let outcome = if stop.load(Ordering::Relaxed) {
                     Err("the watcher stopped".to_string())
                 } else {
-                    watch_window(&relay, &footage, &folder, &script.title, window, mine, &stop)
+                    watch_window(&relay, &footage, &folder, &script.title, window, mine, &stop, &Budget::new(cancelling.clone()))
                         .map_err(|error| format!("{}–{}: {error}", clock(window.start_ms), clock(window.end_ms)))
                 };
                 if let Ok(mut slots) = results.lock() {
                     slots[index] = Some(outcome);
+                    // Keep progress callbacks in order across workers.
+                    on_window(finished.fetch_add(1, Ordering::Relaxed) + 1, count, cached);
                 }
-                on_window(finished.fetch_add(1, Ordering::Relaxed) + 1, count);
             });
         }
     });
 
     let mut report = Report { windows: count, ..Default::default() };
-    let mut answers: Vec<(usize, Answer)> = Vec::new();
-    for (index, slot) in results.into_inner().unwrap_or_default().into_iter().enumerate() {
+    let mut answers = Vec::new();
+    for slot in results.into_inner().unwrap_or_default() {
         match slot {
-            Some(Ok((answer, cost, kept))) => {
-                report.cost += cost;
-                report.cached += usize::from(kept);
-                answers.push((index, answer));
+            Some(Ok(result)) => {
+                report.cost += result.cost;
+                report.cached += usize::from(result.cached);
+                answers.extend(result.answers);
             }
             Some(Err(error)) => report.failed.push(error),
             None => report.failed.push("not watched".into()),
         }
+    }
+    let status = Status { total: count, checked: count - report.failed.len(), failed: report.failed.clone(), at: crate::model::now_ms(), needs_apply: true };
+    let tmp = folder.join("status.json.tmp");
+    if let Ok(bytes) = serde_json::to_vec(&status) {
+        if std::fs::write(&tmp, bytes).is_ok() { let _ = std::fs::rename(tmp, folder.join("status.json")); }
     }
     if answers.is_empty() {
         return Err(report.failed.into_iter().next().unwrap_or_else(|| "nothing was watched".into()));
@@ -638,8 +817,7 @@ pub fn run(script: &mut Script, dir: &Path, settings: &Settings, on_window: &(dy
     let mut known: BTreeSet<String> = script.words.iter().filter_map(|word| word.speaker.clone()).collect();
     let mut splits = BTreeMap::new();
     let mut said: BTreeMap<(usize, String), (Vec<String>, Vec<String>)> = BTreeMap::new();
-    for (index, answer) in &answers {
-        let (window, mine) = &plan[*index];
+    for (window, mine, answer) in &answers {
         let labels: Vec<Option<String>> = mine.iter().map(|line| line.label.clone()).collect();
         let voices = voices_for(answer, &labels, window.group, &mut splits, &mut known);
         for person in &answer.people {
@@ -670,6 +848,7 @@ pub fn run(script: &mut Script, dir: &Path, settings: &Settings, on_window: &(dy
     // Labels only for voices that still speak.
     let speaking: BTreeSet<&str> = script.words.iter().filter_map(|word| word.speaker.as_deref()).collect();
     said.retain(|(_, voice), _| speaking.contains(voice.as_str()));
+    script.speakers.retain(|voice, _| speaking.contains(voice.as_str()));
     report.labels = labels(&said);
     for (voice, label) in &report.labels {
         script.speakers.insert(voice.clone(), label.clone());
@@ -859,6 +1038,89 @@ mod tests {
     }
 
     #[test]
+    fn gateway_timeouts_use_smaller_windows_but_refusals_do_not() {
+        assert!(matches!(explain(Failed::Status(524, String::new())), Trouble::Timeout(_)));
+        assert!(matches!(explain(Failed::Status(504, String::new())), Trouble::Timeout(_)));
+        assert!(matches!(explain(Failed::Status(429, String::new())), Trouble::Again(_, 30)));
+        assert!(matches!(explain(Failed::Status(401, String::new())), Trouble::All(_)));
+        assert!(matches!(explain(Failed::Network("request timed out".into())), Trouble::Timeout(_)));
+        let budget = Budget::new(None);
+        for _ in 0..REQUESTS_PER_WINDOW { assert!(budget.take().is_ok()); }
+        assert!(budget.take().is_err());
+        assert!(Budget { remaining: AtomicUsize::new(1), until: Instant::now(), cancelling: None }.take().is_err());
+        assert!(Budget::new(Some(std::sync::Arc::new(AtomicBool::new(true)))).take().is_err());
+    }
+
+    #[test]
+    fn smaller_windows_keep_every_word_and_separate_local_people() {
+        let mine = vec![line(1_000, 2_000), line(60_000, 61_000), line(130_000, 131_000), line(200_000, 201_000)];
+        let window = Window { group: 2, lines: 10..14, start_ms: 0, end_ms: 240_000 };
+        let parts = halves(&window, &mine).unwrap();
+        assert_eq!(parts[0].1, mine[..2]);
+        assert_eq!(parts[1].1, mine[2..]);
+        assert!(parts.iter().all(|(part, _)| part.group == 2 && part.end_ms - part.start_ms < 240_000));
+        assert!(halves(&parts[0].0, &parts[0].1).is_none());
+        assert_ne!(cache_key(&parts[0].0, &parts[0].1), cache_key(&parts[1].0, &parts[1].1));
+    }
+
+    #[test]
+    fn resumes_saved_answers_without_opening_footage_or_calling_the_relay() {
+        let dir = std::env::temp_dir().join(format!("writer-watch-cache-{}", uuid::Uuid::new_v4()));
+        let folder = dir.join("watch");
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut script: Script = serde_json::from_value(json!({
+            "id": "x", "title": "t", "sourceKind": "drive", "sourceUrl": "", "originalPath": "/missing.mp4",
+            "status": "processing", "stage": "transcribing", "progress": 90, "error": null, "durationMs": 10_000,
+            "revision": 1, "createdAt": 0, "updatedAt": 0,
+            "parts": [{ "title": "a", "startMs": 0, "durationMs": 10_000, "audio": false }]
+        })).unwrap();
+        script.words = vec![word(0, "Hello.", 1_000, "speaker_0")];
+        let mine = lines(&script.words, 0, 10_000);
+        let window = windows(&mine, 0, 10_000, 0).remove(0);
+        let path = folder.join(format!("{}.json", cache_key(&window, &mine)));
+        std::fs::write(&path, json!({"answer": answer(&[("A", "Officer")], &["A"])}).to_string()).unwrap();
+        let progress = Mutex::new(Vec::new());
+        let report = run(&mut script, &dir, &Settings { relay_url: "http://127.0.0.1:1".into(), ..Default::default() }, &|done, count, cached| {
+            progress.lock().unwrap().push((done, count, cached));
+        }).unwrap().unwrap();
+        assert_eq!(report.cached, 1);
+        assert_eq!(report.cost, 0.0);
+        assert!(report.failed.is_empty());
+        assert_eq!(*progress.lock().unwrap(), [(1, 1, 1)]);
+        assert_eq!(script.speakers.get("speaker_0").map(String::as_str), Some("Officer"));
+        // Reopening a corrected transcript must restore the same raw labels
+        // before planning, so the original answers remain reusable.
+        script.words[0].speaker = Some("watch_99".into());
+        let again = run(&mut script, &dir, &Settings { relay_url: "http://127.0.0.1:1".into(), ..Default::default() }, &|_, _, _| {}).unwrap().unwrap();
+        assert_eq!(again.cached, 1);
+        assert_eq!(script.words[0].speaker.as_deref(), Some("speaker_0"));
+        assert!(status(&dir).unwrap().needs_apply);
+        applied(&dir);
+        assert!(!status(&dir).unwrap().needs_apply);
+        // A corrupt or incomplete cache is never treated as completed work.
+        std::fs::write(&path, json!({"answer": answer(&[], &[])}).to_string()).unwrap();
+        assert!(cached_answer(&folder, &window, &mine).is_none());
+        // A timed-out parent is resumed directly from its completed halves.
+        // Both replies use letter A, but refer to different voices.
+        script.duration_ms = 240_000;
+        script.parts[0].duration_ms = 240_000;
+        script.words = vec![word(0, "One.", 1_000, "speaker_0"), word(1, "Two.", 60_000, "speaker_0"), word(2, "Three.", 130_000, "speaker_1"), word(3, "Four.", 200_000, "speaker_1")];
+        let mine = lines(&script.words, 0, 240_000);
+        let parent = windows(&mine, 0, 240_000, 0).remove(0);
+        std::fs::write(folder.join(format!("{}.split", cache_key(&parent, &mine))), b"").unwrap();
+        for ((part, mine), role) in halves(&parent, &mine).unwrap().into_iter().zip(["Officer", "Suspect"]) {
+            let letters = vec!["A"; mine.len()];
+            std::fs::write(folder.join(format!("{}.json", cache_key(&part, &mine))), json!({"answer": answer(&[("A", role)], &letters)}).to_string()).unwrap();
+        }
+        let report = run(&mut script, &dir, &Settings { relay_url: "http://127.0.0.1:1".into(), ..Default::default() }, &|_, _, _| {}).unwrap().unwrap();
+        assert_eq!(report.cached, 1);
+        assert_eq!(report.cost, 0.0);
+        assert_eq!(script.speakers.get("speaker_0").map(String::as_str), Some("Officer"));
+        assert_eq!(script.speakers.get("speaker_1").map(String::as_str), Some("Suspect"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn only_footage_with_a_picture_is_watched() {
         let mut script: Script = serde_json::from_value(json!({
             "id": "x", "title": "t", "sourceKind": "drive", "sourceUrl": "", "originalPath": "/nowhere.mp4",
@@ -898,7 +1160,7 @@ mod live {
             println!("before: {:?}", script.speakers);
             script.speakers.clear();
             let started = std::time::Instant::now();
-            let report = run(&mut script, &dir, &settings, &|done, count| println!("  {done} of {count} windows")).unwrap();
+            let report = run(&mut script, &dir, &settings, &|done, count, cached| println!("  {done} of {count} windows ({cached} saved)")).unwrap();
             let Some(report) = report else {
                 println!("nothing to watch");
                 continue;

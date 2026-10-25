@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { clock, cutInCard, insertAfter, isCutIn, moveItems, nearestEdge, range, splitClip, trimClip } from "./clips";
+import { clock, cutInCard, insertAfter, isCutIn, moveItems, nearestEdge, range, recordingSpans, splitClip, trimClip } from "./clips";
 import { type CutPlayer, clipStarts, editedPosition, type Playhead } from "./playback";
 import type { Clip, Part, Word } from "./types";
 import { Icon } from "./ui";
@@ -316,6 +316,7 @@ export function Timeline({
                   const left = x(starts[index]);
                   const trimmed = drag?.mode === "trim" && drag.id === clip.id ? drag : null;
                   const shown = trimmed ? (trimmed.edge === "in" ? { ...clip, startMs: trimmed.ms } : { ...clip, endMs: trimmed.ms }) : clip;
+                  const recordings = recordingSpans(shown, parts);
                   const width = Math.max(2, (shown.endMs - shown.startMs) * ppms - 1);
                   const shift = trimmed?.edge === "in" ? (trimmed.ms - clip.startMs) * ppms : 0;
                   return (
@@ -324,7 +325,7 @@ export function Timeline({
                       key={clip.id}
                       className={["clip", card ? "cut-in-clip" : "", hovered === clip.id ? "hovered" : "", selected.includes(clip.id) ? "selected" : ""].join(" ")}
                       style={{ left: left + Math.min(0, shift), width, ["--label" as string]: card ? CARD : FOOTAGE }}
-                      title={card ? `Cut-in · ${labels[cueNumber(clip)] ?? ""}\n${clip.narration?.trim() ?? ""}` : `${range(clip, parts)} in the footage`}
+                      title={card ? `Cut-in · ${labels[cueNumber(clip)] ?? ""}\n${clip.narration?.trim() ?? ""}` : `${range(clip, parts)} in the footage${recordings.map((part) => `\nRecording ${part.index + 1}: ${part.title}`).join("")}`}
                       aria-label={card ? `Cut-in ${cueNumber(clip) + 1}` : `Clip ${index + 1}, ${range(clip, parts)}`}
                       aria-pressed={selected.includes(clip.id)}
                       onPointerEnter={() => setHovered(clip.id)}
@@ -346,7 +347,10 @@ export function Timeline({
                       }}
                       onDoubleClick={() => player?.seek(starts[index])}
                     >
-                      {width > 28 && (
+                      {recordings.map((part) => <span key={part.index} className="clip-recording" style={{ left: (part.startMs - shown.startMs) * ppms, width: (part.endMs - part.startMs) * ppms }}>
+                        <span>{part.index + 1} · {part.title}</span>
+                      </span>)}
+                      {width > 28 && !recordings.length && (
                         <span className="clip-label">
                           {card ? (
                             <>

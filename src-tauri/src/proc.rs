@@ -44,6 +44,7 @@ pub fn run_lines(
     stdin_bytes: Option<&[u8]>,
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
+    crate::jobs::check_cancelled()?;
     let mut command = Command::new(crate::tools::resolve(program));
     command
         .args(args)
@@ -51,6 +52,8 @@ pub fn run_lines(
         .stderr(Stdio::piped());
     if is_claude(program) {
         for_claude(&mut command);
+        #[cfg(unix)]
+        { use std::os::unix::process::CommandExt; command.process_group(0); }
     }
     if stdin_bytes.is_some() {
         command.stdin(Stdio::piped());
@@ -92,6 +95,10 @@ pub fn run_lines(
 
     let started = Instant::now();
     loop {
+        if crate::jobs::cancelled() {
+            stop_child(&mut child, is_claude(program));
+            return Err("Stopped by you. Completed work is saved.".into());
+        }
         while let Ok(line) = rx.try_recv() {
             on_line(&line);
         }
@@ -114,14 +121,20 @@ pub fn run_lines(
             }
             Ok(None) if started.elapsed() > timeout => {
                 crate::log::error("tool", format!("{} was stopped after {}: it took too long", summary(program, args), crate::log::since_start(started)));
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_child(&mut child, is_claude(program));
                 return Err(format!("{program} took too long and was stopped."));
             }
             Ok(None) => thread::sleep(Duration::from_millis(120)),
             Err(error) => return Err(format!("{program}: {error}")),
         }
     }
+}
+
+fn stop_child(child: &mut std::process::Child, group: bool) {
+    #[cfg(unix)]
+    if group { unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); } }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 pub fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, String> {
@@ -157,6 +170,18 @@ fn clip(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopping_a_job_terminates_its_running_command() {
+        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let request = flag.clone();
+        let worker = std::thread::spawn(move || crate::jobs::with_cancellation(flag, || run("/bin/sleep", &["30"], Duration::from_secs(60))));
+        std::thread::sleep(Duration::from_millis(150));
+        let began = Instant::now();
+        request.store(true, std::sync::atomic::Ordering::Relaxed);
+        assert!(worker.join().unwrap().unwrap_err().contains("Stopped by you"));
+        assert!(began.elapsed() < Duration::from_secs(3));
+    }
 
     #[test]
     fn claude_sees_no_api_key() {

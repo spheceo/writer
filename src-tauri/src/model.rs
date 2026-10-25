@@ -45,7 +45,13 @@ pub struct Note {
     pub id: String,
     pub text: String,
     pub at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<NoteAnchor>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAnchor { pub start: usize, pub end: usize, pub quote: String }
 
 pub const CUT_IN_MS: u64 = 3_000;
 
@@ -288,6 +294,8 @@ pub struct ScriptDetail {
     /// Archived from Repack's page: its footage is gone until restored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive: Option<crate::archive::State>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_check: Option<crate::watch::Status>,
 }
 
 #[derive(Debug, Clone, Serialize)]

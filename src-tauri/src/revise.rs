@@ -212,6 +212,9 @@ fn current(script: &Script, format: &Format) -> String {
             cue += 1;
             let narration = clip.narration.as_deref().unwrap_or("").trim();
             lines.push(format!("{label} cut-in ({purpose}): {}", if narration.is_empty() { "(nothing written)".to_string() } else { format!("\"{narration}\"") }));
+            for note in &clip.notes {
+                lines.push(format!("   producer's comment{}: {}", note.anchor.as_ref().map(|anchor| format!(" on \"{}\"", anchor.quote)).unwrap_or_default(), note.text));
+            }
             if let Some(proposal) = script.proposals.iter().find(|proposal| proposal.cut_in == clip.id) {
                 lines.push(format!("   pending proposal: \"{}\"", proposal.after));
             }
@@ -485,7 +488,7 @@ impl Work<'_> {
                     return Err("An edit note goes on a footage clip's timestamp, not a cut-in: put it on the clip it is about.".into());
                 }
                 let note = edit_note(text("text").unwrap_or(""))?;
-                self.clips[index].notes.push(Note { id: uuid::Uuid::new_v4().to_string(), text: note, at: now_ms() });
+                self.clips[index].notes.push(Note { id: uuid::Uuid::new_v4().to_string(), text: note, at: now_ms(), anchor: None });
             }
             other => return Err(format!("There is no edit called {other:?}.")),
         }
