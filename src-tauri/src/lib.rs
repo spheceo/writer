@@ -35,6 +35,7 @@ mod pages;
 mod proc;
 mod research;
 mod release;
+mod house;
 mod reuse;
 mod reviews;
 mod scout;
@@ -1060,6 +1061,21 @@ pub fn use_draft_now(data: &Path, id: &str, mut draft: commentary::Draft) -> Res
     Ok(store::detail(script, &dir))
 }
 
+/// The script as it is now made its review's only version, v1, on the same link.
+pub fn compress_shared_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
+    can::require(can::SHARE)?;
+    can::require_id(data, id)?;
+    reviews::compress(data, id)
+}
+
+#[tauri::command]
+async fn compress_review(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
+    tauri::async_runtime::spawn_blocking(move || compress_shared_now(&data_dir(&app)?, &id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 pub fn share_now(data: &Path, id: &str) -> Result<ScriptDetail, String> {
     can::require(can::SHARE)?;
     reviews::share(data, id)
@@ -1281,7 +1297,8 @@ pub fn audit_now(data: &Path, id: &str, draft: Option<commentary::Draft>) -> Res
         let (measures, flags) = commentary::checks(&dir, &script, draft.as_ref())?;
         return Ok(serde_json::json!({ "measures": measures, "flags": flags }));
     }
-    Ok(serde_json::json!({ "measures": null, "flags": claude::audit(&script) }))
+    // A footage script's Letter pages, as its Doc lays them out (a compilation runs 6 to 7).
+    Ok(serde_json::json!({ "measures": null, "pages": pages::count(&script, &script.clips), "flags": claude::audit(&script) }))
 }
 
 #[cfg(debug_assertions)]
@@ -1731,6 +1748,7 @@ pub fn run() {
             start_reuse_import,
             start_find_clips,
             share_script,
+            compress_review,
             review_counts,
             review_notes,
             fix_notes,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { CommentsPanel, hoverNote } from "./comments";
-import { approveReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, scriptAudit, shareScript } from "./api";
+import { approveReview, compressReview, fixNotes, restoreScript, message, onReviews, reviewCounts, reviewNotes, scriptAudit, shareScript } from "./api";
 import type { BuildStatus, Cite, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
@@ -265,6 +265,20 @@ export function ReviewDialog({
       setSharing(false);
     }
   };
+  // The script as it is now as the link's only version, v1: the earlier versions go, their notes move onto v1.
+  const makeFirst = async () => {
+    if (!link) return;
+    if (!window.confirm(`Make the script as it is now v1 on this link? v1 to v${link.version} are removed from the link and every note is kept on v1. Writer's own version history is untouched.`)) return;
+    setSharing(true);
+    setProblem(null);
+    try {
+      onChange(await compressReview(script.id));
+    } catch (cause) {
+      setProblem(message(cause));
+    } finally {
+      setSharing(false);
+    }
+  };
   const copy = async () => {
     if (!link) return;
     await navigator.clipboard.writeText(link.url);
@@ -327,6 +341,11 @@ export function ReviewDialog({
           {mayShare && link && waiting > 0 && !approved && (
             <button type="button" className="ghost" disabled={busy} onClick={() => void fix()}>
               Fix {waiting} {waiting === 1 ? "note" : "notes"} now
+            </button>
+          )}
+          {mayShare && link && link.version > 1 && !approved && (
+            <button type="button" className="ghost" disabled={sharing || busy} title="The script as it is now becomes the link's only version, v1; every note is kept" onClick={() => void makeFirst()}>
+              Make this v1
             </button>
           )}
           {mayShare && (

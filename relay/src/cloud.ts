@@ -83,6 +83,8 @@ const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
   "reviews:get": "read",
   // A shared version's page data replaced in place: the script fixed and shown as the same version.
   "reviews:setMeta": "review.share",
+  // A review compressed to one version: the script as it is now becomes v1 on the same link.
+  "reviews:compress": "review.share",
   "edit:getMedia": "read",
   "edit:putMedia": "any",
 };

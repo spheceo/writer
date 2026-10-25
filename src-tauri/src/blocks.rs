@@ -191,13 +191,18 @@ fn footage_blocks(script: &Script) -> Vec<Block> {
 
 fn commentary_blocks(draft: &crate::commentary::Draft) -> Vec<Block> {
     let mut out = Vec::new();
-    if !draft.open.is_empty() {
+    // The team's layout (and the Doc's): the first section's heading, the montage line under it, then its paragraphs.
+    let mut montage = (!draft.open.is_empty()).then(|| {
         let clips: u64 = draft.open.iter().map(|cite| cite.end_ms.saturating_sub(cite.start_ms)).sum();
-        out.push(Block { id: "open".into(), kind: "montage".into(), text: draft.open.iter().map(cite_line).collect::<Vec<_>>().join("\n"), duration_ms: Some(clips), ..Default::default() });
+        Block { id: "open".into(), kind: "montage".into(), text: draft.open.iter().map(cite_line).collect::<Vec<_>>().join("\n"), duration_ms: Some(clips), ..Default::default() }
+    });
+    if draft.sections.iter().all(|section| section.paragraphs.is_empty()) {
+        out.extend(montage.take());
     }
     for section in &draft.sections {
         if let Some(first) = section.paragraphs.first() {
             out.push(Block { id: format!("{}:heading", first.id), kind: "heading".into(), text: section.heading.clone(), ..Default::default() });
+            out.extend(montage.take());
         }
         for paragraph in &section.paragraphs {
             let said: String = paragraph.pieces.iter().filter_map(|piece| match piece { Piece::Say { text } => Some(text.as_str()), Piece::Clip(_) => None }).collect::<Vec<_>>().join(" ");
@@ -283,7 +288,8 @@ pub fn outline(script: &Script, blocks: &[Block]) -> Vec<Mark> {
         return blocks
             .iter()
             .filter_map(|block| match block.kind.as_str() {
-                "montage" => Some(mark(&block.id, "Montage".into(), "section")),
+                // The montage belongs to the first section, under its heading, as in the Doc.
+                "montage" if !blocks.iter().any(|other| other.kind == "heading") => Some(mark(&block.id, "Montage".into(), "section")),
                 "heading" => Some(mark(&block.id, block.text.clone(), "section")),
                 _ => None,
             })

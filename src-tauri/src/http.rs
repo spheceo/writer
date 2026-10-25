@@ -230,6 +230,12 @@ fn route(
             let draft = serde_json::from_value(value["draft"].clone()).map_err(|_| "Send the draft to use.".to_string())?;
             json_result(stream, crate::use_draft_now(&data_dir(&app)?, value["id"].as_str().unwrap_or(""), draft))
         }
+        // Debug builds only: any Doc's comments and suggested edits (drive::doc_review).
+        #[cfg(debug_assertions)]
+        ("POST", ["api", "debug", "doc-review"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::drive::doc_review(&crate::settings::load(&data_dir(&app)?), value["doc"].as_str().unwrap_or("")))
+        }
         // Debug builds only: a Trello card as the relay sends it, before Writer parses it.
         #[cfg(debug_assertions)]
         ("POST", ["api", "debug", "trello-card"]) => {
@@ -468,6 +474,7 @@ fn route(
             }
         }
         ("POST", ["api", "scripts", id, "review", "replace"]) => json_result(stream, crate::replace_shared_now(&data_dir(&app)?, id)),
+        ("POST", ["api", "scripts", id, "review", "compress"]) => json_result(stream, crate::compress_shared_now(&data_dir(&app)?, id)),
         ("POST", ["api", "scripts", id, "share"]) => json_result(stream, crate::share_now(&data_dir(&app)?, id)),
         // Shares the recordings and words with Edit now, without marking the script sent.
         ("POST", ["api", "scripts", id, "edit-share"]) => json_result(stream, crate::handoff::share(&data_dir(&app)?, id, true)),

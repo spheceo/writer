@@ -372,6 +372,9 @@ export const restorePreview = (id: string) =>
   inTauri() ? invoke<Script>("restore_preview", { id }) : http<Script>(`/api/scripts/${id}/preview`, { method: "POST" });
 
 /** Shares the script on a Repack review link, or its next version on the same link. */
+/** The script as it is now made its review's only version, v1, on the same link. */
+export const compressReview = (id: string) =>
+  inTauri() ? invoke<Script>("compress_review", { id }) : http<Script>(`/api/scripts/${id}/review/compress`, json({}));
 export const shareScript = (id: string) =>
   inTauri() ? invoke<Script>("share_script", { id }) : http<Script>(`/api/scripts/${id}/share`, json({}));
 

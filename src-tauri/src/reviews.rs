@@ -473,6 +473,26 @@ pub fn share(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String
     share_next(data, id)
 }
 
+/// The review page plays the preview from the cloud, so sharing waits
+/// until that preview is verified there (an r2/head at its ledger key,
+/// cloud.rs): the ledger alone once let a share publish a preview key
+/// for an object that wasn't there. A preview already cleared from
+/// this Mac is fine, exactly because it is verified.
+fn preview_in_cloud(data: &Path, id: &str, dir: &Path, script: &crate::model::Script) -> Result<(), String> {
+    if script.commentary.is_some() {
+        return Ok(());
+    }
+    match cloud::file_key(data, id, "proxy.mp4") {
+        Some((key, size, _)) => match cloud::head(data, &key) {
+            Ok(Some(found)) if found == size => Ok(()),
+            Ok(_) => Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into()),
+            Err(error) => Err(format!("Couldn't verify its preview in the cloud ({error}). Check the connection, then share again.")),
+        },
+        None if store::proxy_path(dir).is_file() => Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into()),
+        None => Ok(()),
+    }
+}
+
 /// Shares the next version from inside the fix that made it ("Ready for
 /// changes"), which is still the script's running job.
 pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String> {
@@ -493,24 +513,7 @@ pub fn share_next(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, S
     if found.is_empty() {
         return Err("There's nothing in the script to share yet.".into());
     }
-    // The review page plays the preview from the cloud, so sharing waits
-    // until that preview is verified there (an r2/head at its ledger key,
-    // cloud.rs): the ledger alone once let a share publish a preview key
-    // for an object that wasn't there. A preview already cleared from
-    // this Mac is fine, exactly because it is verified.
-    if script.commentary.is_none() {
-        match cloud::file_key(data, id, "proxy.mp4") {
-            Some((key, size, _)) => match cloud::head(data, &key) {
-                Ok(Some(found)) if found == size => {}
-                Ok(_) => return Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into()),
-                Err(error) => return Err(format!("Couldn't verify its preview in the cloud ({error}). Check the connection, then share again.")),
-            },
-            None if store::proxy_path(&dir).is_file() => {
-                return Err("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.".into())
-            }
-            None => {}
-        }
-    }
+    preview_in_cloud(data, id, &dir, &script)?;
     let next = script.review.as_ref().map_or(1, |link| link.version + 1);
     let body = serde_json::to_vec(&script).map_err(|error| error.to_string())?;
     // The review's ID is Repack's to give, on the first publish: snapshots
@@ -584,6 +587,53 @@ pub fn replace_latest(data: &Path, id: &str) -> Result<crate::model::ScriptDetai
     store::write(&dir, &script)?;
     let _ = std::fs::write(dir.join(SHARED_TEXT), serde_json::to_vec(&json!({ "version": link.version, "blocks": texts })).unwrap_or_default());
     crate::footage::soon(data.to_path_buf(), id.to_string());
+    poll_soon();
+    Ok(store::detail(script, &dir))
+}
+
+/// Makes the script as it is now the review's only version, v1, on the
+/// same link (`reviews:compress`): every later version is removed from the
+/// link and every note moved onto v1, so a producer who wants the final
+/// shown as v1 rather than v2, v3… can have it. Writer's own version
+/// history is untouched.
+pub fn compress(data: &Path, id: &str) -> Result<crate::model::ScriptDetail, String> {
+    if jobs::running(id) {
+        return Err("Claude is still working on this script. Make it v1 when that's done.".into());
+    }
+    let dir = store::script_dir(data, id)?;
+    let mut script = store::read(&dir)?;
+    let link = script.review.clone().ok_or("Share the script first: there's no review to make v1.")?;
+    if script.status != "ready" {
+        return Err("Share a script once its import has finished.".into());
+    }
+    if let Some(draft) = script.commentary.as_mut().and_then(|commentary| commentary.draft.as_mut()) {
+        if draft.ensure_ids() {
+            store::write(&dir, &script)?;
+        }
+    }
+    let found = blocks::of(&script);
+    if found.is_empty() {
+        return Err("There's nothing in the script to share yet.".into());
+    }
+    preview_in_cloud(data, id, &dir, &script)?;
+    let key = format!("writer/reviews/{id}/v1/script.json");
+    cloud::put_bytes(data, &key, &serde_json::to_vec(&script).map_err(|error| error.to_string())?, "application/json")?;
+    let texts: BTreeMap<String, String> = found.iter().map(|block| (block.id.clone(), block.text.clone())).collect();
+    let count = found.len();
+    let meta = meta_of(data, id, &script, found)?;
+    let answer = cloud::call(data, "mutation", "reviews:compress", json!({ "sourceId": id, "key": key, "meta": meta, "sourceRev": script.revision, "by": by() }))
+        .map_err(|error| if error.contains("Could not find public function") { "Making a review v1 needs Repack's latest update.".to_string() } else { error })?;
+    let removed: Vec<u64> = answer["removed"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect();
+    crate::log::info("review", format!("{}: made v1 on the same link ({count} blocks, revision {}), removing v{} at {}", crate::log::named(id, &script.title), script.revision, removed.iter().map(u64::to_string).collect::<Vec<_>>().join(", v"), link.url));
+    script.review = Some(Link { version: 1, revision: script.revision, shared_at: now_ms(), ..link });
+    store::write(&dir, &script)?;
+    let _ = std::fs::write(dir.join(SHARED_TEXT), serde_json::to_vec(&json!({ "version": 1, "blocks": texts })).unwrap_or_default());
+    if script.commentary.is_some() {
+        crate::footage::soon(data.to_path_buf(), id.to_string());
+    }
+    change(data, |known| {
+        known.approved.remove(id);
+    });
     poll_soon();
     Ok(store::detail(script, &dir))
 }
