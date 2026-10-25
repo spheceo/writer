@@ -111,3 +111,24 @@ The Review dialog lists everything the checks flag above Share ("Share anyway"),
   - F4, how he treated strangers (the haircut moment and the "black and lazy" exchange). The house-party detail was dropped; its only source was another creator's video.
 - **Status:** v2 replaced on the link; waiting for the team's read. Topic status: ready for a round.
 
+
+## Audit and v3, Oct 25 2026: every note from Marius checked
+- **Request (the user):** Marius says suggestions he left on the original Doc didn't make it through and that he has made them again. Check his feedback everywhere, Google Docs and the review platform, and make a v3 with whatever is missing.
+- **Where his feedback is:**
+  - The brief Doc ("The Disturbing Rise Of N3on", `1PY4Eibj…`) has no comments or suggestions.
+  - The script Doc (`1U11pjcL…`) has 27 comments from M (Oct 23) and one suggested edit, his rewritten intro: teach-1's set. Its other 78 comments are Writer's own export notes.
+  - The review link has his 8 notes on v1 (F1–F8) and no new ones. Writer's three open "couldn't fix" replies on F6 are stale: F6 was fixed on the next run.
+  - These were read with the debug route `POST /api/debug/doc-review`, which uses Repack's Drive account.
+- **The re-made suggestions:** F5–F8 repeat what the Doc already asked for: his intro's clips (M1 and the suggestion's first line), the Kanye clip (M3), Iggy praising him (M4) and the Steiny Megan Fox clip (M5).
+- **Missing from v2 (revision 10):**
+  - F5/M1: the intro clips (1:44:14-1:44:24) + (1:44:12-1:44:14) were applied in v2's fix run, then dropped by a later revision.
+  - M16: "a friend" on the Ferris wheel is "his manager".
+  - M21: only half applied. "By his own account" was gone, but not "he said something stupid to Nate Diaz and was chased by his entourage and Nate Diaz himself".
+  - His intro wording had drifted: "death" had become "passing", and his Kanye/Iggy/Wahlberg/Megan Fox sentence had been split.
+  - M22 (find the Instagram post behind the Dana White ban): resolved by removing the line. Its only source was another creator's video.
+  - Everything else (the other 23 comments, F1–F4, F6–F8) was in.
+- **v3** (revision 11, https://feedback.spheceo.com/r/ERD8i_JXywawF8ybNCTCog): those four fixed through Writer's revise. The audit is clean.
+- **Writer's own notes for Marius:**
+  - the transcript doesn't have the chairman saying he "has something" for N3on;
+  - who says "No video for me" needs a listen;
+  - the reversed order gives the opposite of what happened; chapter 6 still plays it in its real order.
