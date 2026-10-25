@@ -18,7 +18,7 @@ export interface AuthEnv {
   ACCOUNTS_URL?: string;
 }
 
-export type Caller = { sub: string; email: string; name: string; picture?: string; perms: Set<string>; admin: boolean };
+export type Caller = { sub: string; email: string; name: string; picture?: string; perms: Set<string>; admin: boolean; audience: string };
 
 const ISSUER = "https://accounts.spheceo.com";
 const AUDIENCE = "writer";
@@ -53,7 +53,7 @@ export type Identified = { caller: Caller } | { refused: string };
 export const OUT_OF_DATE = "This copy of Writer is out of date. Update Writer (the update button, or the latest download at github.com/spheceo/writer/releases), then sign in.";
 
 /** The caller, or why they're refused (no token, a bad one, an expired one). */
-export async function identify(request: Request, env: AuthEnv): Promise<Identified> {
+export async function identify(request: Request, env: AuthEnv, audiences: string | string[] = AUDIENCE): Promise<Identified> {
   const header = request.headers.get("authorization") ?? "";
   if (!/^Bearer \S+$/.test(header)) return { refused: "Sign in to Writer." };
   const token = header.slice(7);
@@ -63,7 +63,7 @@ export async function identify(request: Request, env: AuthEnv): Promise<Identifi
   try {
     const { payload } = await jwtVerify(token, keySet(issuer), {
       issuer,
-      audience: AUDIENCE,
+      audience: audiences,
       algorithms: ["RS256"],
       clockTolerance: 60,
       requiredClaims: ["sub", "exp"],
@@ -77,6 +77,7 @@ export async function identify(request: Request, env: AuthEnv): Promise<Identifi
         picture: typeof payload.picture === "string" && payload.picture.startsWith("https://") ? payload.picture : undefined,
         perms: new Set(perms),
         admin: payload.admin === true,
+        audience: Array.isArray(payload.aud) ? String(payload.aud[0] ?? "") : String(payload.aud ?? ""),
       },
     };
   } catch (error) {

@@ -115,11 +115,14 @@ export default {
       return manifestResponse();
     }
     if (!url.pathname.startsWith("/v1/")) return json(404, { error: "not found" });
-    const who = await identify(request, env);
+    // Docs export is also offered from the feedback site, whose tokens say aud "feedback".
+    const docsRoute = url.pathname.startsWith("/v1/docs/");
+    const who = await identify(request, env, docsRoute ? ["writer", "feedback"] : "writer");
     if ("refused" in who) return json(401, { error: who.refused });
     const caller = who.caller;
     console.log(JSON.stringify({ who: named(caller), method: request.method, route: url.pathname }));
-    if (!mayUse(caller)) {
+    // A reviewer on Feedback may export a script. Every other route still needs Writer.
+    if (!mayUse(caller) && !(docsRoute && caller.audience === "feedback")) {
       return json(403, { error: "Your account can't use Writer yet. Ask an admin at accounts.spheceo.com." });
     }
     if (url.pathname.startsWith("/v1/cloud/")) {

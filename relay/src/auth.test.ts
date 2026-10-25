@@ -57,6 +57,9 @@ test("a person's token passes, naming who it is", async () => {
 
 test("refuses a token for another app, from another issuer, or expired", async () => {
   expect("refused" in (await identify(asking(await token({}, { aud: "edit" })), env))).toBe(true);
+  expect("refused" in (await identify(asking(await token({}, { aud: "feedback" })), env))).toBe(true);
+  const feedback = await identify(asking(await token({ perms: [] }, { aud: "feedback" })), env, ["writer", "feedback"]);
+  expect("caller" in feedback && feedback.caller.audience === "feedback" && !mayUse(feedback.caller)).toBe(true);
   expect("refused" in (await identify(asking(await token({}, { iss: "https://evil.example" })), env))).toBe(true);
   const expired = await identify(asking(await token({}, { exp: now() - 120 })), env);
   expect("refused" in expired && expired.refused).toContain("expired");
