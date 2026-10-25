@@ -286,29 +286,55 @@ fn ask(data: &Path) -> Result<Option<Offer>, String> {
 }
 
 /// Downloads the update zip, its progress in the panel of what's under way.
+/// A dropped connection (a reset handshake, a stalled read) is tried again
+/// up to four times, picking up where it stopped.
 fn download(offer: &Offer, path: &Path) -> Result<(), String> {
-    let response = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(120))
-        .user_agent("Writer")
-        .build()
-        .get(&offer.url)
-        .call()
-        .map_err(|error| format!("couldn't download {} ({error})", offer.tag))?;
-    let mut reader = response.into_reader();
+    let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).user_agent("Writer").build();
     let mut file = fs::File::create(path).map_err(|error| error.to_string())?;
-    let mut buffer = vec![0u8; 1 << 20];
     let mut done = 0u64;
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match download_from(&agent, offer, &mut file, &mut done) {
+            Ok(()) => break,
+            Err(error) if attempt < 5 => {
+                crate::log::warn("update", format!("{error}; trying again ({attempt} of 4)"));
+                std::thread::sleep(Duration::from_secs(2 * attempt as u64));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    crate::activity::end("update");
+    Ok(())
+}
+
+/// One go at the download, from `done` bytes in when a go before stopped.
+fn download_from(agent: &ureq::Agent, offer: &Offer, file: &mut fs::File, done: &mut u64) -> Result<(), String> {
+    let mut request = agent.get(&offer.url);
+    if *done > 0 {
+        request = request.set("Range", &format!("bytes={done}-"));
+    }
+    let response = request.call().map_err(|error| format!("couldn't download {} ({error})", offer.tag))?;
+    if *done > 0 && response.status() != 206 {
+        // The server sent it all again: start the file over.
+        file.set_len(0).map_err(|error| error.to_string())?;
+        std::io::Seek::rewind(file).map_err(|error| error.to_string())?;
+        *done = 0;
+    }
+    let mut reader = response.into_reader();
+    let mut buffer = vec![0u8; 1 << 20];
     loop {
         let read = std::io::Read::read(&mut reader, &mut buffer).map_err(|error| format!("the download of {} stopped ({error})", offer.tag))?;
         if read == 0 {
             break;
         }
-        std::io::Write::write_all(&mut file, &buffer[..read]).map_err(|error| error.to_string())?;
-        done += read as u64;
-        crate::activity::set("update", None, "Updating Writer", &offer.tag, &format!("{} of {}", crate::log::size(done), crate::log::size(offer.size)), done, offer.size, "bytes");
+        std::io::Write::write_all(file, &buffer[..read]).map_err(|error| error.to_string())?;
+        *done += read as u64;
+        crate::activity::set("update", None, "Updating Writer", &offer.tag, &format!("{} of {}", crate::log::size(*done), crate::log::size(offer.size)), *done, offer.size, "bytes");
     }
-    crate::activity::end("update");
+    if offer.size > 0 && *done < offer.size {
+        return Err(format!("the download of {} stopped at {} of {}", offer.tag, crate::log::size(*done), crate::log::size(offer.size)));
+    }
     Ok(())
 }
 
