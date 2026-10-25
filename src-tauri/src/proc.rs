@@ -63,13 +63,20 @@ pub fn run_lines(
     let mut child = command.spawn().map_err(|error| {
         format!("{program} failed to start ({error}). Install it and try again.")
     })?;
-    if let Some(bytes) = stdin_bytes {
-        let mut stdin = child.stdin.take().ok_or(format!("{program} stdin"))?;
-        stdin
-            .write_all(bytes)
-            .map_err(|error| format!("{program}: {error}"))?;
-        drop(stdin);
-    }
+    // The input goes in on its own thread, so a program that writes a lot before
+    // reading it all can't stall on a full pipe. One that quits before reading it
+    // all (a broken pipe) is told by its exit and its stderr, which say why.
+    let mut feeding = match stdin_bytes {
+        Some(bytes) => {
+            let mut stdin = child.stdin.take().ok_or(format!("{program} stdin"))?;
+            let bytes = bytes.to_vec();
+            Some(thread::spawn(move || match stdin.write_all(&bytes) {
+                Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Some(error.to_string()),
+                _ => None,
+            }))
+        }
+        None => None,
+    };
 
     let mut stdout = child.stdout.take().ok_or(format!("{program} stdout"))?;
     let mut stderr = child.stderr.take().ok_or(format!("{program} stderr"))?;
@@ -108,6 +115,7 @@ pub fn run_lines(
                     on_line(&line);
                 }
                 let err = errors.join().unwrap_or_default();
+                let fed = feeding.take().and_then(|feeding| feeding.join().ok().flatten());
                 if status.success() {
                     // Anything slow that went fine still says how long it took.
                     if started.elapsed() > Duration::from_secs(2) && program != "claude" {
@@ -117,6 +125,11 @@ pub fn run_lines(
                 }
                 // Some runs are expected to fail (a probe for a stream that isn't there): whoever ran it logs a failure that matters.
                 crate::log::info("tool", format!("{} exited with an error after {}: {}", summary(program, args), crate::log::since_start(started), clip(&err)));
+                if err.trim().is_empty() {
+                    if let Some(fed) = fed {
+                        return Err(format!("{program} failed: couldn't send it its input ({fed})"));
+                    }
+                }
                 return Err(format!("{program} failed: {}", clip(&err)));
             }
             Ok(None) if started.elapsed() > timeout => {
@@ -172,6 +185,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_program_that_quits_before_reading_its_input_says_why() {
+        let input = vec![b'x'; 4 << 20];
+        let error = run_lines("sh", &["-c", "echo 'Prompt is too long' >&2; exit 1"], Duration::from_secs(10), Some(&input), |_| {}).unwrap_err();
+        assert!(error.contains("Prompt is too long"), "{error}");
+        assert!(!error.contains("Broken pipe"), "{error}");
+    }
+
+    #[test]
     fn stopping_a_job_terminates_its_running_command() {
         let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let request = flag.clone();
@@ -194,3 +215,4 @@ mod tests {
         std::env::remove_var("ANTHROPIC_API_KEY");
     }
 }
+
