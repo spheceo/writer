@@ -91,3 +91,23 @@ The Review dialog lists everything the checks flag above Share ("Share anyway"),
 ## Open questions for the user
 - Answered Oct 24: channel pacing follows the team's note too (a clip only when it's essential).
 - v2 (the four fixes) was never shared. Share it, or rebuild from the taught writer?
+
+## Outcome, Oct 25 2026: v2 fixed to the team's rules and replaced in place
+- **Request (the user):** v2 still broke the new team rules. Fix the script so it passes every rule and Writer's pre-share checks show nothing, keep Marius's 4 fixes, and replace v2 on the same link (https://feedback.spheceo.com/r/ERD8i_JXywawF8ybNCTCog), with no v3.
+- **How:** Writer's writer (Opus 5.5) revised v2 (revision 6) against the five rules, with the audit's send-back. The result is `~/writer-experiments/teach-2/rounds/FIX/n3on-v2/` (request in `teach-2/v2-fix-request.txt`).
+  - It went in as revision 7.
+  - It was published over v2 with the new `POST /api/scripts/<id>/review/replace`: the snapshot is written again under the same key and the page data is replaced with `reviews:setMeta`, which the relay now allows.
+- **Checks on revision 7:** none flagged. The counts:
+  - named attributions: 3 (0.6 per 1,000 words; v2 had 17);
+  - sentences into clips: 15/338 (4%); paragraphs ending on a clip: 0/64;
+  - "and then": 0; sequence openers: 1; recital runs: 0;
+  - quote pop-ups: 6;
+  - notes on a whole paragraph: 0 of 99.
+  - 4995 words of narration.
+- **Marius's fixes kept:**
+  - F1, the "nemesis" line;
+  - F2, the Logan Paul "Neon 1.0" line gone (the Chapter 2 heading still reads "Neon 1.0", as in v2);
+  - F3, "N3on later said he was about 17";
+  - F4, how he treated strangers (the haircut moment and the "black and lazy" exchange). The house-party detail was dropped; its only source was another creator's video.
+- **Status:** v2 replaced on the link; waiting for the team's read. Topic status: ready for a round.
+
