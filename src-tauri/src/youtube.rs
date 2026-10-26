@@ -100,7 +100,7 @@ pub fn title(url: &str, proxy_file: Option<&Path>) -> String {
 /// What a compilation's video is, checked before anything downloads, as
 /// Repack checks its videos: its title, channel and length, or why it can't
 /// be imported (private or gone, live or upcoming, age-restricted, no
-/// length, over 8 hours).
+/// length, over 10 hours).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Probe {
@@ -142,8 +142,8 @@ pub fn probe(url: &str) -> Probe {
         Some("It's age-restricted, so it can't be downloaded.".to_string())
     } else if duration_ms.is_none() {
         Some("YouTube doesn't give its length.".to_string())
-    } else if duration_ms.is_some_and(|ms| ms > 8 * 3_600_000) {
-        Some("It runs over 8 hours.".to_string())
+    } else if duration_ms.is_some_and(|ms| ms > 10 * 3_600_000) {
+        Some("It runs over 10 hours.".to_string())
     } else {
         None
     };
@@ -224,7 +224,9 @@ pub fn download(
     proc::run_lines(
         "yt-dlp",
         &args,
-        Duration::from_secs(25 * 60),
+        // A stall is caught by --socket-timeout; this is only for a run that
+        // never ends. A 9-hour hearing through the proxy took over 25 minutes.
+        Duration::from_secs(3 * 60 * 60),
         None,
         |line| {
             let rest = line.trim().strip_prefix("[download]").unwrap_or("");

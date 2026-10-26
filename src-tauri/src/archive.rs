@@ -191,7 +191,7 @@ pub fn restore(app: &AppHandle, id: &str) -> Result<(String, f64), String> {
 }
 
 /// Each recording again, then the preview; answers what couldn't come back.
-fn restore_footage(data: &Path, id: &str) -> Result<Vec<String>, String> {
+pub(crate) fn restore_footage(data: &Path, id: &str) -> Result<Vec<String>, String> {
     let dir = store::script_dir(data, id)?;
     let script = store::read(&dir)?;
     let settings = settings::load(data);

@@ -304,8 +304,8 @@ export function ResearchList({ id, research, onChange }: { id: string; research:
       {problem && <p className="bad">{problem}</p>}
       <ul className="articles">
         {research?.articles.map((article) => (
-          <li key={article.url}>
-            <a href={article.url} target="_blank" rel="noreferrer">{article.title || article.url}</a>
+          <li key={article.url || article.title}>
+            {article.url ? <a href={article.url} target="_blank" rel="noreferrer">{article.title || article.url}</a> : <strong>{article.title}</strong>}
             <span className="faint">
               {article.outlet}
               {article.published ? ` · ${article.published.slice(0, 10)}` : ""}

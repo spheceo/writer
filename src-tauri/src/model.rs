@@ -288,6 +288,19 @@ pub struct Script {
     /// in whole by the editor, so each takes only its transition here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reuses: Vec<Reuse>,
+    /// What the producer's brief called each of the case's videos, in the
+    /// order they join (`brief.rs`): "Part 2", "Surveillance Footage", and
+    /// whether it's the hearing, supporting footage or background.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<crate::brief::Label>,
+    /// Some recording's words came from YouTube's captions (captions.rs):
+    /// who speaks is read from the conversation (turns.rs), not watched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub captions: bool,
+    /// The stretches (ms) of captioned footage heard exactly since (exact.rs):
+    /// their words have Scribe's times and spelling.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exact: Vec<[u64; 2]>,
     /// Rewrites of saved narration waiting for the producer's review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<Proposal>,

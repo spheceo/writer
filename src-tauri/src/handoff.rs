@@ -224,7 +224,7 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
             // (a script transcribed before Writer heard footage Edit's way).
             let keyterms = crate::names::case_names(&dir, &script, &settings::load(data));
             let unheard = heard_of(&dir, recording).is_none_or(|heard| !hearing::covers(&heard.keyterms, &keyterms));
-            if unheard && !hear {
+            if unheard && (!hear || captioned_recording(&dir, recording)) {
                 continue;
             }
             if unheard {
@@ -251,6 +251,13 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
     } else {
         done.join("; ")
     })
+}
+
+/// A caption-first import must not silently purchase a Scribe hearing in
+/// the background just to populate Edit's shared hearing cache. Edit can
+/// use the same original captions; any actual hearing remains separate.
+fn captioned_recording(dir: &Path, recording: &Shared) -> bool {
+    crate::captions::cached(&dir.join("transcript").join(&recording.key)).is_some()
 }
 
 /// Puts the script's recordings in Edit's originals over what's there: for
@@ -351,6 +358,20 @@ pub fn shared_transcript(data: &Path, dir: &Path, script: &Script, key: &str, ke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn caption_only_recordings_do_not_buy_a_background_hearing_for_edit() {
+        let dir = std::env::temp_dir().join(format!("writer-caption-share-{}", std::process::id()));
+        let work = dir.join("transcript/part-01");
+        fs::create_dir_all(&work).unwrap();
+        let transcript = Transcript { model: crate::captions::MODEL.into(), words: vec![hearing::Word { text: "Hello".into(), start: 0.0, end: 0.4, speaker: Some("t0001".into()) }], ..Default::default() };
+        fs::write(work.join("captions.json"), hearing::serialize(&transcript)).unwrap();
+        let mut recording = Shared { file: dir.join("01.mp4"), source: "youtube:aaaaaaaaaaa".into(), name: "First case".into(), offset_ms: 0, length_ms: 1000, tag: Some("1".into()), key: "part-01".into() };
+        assert!(captioned_recording(&dir, &recording));
+        recording.key = "part-02".into();
+        assert!(!captioned_recording(&dir, &recording));
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn existing_registry_basename_wins_and_survives_later_saves_of_an_older_script() {

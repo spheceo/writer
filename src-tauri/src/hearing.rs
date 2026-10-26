@@ -134,7 +134,7 @@ pub fn plan(seconds: f64) -> Vec<Piece> {
 }
 
 /// A word as compared across transcripts: lower case, letters and digits only.
-fn normal(text: &str) -> String {
+pub fn normal(text: &str) -> String {
     text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
 }
 

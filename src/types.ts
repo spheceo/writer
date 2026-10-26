@@ -448,6 +448,10 @@ export type TrelloCard = {
 };
 export type TrelloList = "raw" | "comp";
 export type TrelloCards = { list: string; cards: TrelloCard[] };
+/** A producer's brief as Writer read it (brief.rs): each link labelled by the line that names it. */
+export type BriefRole = "hearing" | "supporting" | "background" | "article";
+export type BriefLink = { url: string; label: string; role: BriefRole; part?: number };
+export type Brief = { title: string; notes: string; links: BriefLink[] };
 export type VideoCheck = { url: string; reuse: boolean; earlier?: string; earlierFound?: string; title: string; channel: string; durationMs: number | null; problem: string | null; warning: string | null };
 
 /** A script's review link on Repack (reviews.rs), once shared. */

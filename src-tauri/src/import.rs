@@ -28,7 +28,7 @@ const DRIVE_DOWNLOADS: usize = 3;
 
 /// Repack's limits for one case.
 const MAX_FILES: usize = 60;
-const MAX_FILE_MS: u64 = 8 * 3_600_000;
+const MAX_FILE_MS: u64 = 10 * 3_600_000;
 const MAX_FILE_BYTES: u64 = 30_000_000_000;
 
 /// Imports run side by side, up to three, each on its own script.
@@ -252,6 +252,56 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
 /// takes a case's YouTube links. A link's `t` is kept as a hint to where the
 /// case starts in that video.
 pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[String], case: bool, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
+    compilation_with(app, data, title, urls, case, kind, None, Vec::new())
+}
+
+/// A producer's brief, pasted as it came (`brief.rs`): its first line the
+/// title, its prose the producer's notes (filed first among the research,
+/// so no search runs), its web pages read as articles, and its videos one
+/// case: a single video imported as itself, several joined as one Courtroom
+/// case, hearing first by part, each keeping what the brief called it.
+pub fn from_brief(app: &AppHandle, data: &Path, text: &str, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
+    let brief = crate::brief::parse(text);
+    if brief.title.is_empty() {
+        return Err("Put the script's title on the brief's first line.".into());
+    }
+    let videos = brief.videos();
+    if videos.is_empty() {
+        return Err("The brief has no YouTube or Drive video to import.".into());
+    }
+    let mut articles = Vec::new();
+    if !brief.notes.trim().is_empty() {
+        articles.push(crate::research::given(&brief.notes));
+    }
+    for link in brief.articles() {
+        match crate::research::provided(&link.url) {
+            Ok(found) => articles.extend(found.articles),
+            Err(problem) => crate::log::warn("import", format!("{}: the brief's article {} couldn't be read: {problem}", brief.title, link.url)),
+        }
+    }
+    let research = (!articles.is_empty()).then(|| crate::research::Research { articles, queries: Vec::new(), at: now_ms(), problem: None });
+    crate::log::info("import", format!("{}: from a brief, {} videos ({}), {} notes", brief.title, videos.len(), videos.iter().map(|link| if link.label.is_empty() { "unlabelled".to_string() } else { link.label.clone() }).collect::<Vec<_>>().join(", "), if brief.notes.is_empty() { "no" } else { "with" }));
+    if let [video] = videos.as_slice() {
+        let mut script = if video.url.contains("drive.google.com") {
+            drive::parse(&video.url)?;
+            new_script(brief.title.clone(), "drive", video.url.clone(), String::new())
+        } else {
+            youtube::check_url(&video.url)?;
+            new_script(brief.title.clone(), "youtube", video.url.clone(), String::new())
+        };
+        script.title = brief.title.chars().take(180).collect();
+        return start(app, data, script, research, kind);
+    }
+    if kind.is_some_and(|kind| kind != crate::formats::Kind::Courtroom) {
+        return Err("A brief with several videos is one Courtroom case. For a compilation, use Compilation.".into());
+    }
+    let urls: Vec<String> = videos.iter().map(|link| link.url.clone()).collect();
+    let labels = videos.iter().map(|link| crate::brief::Label { label: link.label.clone(), role: link.role, part: link.part }).collect();
+    compilation_with(app, data, &brief.title, &urls, true, Some(crate::formats::Kind::Courtroom), research, labels)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compilation_with(app: &AppHandle, data: &Path, title: &str, urls: &[String], case: bool, kind: Option<crate::formats::Kind>, research: Option<crate::research::Research>, labels: Vec<crate::brief::Label>) -> Result<ScriptDetail, String> {
     let title = title.trim();
     if title.is_empty() || title.chars().count() > 180 {
         return Err("Give it a title (up to 180 characters).".into());
@@ -263,7 +313,8 @@ pub fn from_compilation(app: &AppHandle, data: &Path, title: &str, urls: &[Strin
         script.kind = crate::formats::Kind::Courtroom;
     }
     script.reuses = reuses;
-    start(app, data, script, None, kind)
+    script.labels = labels;
+    start(app, data, script, research, kind)
 }
 
 fn start(app: &AppHandle, data: &Path, mut script: Script, article: Option<crate::research::Research>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
@@ -444,7 +495,7 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
     }
     let duration = if joined { found.duration_ms } else { media::playable_ms(&source, found.duration_ms) };
     if duration > media::MAX_CASE_MS || (!joined && duration > MAX_FILE_MS) {
-        return Err("This footage runs longer than Writer imports at once (eight hours a file).".into());
+        return Err("This footage runs longer than Writer imports at once (ten hours a file).".into());
     }
     if duration + 2_000 < found.duration_ms {
         note(script, format!(
@@ -537,6 +588,10 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         // voices, so the transcript reads with them. Neither can stop the
         // import: a failure leaves the voices as heard, or "Speaker 1", and
         // the build names them again.
+        // Words from YouTube's captions have turns, not voices: who says each is read, not watched.
+        if script.captions {
+            read_turns(app, dir, script, &settings);
+        } else {
         let began = Instant::now();
         let watched = watch_speakers(app, dir, script, &settings);
         crate::log::info("import", format!("{}: {} in {}", crate::log::named(&script.id, &script.title), if watched { "the watcher saw who speaks" } else { "the watcher didn't run; voices stay as heard" }, crate::log::since_start(began)));
@@ -548,6 +603,7 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
                 Ok(_) => crate::log::info("agent", format!("{}: speakers named in {}: {}", crate::log::named(&script.id, &script.title), crate::log::since_start(began), script.speakers.values().cloned().collect::<Vec<_>>().join(", "))),
                 Err(error) => crate::log::warn("agent", format!("{}: speakers not named: {error}", crate::log::named(&script.id, &script.title))),
             }
+        }
         }
     }
 
@@ -561,6 +617,42 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
     store::write(dir, script)?;
     emit(app, script, "Ready.");
     Ok(Step::Done)
+}
+
+/// Who says each line of words from YouTube's captions (turns.rs). A
+/// failure is a note: the turns stay unnamed, and Retry unfinished speaker
+/// checks reads them again, paying only for what wasn't answered.
+pub(crate) fn read_turns(app: &AppHandle, dir: &Path, script: &mut Script, settings: &crate::settings::Settings) -> bool {
+    script.progress = 90;
+    emit(app, script, "Reading who says each line.");
+    let (id, title) = (script.id.clone(), script.title.clone());
+    let began = Instant::now();
+    let names = crate::names::case_names(dir, script, settings);
+    let notes = crate::research::load(dir)
+        .map(|found| found.articles.iter().map(|article| format!("{}: {}", article.title, article.summary.chars().take(1_500).collect::<String>())).collect::<Vec<_>>().join("\n\n"))
+        .unwrap_or_default();
+    let on_window = |done: usize, count: usize| {
+        let percent = 90 + ((done * 8) / count.max(1)) as u8;
+        emit_parts(app, &id, &title, "transcribing", percent, &format!("Reading who says each line: {done} of {count} stretches."));
+    };
+    let before = script.clone();
+    let outcome = catch_unwind(AssertUnwindSafe(|| crate::turns::run(script, dir, &names, &notes, &on_window))).unwrap_or_else(|_| Err("Writer hit a bug".into()));
+    script.notes.retain(|note| !note.starts_with("Who says each line"));
+    match outcome {
+        Ok(report) => {
+            crate::log::info("agent", format!("{}: who says each line read in {}: {} lines, {} stretches ({} kept, {} unfinished), {} people: {}", crate::log::named(&id, &title), crate::log::since_start(began), report.lines, report.windows, report.cached, report.failed, report.people, script.speakers.values().cloned().collect::<Vec<_>>().join(", ")));
+            if report.failed > 0 {
+                note(script, format!("Who says each line couldn't be read for {} of {} stretches; their lines keep the speaker before them. Retry unfinished speaker checks to read them again.", report.failed, report.windows));
+            }
+            true
+        }
+        Err(error) => {
+            *script = before;
+            crate::log::warn("agent", format!("{}: who says each line couldn't be read: {error}", crate::log::named(&id, &title)));
+            note(script, format!("Who says each line couldn't be read ({error}): the transcript is YouTube's captions, its turns unnamed. Retry unfinished speaker checks to read them again."));
+            false
+        }
+    }
 }
 
 /// The watcher (watch.rs), right after transcription: whether it corrected
@@ -908,7 +1000,7 @@ fn over_limits(recordings: &[&Recording]) -> Option<String> {
     } else if total > media::MAX_CASE_MS {
         Some("A case takes at most twenty hours of footage.".into())
     } else if recordings.iter().any(|recording| too_long(recording)) {
-        Some("A recording over eight hours or 30 GB can't be imported.".into())
+        Some("A recording over ten hours or 30 GB can't be imported.".into())
     } else {
         None
     }
@@ -1577,6 +1669,9 @@ fn new_script(title: String, kind: &str, source_url: String, original: String) -
         corrections: Default::default(),
         proposals: Vec::new(),
         reuses: Vec::new(),
+        labels: Vec::new(),
+        captions: false,
+        exact: Vec::new(),
         doc_export: None,
         revision: 1,
         created_at: now,
@@ -1676,8 +1771,8 @@ mod tests {
     fn limits_follow_repack() {
         let short: Vec<Recording> = (0..3).map(|n| recording(&n.to_string(), 2)).collect();
         assert!(over_limits(&short.iter().collect::<Vec<_>>()).is_none());
-        let long = [recording("a", 9)];
-        assert!(over_limits(&long.iter().collect::<Vec<_>>()).unwrap().contains("eight hours"));
+        let long = [recording("a", 11)];
+        assert!(over_limits(&long.iter().collect::<Vec<_>>()).unwrap().contains("ten hours"));
         let many: Vec<Recording> = (0..61).map(|n| recording(&n.to_string(), 0)).collect();
         assert!(over_limits(&many.iter().collect::<Vec<_>>()).unwrap().contains("60"));
     }

@@ -23,6 +23,9 @@ pub struct Built {
     pub clips: Vec<Clip>,
     pub report: String,
     pub cost_usd: f64,
+    /// The plan it was compiled from, to cut again once the chosen footage
+    /// is heard exactly (exact.rs).
+    pub plan: Value,
     /// How the build went, for comparing engines: turns or tool calls,
     /// repairs, the biggest single reply.
     pub stats: Value,
@@ -185,7 +188,7 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
                     let mut said = report(plan);
                     said.push_str(&format!("\n\n{}", cleanup_line(&done)));
                     let miss = off_target(script, &format, &done);
-                    let built = Built { clips: done.clips, report: said, cost_usd: cost, stats: stats(repairs, biggest, &refusals) };
+                    let built = Built { clips: done.clips, report: said, cost_usd: cost, plan: plan.clone(), stats: stats(repairs, biggest, &refusals) };
                     match miss {
                         None => return Ok(built),
                         Some(miss) => {
@@ -764,7 +767,10 @@ pub(crate) fn evidence(script: &Script, research: Option<&Research>) -> String {
                 }
                 _ => String::new(),
             };
-            lines.push(format!("{unit} {} · {}{hint}", here + 1, parts[here].title));
+            // What the producer's brief called it: the hearing's part, supporting footage, background.
+            let hearing = script.labels.iter().filter(|label| label.role == crate::brief::Role::Hearing).count();
+            let label = script.labels.get(here).map(|label| format!(" · the producer's brief: {}", label.describe(hearing))).unwrap_or_default();
+            lines.push(format!("{unit} {} · {}{hint}{label}", here + 1, parts[here].title));
             turn_speaker = None;
         }
         if turn_speaker != Some(&word.speaker) {

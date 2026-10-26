@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage, TrelloCard } from "./types";
+import type { Adding, Brief, BuildStatus, ChatTurn, DocComment, DocFile, Check, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Settings, Snapshot, StorageCleared, StorageReport, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage, TrelloCard } from "./types";
 
 export function inTauri() {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -272,6 +272,13 @@ export const importCompilation = (title: string, urls: string[], kase = false, k
   inTauri()
     ? invoke<Script>("import_compilation", { title, urls, case: kase, kind })
     : http<Script>("/api/scripts/compilation", json({ title, urls, case: kase, kind }));
+
+/** A pasted brief read into its title, notes and labelled links, before anything imports. */
+export const readBrief = (text: string) => (inTauri() ? invoke<Brief>("read_brief", { text }) : http<Brief>("/api/briefs/read", json({ text })));
+
+/** A brief imported as one case: one video as itself, several as one Courtroom case, each keeping its label. */
+export const importBrief = (text: string, kind?: Kind) =>
+  inTauri() ? invoke<Script>("import_brief", { text, kind }) : http<Script>("/api/scripts/brief", json({ text, kind }));
 
 /** A compilation's lines checked before anything downloads, as Repack checks its videos. */
 export const checkVideos = (lines: string[]) =>

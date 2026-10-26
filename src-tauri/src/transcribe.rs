@@ -69,6 +69,10 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
     let keyterms = crate::names::case_names(dir, script, settings);
     let recordings = recordings(dir, script);
     let count = recordings.len();
+    let links = links(script);
+    let data = dir.parent().and_then(Path::parent).map(Path::to_path_buf);
+    let cookies = data.as_deref().map(crate::youtube::cookies_file);
+    let mut captioned = 0;
     let mut heard: Vec<Word> = Vec::new();
     for (index, recording) in recordings.iter().enumerate() {
         let progress = |done: usize, total: usize| on_piece((index * 1000 + done * 1000 / total.max(1)) / count, 1000);
@@ -80,7 +84,20 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
                 let _ = std::fs::write(work.join("transcript.json"), hearing::serialize(&found));
             }
         }
-        let transcript = hearing::hear(&Recording { file: &recording.file, span: recording.span }, &dir.join("transcript").join(&recording.key), settings, &keyterms, &progress)?;
+        // Every YouTube recording takes its own captions first, across all formats. A cached hearing wins.
+        let captions = match links.get(index).cloned().flatten() {
+            Some(url) if crate::captions::wanted(script) && !work.join("transcript.json").is_file() => crate::captions::transcript(&url, &work, cookies.as_deref()),
+            _ => None,
+        };
+        let transcript = match captions {
+            Some(found) => {
+                captioned += 1;
+                crate::log::info("hear", format!("{}: {} words from YouTube's captions", recording.key, found.words.len()));
+                progress(1, 1);
+                found
+            }
+            None => hearing::hear(&Recording { file: &recording.file, span: recording.span }, &work, settings, &keyterms, &progress)?,
+        };
         // A joined case's voices are its recordings' own: one recording's speaker_0 is not the next one's.
         let tag = (count > 1).then(|| format!("{}", index + 1));
         heard.extend(on_clock(&transcript, recording.offset_ms, recording.length_ms, tag.as_deref()));
@@ -88,6 +105,7 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
     if heard.is_empty() {
         return Err(NO_WORDS.into());
     }
+    script.captions = captioned > 0;
     script.words = heard
         .into_iter()
         .enumerate()
@@ -103,6 +121,15 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
     Ok(())
 }
 
+/// Each recording's YouTube link, in the order of `recordings`.
+fn links(script: &Script) -> Vec<Option<String>> {
+    let youtube = |url: &str| crate::youtube::check_url(url).is_ok().then(|| url.to_string());
+    if script.parts.len() < 2 {
+        return vec![script.parts.first().and_then(|part| part.url.as_deref()).and_then(youtube).or_else(|| youtube(&script.source_url))];
+    }
+    script.parts.iter().map(|part| part.url.as_deref().and_then(youtube)).collect()
+}
+
 /// A recording's words on the script's clock: from `offset_ms`, only what
 /// plays (`length_ms`), voices marked with `tag` when there is one.
 fn on_clock(transcript: &hearing::Transcript, offset_ms: u64, length_ms: u64, tag: Option<&str>) -> Vec<Word> {
@@ -112,7 +139,7 @@ fn on_clock(transcript: &hearing::Transcript, offset_ms: u64, length_ms: u64, ta
         .filter(|word| ((word.start * 1000.0).round() as u64) < length_ms)
         .map(|word| {
             let start_ms = offset_ms + (word.start.max(0.0) * 1000.0).round() as u64;
-            let end_ms = (offset_ms + (word.end.max(0.0) * 1000.0).round() as u64).max(start_ms + 1);
+            let end_ms = (offset_ms + (word.end.max(0.0) * 1000.0).round() as u64).max(start_ms + 1).min(offset_ms + length_ms);
             Word {
                 id: String::new(),
                 text: word.text.clone(),
@@ -158,6 +185,30 @@ pub fn explain(code: u16, said: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn youtube_cases_use_captions_in_every_format_including_one_new_case_plus_reuse() {
+        let mut script: Script = serde_json::from_value(serde_json::json!({
+            "id":"a", "title":"Compilation", "sourceKind":"compilation", "sourceUrl":"https://youtu.be/aaaaaaaaaaa\nREUSE https://docs.google.com/document/d/earlier/edit",
+            "originalPath":"", "status":"ready", "stage":"", "progress":100, "durationMs":1000, "revision":1, "createdAt":0, "updatedAt":0,
+            "parts":[{"title":"New case", "startMs":0, "durationMs":1000, "url":"https://youtu.be/aaaaaaaaaaa"}]
+        })).unwrap();
+        for kind in [crate::formats::Kind::Interrogation, crate::formats::Kind::Foia, crate::formats::Kind::Courtroom] {
+            script.kind = kind;
+            assert!(crate::captions::wanted(&script));
+            assert_eq!(links(&script), vec![Some("https://youtu.be/aaaaaaaaaaa".into())]);
+        }
+        script.parts.push(crate::model::Part { title: "Drive source".into(), start_ms: 1000, duration_ms: 1000, url: Some("https://drive.google.com/file/d/1filefilefilefile/view".into()), ..Default::default() });
+        assert_eq!(links(&script), vec![Some("https://youtu.be/aaaaaaaaaaa".into()), None]);
+    }
+
+    #[test]
+    fn caption_words_stop_at_their_recording_boundary_on_a_compilation_clock() {
+        let transcript = hearing::Transcript { model: crate::captions::MODEL.into(), words: vec![hearing::Word { text: "Last".into(), start: 0.9, end: 1.2, speaker: Some("t0001".into()) }], ..Default::default() };
+        let words = on_clock(&transcript, 5000, 1000, Some("2"));
+        assert_eq!((words[0].start_ms, words[0].end_ms), (5900, 6000));
+        assert_eq!(words[0].speaker.as_deref(), Some("2:t0001"));
+    }
 
     #[test]
     fn puts_a_recordings_words_on_the_scripts_clock() {

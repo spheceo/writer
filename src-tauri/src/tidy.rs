@@ -600,7 +600,30 @@ pub fn tighten(footage: &Footage, clips: &[Clip], beat_ms: u64, intro: &dyn Fn(u
         }
         out.extend(pieces.into_iter().filter(|piece| piece.end_ms >= piece.start_ms + 100));
     }
-    Tightened { clips: out, pauses: quiet.len(), stalls }
+    Tightened { clips: join_slivers(out, footage.parts), pauses: quiet.len(), stalls }
+}
+
+/// A piece this short, left by cutting a pause, plays as a blip (a lone
+/// "The", then a jump): the pause stays and it joins the piece beside it.
+const SLIVER_MS: u64 = 1_200;
+/// Only across a pause the tightening cut, never between clips the plan chose apart.
+const SLIVER_GAP_MS: u64 = 3_000;
+
+fn join_slivers(clips: Vec<Clip>, parts: &[Part]) -> Vec<Clip> {
+    let mut out: Vec<Clip> = Vec::with_capacity(clips.len());
+    for clip in clips {
+        if let Some(last) = out.last_mut() {
+            let short = |piece: &Clip| piece.end_ms - piece.start_ms < SLIVER_MS;
+            let beside = !clip.is_cut_in() && !last.is_cut_in() && clip.start_ms >= last.end_ms && clip.start_ms - last.end_ms <= SLIVER_GAP_MS && part_at(parts, clip.start_ms) == part_at(parts, last.start_ms);
+            if beside && (short(last) || short(&clip)) {
+                last.end_ms = clip.end_ms;
+                last.notes.extend(clip.notes);
+                continue;
+            }
+        }
+        out.push(clip);
+    }
+    out
 }
 
 /// The footage's 20 ms peaks, kept beside the script once read: transcription
@@ -628,6 +651,16 @@ pub fn keep_peaks(dir: &Path, peaks: &[f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sliver_left_by_a_cut_pause_joins_its_neighbour() {
+        let clip = |start_ms, end_ms| Clip { id: String::new(), start_ms, end_ms, ..Default::default() };
+        let card = Clip { kind: Some("cut-in".into()), ..clip(0, 3_000) };
+        // "The" (500 ms), its 900 ms pause cut, then the rest; a short clip far away stays apart.
+        let joined = join_slivers(vec![clip(856_400, 856_900), clip(857_800, 860_500), card.clone(), clip(900_000, 900_800), clip(950_000, 955_000)], &[]);
+        let spans: Vec<(u64, u64)> = joined.iter().map(|clip| (clip.start_ms, clip.end_ms)).collect();
+        assert_eq!(spans, vec![(856_400, 860_500), (0, 3_000), (900_000, 900_800), (950_000, 955_000)]);
+    }
 
     fn words(said: &[(&str, &str, u64, u64)]) -> Vec<Word> {
         said.iter()

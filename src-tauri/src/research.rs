@@ -93,10 +93,16 @@ fn excerpt_from(script: &Script, start_ms: u64, end_ms: u64, chars: usize) -> St
 /// Finds and reads the news about this case. Never fails the build: when it
 /// can't, the research says why and the script is written from the footage.
 pub fn run(script: &Script, dir: &Path) -> Research {
-    let research = match find(script) {
+    let mut research = match find(script) {
         Ok(research) => research,
         Err(problem) => Research { problem: Some(problem), at: now_ms(), ..Default::default() },
     };
+    // The producer's own notes stay through a search again.
+    let given: Vec<Article> = load(dir).map(|kept| kept.articles.into_iter().filter(|article| article.outlet == BRIEF).collect()).unwrap_or_default();
+    if !given.is_empty() {
+        research.problem = None;
+        research.articles.splice(0..0, given);
+    }
     let _ = save(dir, &research);
     research
 }
@@ -271,6 +277,23 @@ struct Hit {
 /// The article the producer gave with the footage, read now, as Repack reads
 /// it: its text (up to 6,000 characters) becomes the case's research, so no
 /// search runs. One that can't be read stops the import before it starts.
+/// What the producer's notes are filed as among the research.
+pub const BRIEF: &str = "The producer's brief";
+
+/// The producer's notes on the case, from a brief (`brief.rs`), filed first
+/// among the research: the case's facts as the producer gave them.
+pub fn given(notes: &str) -> Article {
+    Article {
+        title: "The producer's notes on the case".into(),
+        outlet: BRIEF.into(),
+        published: None,
+        url: String::new(),
+        summary: notes.trim().chars().take(12_000).collect(),
+        facts: Vec::new(),
+        video: None,
+    }
+}
+
 pub fn provided(url: &str) -> Result<Research, String> {
     let url = url.trim();
     if !(url.starts_with("https://") || url.starts_with("http://")) || url.len() > 2_000 {

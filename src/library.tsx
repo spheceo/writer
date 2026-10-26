@@ -7,10 +7,12 @@ import {
   getProgress,
   importDrive,
   importFile,
+  importBrief,
   importCompilation,
   importYoutube,
   inTauri,
   message,
+  readBrief,
   renameScript,
   restoreScript,
   resumeImport,
@@ -24,12 +26,12 @@ import { Avatar } from "./avatar";
 import mark from "./assets/writer-mark.svg";
 import { CAN, useGrants } from "./can";
 import { useReviewCounts } from "./review";
-import type { Choice, ClaudeStatus, ImportProgress, Kind, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
+import type { Brief, BriefLink, BriefRole, Choice, ClaudeStatus, ImportProgress, Kind, Script, Summary, TrelloCard, TrelloCards, TrelloList, VideoCheck } from "./types";
 import { Dialog, Icon, Menu, Select, Tabs, type ToastMessage, Toasts } from "./ui";
 import { UpdateButton } from "./update";
 
 /** The New script dialog's tabs: one case's video (YouTube, Drive or a file on this Mac), a compilation, a commentary. */
-type Source = "video" | "compilation" | "commentary";
+type Source = "video" | "brief" | "compilation" | "commentary";
 
 function ago(at: number) {
   const minutes = Math.round((Date.now() - at) / 60_000);
@@ -703,10 +705,27 @@ const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
     placeholder: "Sources (optional): the brief first, then evidence. One Google Doc, Drive or web link per line.",
     hint: "A video essay written from sources rather than one case's footage. You can add sources once it's made.",
   },
+  brief: {
+    placeholder: "Paste the brief as it came: the title on the first line, any notes on the case, then the links, each under the line that names it (Part 1:, Surveillance footage:, More on…).",
+    hint: "Writer reads the brief and labels each link. One video imports as itself; several are one Courtroom case, the hearing first by part, with the rest kept as supporting footage or background. Notes become the case's research.",
+  },
   compilation: {
     placeholder: "Paste YouTube, Drive files or folders, and Google Docs script links in case order, or a Trello card.\nMark an earlier video REUSE or (reuse). Script Docs are always reused.",
     hint: "2 to 20 videos, in the order they play. A title that starts with \"When\" makes a standard compilation.",
   },
+};
+
+const BRIEF_ROLES: Record<BriefRole, string> = {
+  hearing: "The case",
+  supporting: "Supporting footage",
+  background: "Background, read for facts",
+  article: "Article, read for facts",
+};
+
+/** The brief's videos in the order they join, as brief.rs orders them: the hearing by part, then supporting, then background. */
+const briefOrder = (videos: BriefLink[]) => {
+  const rank: Record<BriefRole, number> = { hearing: 0, supporting: 1, background: 2, article: 3 };
+  return [...videos].sort((a, b) => rank[a.role] - rank[b.role] || (a.part ?? Infinity) - (b.part ?? Infinity));
 };
 
 const isDrive = (url: string) => /drive\.google\.com/.test(url);
@@ -788,6 +807,7 @@ function ImportDialog({
   const courtroom = grants.has(CAN.courtroom);
   const sources: Source[] = [
     ...(single ? (["video"] as const) : []),
+    ...(single || courtroom ? (["brief"] as const) : []),
     ...(many || courtroom ? (["compilation"] as const) : []),
     ...(grants.has(CAN.commentary) ? (["commentary"] as const) : []),
   ];
@@ -803,7 +823,20 @@ function ImportDialog({
   // One Courtroom case whose hearing runs across the videos, rather than a case each.
   const [oneCase, setOneCase] = useState(false);
   const [format, setFormat] = useState<Kind>("interrogation");
-  const formats = source === "compilation" ? (oneCase ? ["courtroom" as Kind] : grants.compilationKinds) : grants.singleKinds;
+  // A pasted brief as Writer read it: its links labelled, before anything imports.
+  const [brief, setBrief] = useState<Brief | null>(null);
+  useEffect(() => {
+    if (source !== "brief" || !value.trim()) return setBrief(null);
+    const timer = setTimeout(() => void readBrief(value).then(setBrief, () => setBrief(null)), 250);
+    return () => clearTimeout(timer);
+  }, [source, value]);
+  const briefVideos = brief?.links.filter((link) => link.role !== "article") ?? [];
+  const formats =
+    source === "compilation"
+      ? oneCase ? ["courtroom" as Kind] : grants.compilationKinds
+      : source === "brief" && briefVideos.length > 1
+        ? (["courtroom"] as Kind[]).filter(() => courtroom)
+        : grants.singleKinds;
   const formatKey = formats.join();
   useEffect(() => {
     if (formats.length && !formats.includes(format)) setFormat(formats[0]);
@@ -960,6 +993,14 @@ function ImportDialog({
       }
       return;
     }
+    if (source === "brief" && (!brief?.title || !briefVideos.length)) {
+      setError(!brief?.title ? "Put the script's title on the brief's first line." : "The brief has no YouTube or Drive video to import.");
+      return;
+    }
+    if (source === "brief" && briefVideos.length > 1 && !courtroom) {
+      setError("A brief with several videos is one Courtroom case, which your account can't start.");
+      return;
+    }
     if (source === "compilation" && (!title.trim() || links.length < 1)) {
       setError("Give the compilation a title and paste its case links.");
       return;
@@ -972,7 +1013,9 @@ function ImportDialog({
     // Imports already under way, so the new one is the one that appears.
     const before = new Set((await getProgress().catch(() => [])).map((item) => item.id));
     const work =
-      source === "compilation"
+      source === "brief"
+        ? importBrief(value, format)
+        : source === "compilation"
         ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase, format)
         : file
           ? importFile(file, article.trim(), format)
@@ -1041,6 +1084,8 @@ function ImportDialog({
                 : "Starting…"
               : source === "commentary"
                 ? "Create"
+                : source === "brief"
+                  ? `Import ${briefVideos.length || ""} ${briefVideos.length === 1 ? "video" : "videos"}`.replace("  ", " ")
                 : source === "compilation"
                   ? checking
                     ? "Checking…"
@@ -1073,6 +1118,7 @@ function ImportDialog({
           }}
           options={[
             { value: "video" as Source, label: <><Icon name="youtube" size={14} />Video</> },
+            { value: "brief" as Source, label: <><Icon name="doc" size={14} />Brief</> },
             { value: "compilation" as Source, label: <><Icon name="stack" size={14} />{many ? "Compilation" : "Several videos"}</> },
             { value: "commentary" as Source, label: <><Icon name="doc" size={14} />Commentary</> },
           ].filter((option) => sources.includes(option.value))}
@@ -1124,6 +1170,38 @@ function ImportDialog({
                 spellCheck={false}
                 onChange={(event) => setValue(event.target.value)}
               />
+            </>
+          ) : source === "brief" ? (
+            <>
+              <textarea
+                data-autofocus
+                className="links"
+                rows={8}
+                value={value}
+                placeholder={SOURCES.brief.placeholder}
+                spellCheck={false}
+                onChange={(event) => setValue(event.target.value)}
+              />
+              {brief && (
+                <div className="checklist video-checks">
+                  <div className="video-check">
+                    <span className="faint mono">T</span>
+                    <span className="video-check-what">
+                      <strong className="truncate" title={brief.title}>{brief.title || "No title: put it on the first line"}</strong>
+                      <span className="faint truncate" title={brief.notes}>{brief.notes ? `Notes: ${brief.notes.split(/\s+/).length} words, read as the case's research` : "No notes: Writer researches the case"}</span>
+                    </span>
+                  </div>
+                  {brief.links.map((link) => (
+                    <div key={link.url} className="video-check">
+                      <span className="faint mono">{link.role === "article" ? "↗" : briefVideos.length > 1 ? briefOrder(briefVideos).indexOf(link) + 1 : "▶"}</span>
+                      <span className="video-check-what">
+                        <strong className="truncate" title={link.url}>{link.label || link.url}</strong>
+                        <span className="faint truncate" title={link.url}>{BRIEF_ROLES[link.role]}{link.role === "hearing" && link.part && briefVideos.length > 1 ? `, part ${link.part}` : ""} · {link.url.replace(/^https?:\/\/(www\.)?/, "")}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           ) : source === "compilation" ? (
             <>

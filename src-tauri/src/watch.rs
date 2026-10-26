@@ -688,6 +688,8 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> 
     crate::can::require_id(&data, id)?;
     let dir = store::script_dir(&data, id)?;
     let mut script = store::read(&dir)?;
+    // Words from YouTube's captions: who speaks is read, not watched.
+    if script.captions { return crate::turns::retry(&data, id); }
     if crate::archive::state(&data, id).is_some() { return Err("Restore the footage before checking its speakers.".into()); }
     if !status(&dir).is_some_and(|status| !status.failed.is_empty() || status.needs_apply) { return Err("There are no unfinished speaker checks.".into()); }
     let revision = script.revision;

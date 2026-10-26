@@ -148,7 +148,7 @@ fn route(
     }
     // A script of a kind this person can't write isn't there for them (can.rs).
     if let ["api", "scripts", id, ..] = segments.as_slice() {
-        if !["file", "youtube", "compilation", "drive", "commentary"].contains(id) {
+        if !["file", "youtube", "compilation", "drive", "commentary", "brief"].contains(id) {
             if let Err(error) = crate::can::require_id(&data_dir(&app)?, id) {
                 return write_json(stream, 403, &json!({ "error": error }));
             }
@@ -309,6 +309,12 @@ fn route(
             let case = value["case"].as_bool().unwrap_or(false);
             let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
             json_result(stream, crate::import::from_compilation(&app, &data_dir(&app)?, &title, &urls, case, kind))
+        }
+        ("POST", ["api", "briefs", "read"]) => write_json(stream, 200, &json!(crate::brief::parse(&json_str(body, "text")?))),
+        ("POST", ["api", "scripts", "brief"]) => {
+            let text = json_str(body, "text")?;
+            let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
+            json_result(stream, crate::import::from_brief(&app, &data_dir(&app)?, &text, kind))
         }
         ("POST", ["api", "videos", "check"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
@@ -512,6 +518,7 @@ fn route(
             let review: Review = serde_json::from_slice(body).map_err(|_| "The proposed changes could not be read.")?;
             json_result(stream, crate::resolve_proposals_now(&data_dir(&app)?, id, review.revision, &review.proposals, review.accept))
         }
+        ("POST", ["api", "scripts", id, "exact"]) => json_result(stream, crate::jobs::start(app, id.to_string(), crate::jobs::Work::Exact)),
         ("POST", ["api", "scripts", id, "speakers", "retry"]) => json_result(stream, crate::jobs::start(app, id.to_string(), crate::jobs::Work::Speakers)),
         ("POST", ["api", "scripts", id, "build", "stop"]) => json_result(stream, crate::jobs::stop(&data_dir(&app)?, id).map(|_| json!({ "ok": true }))),
         ("PUT", ["api", "scripts", id, "corrections"]) => {

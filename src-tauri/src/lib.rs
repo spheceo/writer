@@ -1,4 +1,8 @@
+mod brief;
+mod captions;
 mod casefiles;
+mod exact;
+mod turns;
 mod account;
 mod can;
 mod activity;
@@ -155,6 +159,21 @@ async fn import_compilation(app: AppHandle, title: String, urls: Vec<String>, ca
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
         import::from_compilation(&app, &data, &title, &urls, case.unwrap_or(false), kind)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn read_brief(text: String) -> brief::Brief {
+    brief::parse(&text)
+}
+
+#[tauri::command]
+async fn import_brief(app: AppHandle, text: String, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = data_dir(&app)?;
+        import::from_brief(&app, &data, &text, kind)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -551,7 +570,10 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
             store::write(&dir, &now)?;
         }
     }
-    let research = match research::load(&dir).filter(|found| !found.articles.is_empty() || found.problem.is_none()) {
+    // Only the producer's brief kept from the import isn't a search yet: the
+    // news is still looked for, beside it (research::run keeps it).
+    let searched = |found: &research::Research| !found.queries.is_empty() || found.articles.iter().any(|article| article.outlet != research::BRIEF);
+    let research = match research::load(&dir).filter(|found| (!found.articles.is_empty() || found.problem.is_none()) && searched(found)) {
         Some(found) => found,
         // The case folder's incident report gives the facts, as in Repack: no search.
         None if casefiles::load(&dir).is_some_and(|documents| documents.has_report()) => research::Research {
@@ -597,7 +619,14 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     jobs::check_cancelled()?;
     let mut script = store::read(&dir)?;
     let before = script.clone();
-    script.clips = match check_clips(built.clips, script.duration_ms) {
+    let clips = if exact::wanted(&script) {
+        let (clips, said) = cut_exactly(&data, &dir, id, &mut script, &built.plan, built.clips, &peaks);
+        built.report = format!("{}\n\n{said}", built.report);
+        clips
+    } else {
+        built.clips
+    };
+    script.clips = match check_clips(clips, script.duration_ms) {
         Ok(clips) => clips,
         Err(error) => {
             chat::add(&dir, "editor", &error, None, true);
@@ -611,6 +640,73 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     versions::keep(&dir, "claude", &before, &script);
     chat::add(&dir, "editor", &built.report, Some(built.cost_usd), false);
     Ok((built.report, built.cost_usd))
+}
+
+/// A script built before its captioned footage was heard exactly, heard and
+/// cut again: the same words and narration, read back from its clips
+/// (`exact::plan_of`), with the producer's clip notes kept. Runs on a job.
+pub fn exact_once(app: &AppHandle, id: &str) -> Result<(String, f64), String> {
+    let data = data_dir(app)?;
+    let dir = store::script_dir(&data, id)?;
+    let mut script = store::read(&dir)?;
+    if !exact::wanted(&script) {
+        return Err("Only footage transcribed from YouTube's captions needs hearing exactly.".into());
+    }
+    if !script.clips.iter().any(|clip| clip.is_cut_in()) {
+        return Err("Build the script first.".into());
+    }
+    let before = script.clone();
+    let plan = exact::plan_of(&script);
+    let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
+    let (mut clips, said) = cut_exactly(&data, &dir, id, &mut script, &plan, before.clips.clone(), &peaks);
+    exact::keep_notes(&before.words, &before.clips, &script.words, &mut clips);
+    jobs::check_cancelled()?;
+    if store::read(&dir)?.revision != before.revision {
+        return Err("The script changed while its footage was heard, so nothing was applied. Try again.".into());
+    }
+    script.clips = check_clips(clips, script.duration_ms)?;
+    script.revision += 1;
+    script.updated_at = now_ms();
+    store::write(&dir, &script)?;
+    versions::keep(&dir, "claude", &before, &script);
+    chat::add(&dir, "editor", &said, None, false);
+    Ok((said, 0.0))
+}
+
+/// A captioned script's chosen footage heard exactly (exact.rs), then the
+/// same plan cut again on those times, without any piece that has no sound.
+/// Hearing that fails leaves the captions' cut, and says so.
+fn cut_exactly(data: &Path, dir: &Path, id: &str, script: &mut model::Script, plan: &serde_json::Value, clips: Vec<model::Clip>, peaks: &[f32]) -> (Vec<model::Clip>, String) {
+    let settings = settings::load(data);
+    // Footage cleared from this Mac once the cloud held it comes back first.
+    if !footage_path(dir, script).is_file() {
+        jobs::stage(id, "Bringing the footage back to hear it");
+        if let Err(error) = archive::restore_footage(data, id) {
+            return (clips, format!("The footage isn't on this Mac and couldn't be brought back ({error}), so its cuts follow YouTube's captions. Build again to try once more."));
+        }
+    }
+    let footage = footage_path(dir, script);
+    let words = script.words.clone();
+    let heard = match exact::run(script, dir, &footage, &clips, &settings, &|step| jobs::stage(id, step)) {
+        Ok(heard) => heard,
+        Err(error) => {
+            log::warn("build", format!("{}: the chosen footage couldn't be heard exactly: {error}", log::named(id, &script.title)));
+            return (clips, format!("The chosen footage couldn't be heard exactly ({error}), so its cuts follow YouTube's captions. Build again to try once more."));
+        }
+    };
+    let mut clips = match claude::compile_with(script, plan, peaks) {
+        Ok(done) => done.clips,
+        Err(error) => {
+            log::warn("build", format!("{}: the plan didn't cut again on the exact times: {error}", log::named(id, &script.title)));
+            exact::remap_from(&words, &clips, &script.words, script.duration_ms)
+        }
+    };
+    let silent = exact::silent(&clips, peaks);
+    let dropped = silent.len();
+    for index in silent.into_iter().rev() {
+        clips.remove(index);
+    }
+    (clips, exact::said(&heard, dropped))
 }
 
 /// The footage a script plays: its original where it is still on this Mac,
@@ -759,7 +855,32 @@ pub fn revise_with(app: &AppHandle, id: &str, request: &str, said: &str, focus: 
         return Err(error);
     }
     let before = now.clone();
-    now.clips = match check_clips(done.clips, now.duration_ms) {
+    let mut answer = done.answer;
+    let clips = if exact::wanted(&now) {
+        let words = now.words.clone();
+        let settings = settings::load(&data);
+        let footage = footage_path(&dir, &now);
+        match exact::run(&mut now, &dir, &footage, &done.clips, &settings, &|step| jobs::stage(id, step)) {
+            Ok(heard) if heard.stretches > 0 => {
+                let mut clips = exact::remap_from(&words, &done.clips, &now.words, now.duration_ms);
+                let silent = exact::silent(&clips, &peaks);
+                let dropped = silent.len();
+                for index in silent.into_iter().rev() {
+                    clips.remove(index);
+                }
+                answer = format!("{answer}\n\n{}", exact::said(&heard, dropped));
+                clips
+            }
+            Ok(_) => done.clips,
+            Err(error) => {
+                answer = format!("{answer}\n\nThe footage this added couldn't be heard exactly ({error}), so its cuts follow YouTube's captions.");
+                done.clips
+            }
+        }
+    } else {
+        done.clips
+    };
+    now.clips = match check_clips(clips, now.duration_ms) {
         Ok(clips) => clips,
         Err(error) => {
             let error = format!("Claude's edits left the timeline unusable ({error}), so nothing was applied. Ask again.");
@@ -773,8 +894,8 @@ pub fn revise_with(app: &AppHandle, id: &str, request: &str, said: &str, focus: 
     now.updated_at = now_ms();
     store::write(&dir, &now)?;
     versions::keep(&dir, "claude", &before, &now);
-    chat::add(&dir, "editor", &done.answer, Some(done.cost_usd), false);
-    Ok((done.answer, done.cost_usd))
+    chat::add(&dir, "editor", &answer, Some(done.cost_usd), false);
+    Ok((answer, done.cost_usd))
 }
 
 /// A change to a written commentary script: Opus edits the paragraphs the
@@ -1724,6 +1845,8 @@ pub fn run() {
             import_youtube,
             import_drive,
             import_compilation,
+            read_brief,
+            import_brief,
             get_research,
             research_again,
             resume_import,

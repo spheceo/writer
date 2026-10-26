@@ -180,6 +180,8 @@ pub enum Work {
     Restore,
     /// Explicitly retry only visual speaker checks that did not finish.
     Speakers,
+    /// Hear a built captioned script's footage exactly and cut it again (exact.rs).
+    Exact,
 }
 
 /// What the signed-in person may do to this script (can.rs): see it, write
@@ -217,6 +219,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                 Work::Review { .. } => "Fixing review notes".into(),
                 Work::Restore => "Bringing the footage back".into(),
                 Work::Speakers => "Checking speakers".into(),
+                Work::Exact => "Hearing the chosen footage exactly".into(),
                 Work::Build { .. } => "Starting".into(),
             },
             started_at: now_ms(),
@@ -243,6 +246,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         Work::Review { notes, .. } => format!("fixing {} review {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }),
         Work::Restore => "bringing the footage back".to_string(),
         Work::Speakers => "retrying unfinished speaker checks".to_string(),
+        Work::Exact => "hearing the chosen footage exactly".to_string(),
     };
     let name = crate::log::named(&id, &title);
     crate::log::info("agent", format!("{name}: started: {what}"));
@@ -262,6 +266,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
             Work::Review { notes, ready } => crate::fixing::run(&app, &id, notes, ready.as_deref()),
             Work::Restore => crate::archive::restore(&app, &id),
             Work::Speakers => crate::watch::retry(&app, &id),
+            Work::Exact => crate::exact_once(&app, &id),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
         let result = check_cancelled().and(result);
