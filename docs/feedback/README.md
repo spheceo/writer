@@ -11,6 +11,7 @@ As of **25 October 2026**, the next round is tentatively planned for **27–28 O
 | Commentary: writing voice, attributions, narrative flow, clip use, quote pop-ups and precise editor notes | [N3on commentary](2026-10-24-n3on-commentary.md) | Consolidate the general lessons and the earlier round's misses; keep script-specific requests attached to their examples. |
 | Interrogation compilations: openings, cut-in context, footage order, transitions, outros and consistency across cases | [Compilation feedback](2026-10-24-compilations.md) | Build and review the corresponding scripts in Writer so the round can grade Writer's output against the team's notes. |
 | Bodycam compilations: pacing, introductions and compilation structure | [Compilation feedback](2026-10-24-compilations.md) | First review in (25 Oct 2026): names, places, summary cut-ins, outros and intro clips, now in `guides/house.md` and the audit; v2 of each script fixed. Tested — needs work: grade the next build against the review. |
+| Courtroom cuts: clip edges on the intended words, intro pieces with no sound, captioned footage | [Courtroom cuts](2026-10-26-courtroom-cuts.md) | Product fix (26 Oct 2026): exact hearing of the chosen footage and no sliver pieces; v2 of both scripts on their links. Tested — needs work: the producer's review of v2. |
 
 ## How to consolidate feedback
 
