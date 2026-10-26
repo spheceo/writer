@@ -25,6 +25,11 @@ pub fn claude_home() -> std::path::PathBuf {
     dir
 }
 
+fn is_yt_dlp(program: &str) -> bool {
+    let name = std::path::Path::new(program).file_name().and_then(|name| name.to_str()).unwrap_or(program);
+    matches!(name, "yt-dlp" | "yt-dlp_macos")
+}
+
 fn for_claude(command: &mut Command) {
     command.env_clear();
     for key in CLAUDE_ENV {
@@ -45,6 +50,19 @@ pub fn run_lines(
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
     crate::jobs::check_cancelled()?;
+    // yt-dlp needs a JavaScript runtime for YouTube, named explicitly: a
+    // Dock-launched Writer has no PATH worth searching, and yt-dlp enables
+    // only deno by default (Writer's own copy is found the same way).
+    let owned_args: Vec<String> = if is_yt_dlp(program) {
+        match crate::tools::js_runtime() {
+            Some((name, path)) => std::iter::once("--js-runtimes".to_string()).chain(std::iter::once(crate::tools::js_runtime_arg(name, &path))).chain(args.iter().map(|arg| arg.to_string())).collect(),
+            None => args.iter().map(|arg| arg.to_string()).collect(),
+        }
+    } else {
+        args.iter().map(|arg| arg.to_string()).collect()
+    };
+    let arg_refs: Vec<&str> = owned_args.iter().map(String::as_str).collect();
+    let args: &[&str] = &arg_refs;
     let mut command = Command::new(crate::tools::resolve(program));
     command
         .args(args)

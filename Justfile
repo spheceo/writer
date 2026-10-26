@@ -26,6 +26,7 @@ relay-secrets *args:
 # built in, so users install only Claude Code, sign in, and never see the relay.
 bundle:
     test -x "src-tauri/binaries/ffmpeg-$(rustc -vV | sed -n 's/host: //p')" || ./scripts/fetch-ffmpeg.sh
+    test -x "src-tauri/binaries/qjs-$(rustc -vV | sed -n 's/host: //p')" || ./scripts/fetch-quickjs.sh
     bun run tauri build --config src-tauri/tauri.bundle.conf.json
 
 # Releases go up a patch at a time (v0.0.0, v0.0.1, …); in between, nightlies

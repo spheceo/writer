@@ -171,9 +171,12 @@ fn probe_trouble(error: &str) -> (String, bool) {
 }
 
 /// The video Edit downloads (its youtube.ts FORMAT): H.264 up to 1080p over HTTPS with M4A sound.
-pub const FORMAT: &str = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b";
+/// The last resort still asks for a video: a route YouTube is withholding
+/// formats from offers only storyboards, and `b` alone would take one and
+/// call it a download.
+pub const FORMAT: &str = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b[vcodec!=none]";
 /// The same through the paid proxy, at 720p: about half the bytes.
-pub const FORMAT_PROXIED: &str = "bv*[vcodec^=avc1][height<=720][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720]/b";
+pub const FORMAT_PROXIED: &str = "bv*[vcodec^=avc1][height<=720][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720][vcodec!=none]";
 
 pub fn download(
     url: &str,
@@ -186,6 +189,7 @@ pub fn download(
     let mut args = vec![
         "--no-playlist",
         "--no-progress",
+        "--no-warnings",
         "--newline",
         // A dropped transfer is picked up again from the .part file.
         "--retries",
@@ -240,6 +244,20 @@ pub fn download(
         }
     })?;
     if !dest.is_file() {
+        // yt-dlp said yes and made nothing at `dest`: say what it did make,
+        // so the log names the route's answer instead of guessing later.
+        let made = dest
+            .parent()
+            .and_then(|dir| std::fs::read_dir(dir).ok())
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| format!("{} ({})", entry.file_name().to_string_lossy(), entry.metadata().map(|meta| meta.len()).unwrap_or(0)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        crate::log::warn("import", format!("YouTube {url}: yt-dlp finished but {} is missing; the folder holds: {made}", dest.display()));
         return Err("The download did not produce a video.".into());
     }
     Ok(())
@@ -269,6 +287,9 @@ pub fn trouble(error: &str) -> Trouble {
     if lower.contains("confirm your age") || lower.contains("age-restricted") {
         return Trouble::Final("That video is age-restricted, and YouTube wants a signed-in account for it.".into());
     }
+    if lower.contains("requested format is not available") {
+        return Trouble::Blocked;
+    }
     if lower.contains("video unavailable") || lower.contains("has been removed") || lower.contains("not available") {
         return Trouble::Final(format!("YouTube says that video is unavailable.{stale}"));
     }
@@ -278,10 +299,17 @@ pub fn trouble(error: &str) -> Trouble {
     if lower.contains("not a bot") || lower.contains("sign in to confirm") || lower.contains("http error 403") || lower.contains("http error 429") {
         return Trouble::Blocked;
     }
+    // This route gave no video (formats withheld, or yt-dlp finished with
+    // nothing usable): another route — a fresh proxy exit, the sign-in, this
+    // Mac — may still get one, so it is never the final word on its own.
+    if lower.contains("did not produce a video") || lower.contains("requested format is not available") || lower.contains("came out unreadable") || lower.contains("only images are available") || lower.contains("no supported javascript runtime") || lower.contains("javascript runtime could be found") {
+        return Trouble::Blocked;
+    }
     if lower.contains("timed out") || lower.contains("connection") || lower.contains("ssl") || lower.contains("unable to download") {
         return Trouble::Connection;
     }
-    let said: String = error.chars().take(300).collect();
+    // Say the ERROR, not a WARNING that happened to come first in yt-dlp's output.
+    let said: String = error.lines().rev().find(|line| line.to_uppercase().contains("ERROR")).unwrap_or(error).chars().take(300).collect();
     Trouble::Final(format!("The YouTube download failed: {said}{stale}"))
 }
 
@@ -327,6 +355,28 @@ mod tests {
         assert_eq!(trouble("ERROR: The read operation timed out"), Trouble::Connection);
         assert!(matches!(trouble("ERROR: Private video. Sign in"), Trouble::Final(text) if text.contains("private")));
         assert!(matches!(trouble("WARNING: older than 90 days ERROR: Video unavailable"), Trouble::Final(text) if text.contains("brew upgrade")));
+    }
+
+    #[test]
+    fn a_route_that_gives_no_video_is_retried_not_final() {
+        // The first (proxy) route withholding a video must fall through to
+        // the next route instead of ending the import on the first try.
+        assert_eq!(trouble("The download did not produce a video."), Trouble::Blocked);
+        assert_eq!(trouble("ERROR: [youtube] abc: Requested format is not available. Use --list-formats for a list of available formats"), Trouble::Blocked);
+        assert_eq!(trouble("The download came out unreadable, so it was dropped."), Trouble::Blocked);
+        assert_eq!(trouble("ERROR: Only images are available for download. use --list-formats to see them"), Trouble::Blocked);
+        assert_eq!(trouble("yt-dlp failed: WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default"), Trouble::Blocked);
+        // A final message names the ERROR line, not a WARNING before it.
+        assert!(matches!(trouble("WARNING: [youtube] No supported JavaScript runtime could be found\nERROR: [youtube] abc: Private video"), Trouble::Final(text) if text.contains("Private") || text.contains("private")));
+        assert!(matches!(trouble("WARNING: something deprecated\nERROR: [youtube] abc: This video is no longer available"), Trouble::Final(text) if text.contains("no longer available") && !text.starts_with("The YouTube download failed: WARNING")));
+    }
+
+    #[test]
+    fn formats_never_settle_for_a_storyboard() {
+        for format in [FORMAT, FORMAT_PROXIED] {
+            assert!(format.ends_with("[vcodec!=none]"), "{format}");
+            assert!(!format.ends_with("/b"), "{format}");
+        }
     }
 
     #[test]

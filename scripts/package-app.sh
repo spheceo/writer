@@ -38,6 +38,9 @@ echo "==> ffmpeg and ffprobe ($target)"
 echo "==> writer-agent ($target)"
 "$root/scripts/build-agent.sh" "$target"
 
+echo "==> qjs, yt-dlp's JavaScript runtime ($target)"
+[[ -x "$root/src-tauri/binaries/qjs-$target" ]] || "$root/scripts/fetch-quickjs.sh" "$target"
+
 echo "==> Writer.app ($target, ${WRITER_BUILD:-dev})"
 (cd "$root" && bunx @tauri-apps/cli@2 build --target "$target" --bundles app --config src-tauri/tauri.bundle.conf.json)
 built="${CARGO_TARGET_DIR:-$root/src-tauri/target}/$target/release/bundle/macos/Writer.app"
@@ -80,6 +83,10 @@ codesign --verify --deep --strict --verbose=2 "$app"
 said=$(perl -e 'alarm 30; exec @ARGV' "$app/Contents/MacOS/writer-agent" </dev/null 2>&1 || true)
 [[ "$said" == *"can't read"* ]] || { echo "writer-agent didn't start as signed: ${said:-no answer in 30 s}" >&2; exit 1; }
 echo "==> writer-agent starts as signed"
+# qjs must start as signed too: it is yt-dlp's JavaScript runtime, and a copy
+# that can't run leaves YouTube imports with no video and no plain reason.
+[[ "$("$app/Contents/MacOS/qjs" --version </dev/null 2>&1)" == 0.* ]] || { echo "qjs didn't start as signed" >&2; exit 1; }
+echo "==> qjs starts as signed"
 
 notarise() {
   xcrun notarytool submit "$1" --key "$work/notary.p8" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER" --wait

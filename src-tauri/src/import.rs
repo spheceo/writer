@@ -749,10 +749,18 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
         let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), (way == Way::Cookies).then_some(jar.as_path()), &|percent| on(percent, None));
         drop(guard);
         match result {
-            Ok(()) => {
+            Ok(()) if readable(dest) => {
                 crate::log::info("import", format!("YouTube {url}: downloaded on try {} ({})", attempt + 1, match way { Way::Proxy => "through the proxy", Way::Cookies => "with the saved sign-in", Way::Own => "from this Mac" }));
                 done = true;
                 break;
+            }
+            Ok(()) => {
+                // yt-dlp finished but what it made is not a playable video
+                // (a route withholding formats can hand back a storyboard):
+                // drop it and let the next route try, as a failed try does.
+                crate::log::warn("import", format!("YouTube {url}: try {} ({}) produced no readable video", attempt + 1, match way { Way::Proxy => "proxy", Way::Cookies => "sign-in cookies", Way::Own => "this Mac" }));
+                let _ = fs::remove_file(dest);
+                last = "The download came out unreadable, so it was dropped.".into();
             }
             Err(error) => {
                 if let Trouble::Final(reason) = youtube::trouble(&error) {
@@ -764,15 +772,14 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
         }
     }
     if !done {
+        if last.contains("came out unreadable") {
+            return Err("The download came out unreadable, so it was dropped. Retry fetches it again.".into());
+        }
         return Err(match youtube::trouble(&last) {
             Trouble::Blocked => "YouTube kept blocking the download, through the proxy too. Retry in a few minutes.".into(),
             Trouble::Connection => "The connection to YouTube kept dropping. Retry: what downloaded is kept.".into(),
             Trouble::Final(reason) => reason,
         });
-    }
-    if !readable(dest) {
-        let _ = fs::remove_file(dest);
-        return Err("The download came out unreadable, so it was dropped. Retry fetches it again.".into());
     }
     Ok(())
 }

@@ -101,12 +101,12 @@ jobs:
         with:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
-      # ffmpeg and ffprobe ship beside Writer (Tauri sidecars, scripts/fetch-ffmpeg.sh);
-      # kept between runs so a build doesn't need their host up.
+      # ffmpeg, ffprobe and qjs ship beside Writer (Tauri sidecars, scripts/fetch-ffmpeg.sh
+      # and scripts/fetch-quickjs.sh); kept between runs so a build doesn't need their hosts up.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: src-tauri/binaries
-          key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/fetch-ffmpeg.sh') }}
+          key: ffmpeg-${{ matrix.target }}-${{ hashFiles('scripts/fetch-ffmpeg.sh', 'scripts/fetch-quickjs.sh') }}
       # Writer.app, the zip installed apps update from, and the disk image (scripts/package-app.sh),
       # into out/ (dist/ is the web UI's build):
       # signed with the Developer ID when MACOS_CERTIFICATE is set, notarised when NOTARY_* are too,
