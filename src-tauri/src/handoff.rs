@@ -73,7 +73,7 @@ pub fn transcript_key(source: &str) -> String {
 }
 
 /// A file from disk, named by its content as Edit names it.
-fn sha256_of(path: &Path) -> Result<String, String> {
+pub(crate) fn sha256_of(path: &Path) -> Result<String, String> {
     let mut file = File::open(path).map_err(|error| error.to_string())?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0u8; 1 << 20];
@@ -113,7 +113,7 @@ pub(crate) fn shared(dir: &Path, script: &Script) -> Vec<Shared> {
         .filter_map(|(index, recording)| {
             let (source, name) = match sources.get(index).cloned().flatten() {
                 Some(found) => found,
-                None if script.source_kind == "file" => {
+                None if script.source_kind == "file" || (script.source_kind == "compilation" && script.parts.get(index).and_then(|part| part.url.as_deref()).is_some_and(|url| matches!(crate::drive::parse(url), Ok(crate::drive::Link::Folder(_))))) => {
                     let name = recording.file.file_name()?.to_string_lossy().into_owned();
                     (format!("sha256:{}", sha256_of(&recording.file).ok()?), name)
                 }
@@ -328,6 +328,37 @@ pub fn shared_transcript(data: &Path, dir: &Path, script: &Script, key: &str, ke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Needs ffmpeg; verifies the one-new-case-plus-reuse path shares the
+    /// master under exactly the identity exported to Edit, never the preview.
+    #[test]
+    #[ignore]
+    fn folder_master_handoff_uses_the_original_and_serialized_registry_identity() {
+        let dir = std::env::temp_dir().join(format!("writer-folder-handoff-{}", std::process::id()));
+        fs::create_dir_all(dir.join("compilation")).unwrap();
+        let master = dir.join("compilation/00.mp4");
+        assert!(std::process::Command::new("ffmpeg").args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=320x180:d=1"]).arg(&master).status().unwrap().success());
+        let source = format!("sha256:{}", sha256_of(&master).unwrap());
+        let key = original_key(&source, "00.mp4");
+        fs::write(dir.join("compilation/videos.json"), r#"{"videos":[{"url":"https://drive.google.com/drive/folders/1folderfolderfolder","title":"Case 1"}],"skipped":[]}"#).unwrap();
+        let script: Script = serde_json::from_value(json!({
+            "id":"folder", "title":"Compilation", "sourceKind":"compilation", "sourceUrl":"https://drive.google.com/drive/folders/1folderfolderfolder",
+            "originalPath": dir.join("preview.mp4"), "status":"ready", "stage":"", "progress":100, "durationMs":1000,
+            "revision":1, "createdAt":0, "updatedAt":0, "compilation":true,
+            "parts":[{"title":"Case 1", "startMs":0, "durationMs":1000, "url":"https://drive.google.com/drive/folders/1folderfolderfolder", "mediaSource":source, "originalKey":key}],
+            "reuses":[{"url":"https://docs.google.com/document/d/1docdocdocdocdoc/edit", "after":1, "scriptText":"Finished cut-in."}]
+        })).unwrap();
+        let files = shared(&dir, &script);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file, master);
+        assert_eq!(files[0].source, source);
+        assert_eq!(original_key(&files[0].source, &files[0].name), key);
+        let body = serde_json::to_value(&script).unwrap();
+        assert_eq!(body["parts"][0]["mediaSource"], source);
+        assert_eq!(body["parts"][0]["originalKey"], key);
+        assert_eq!(body["reuses"][0]["scriptText"], "Finished cut-in.");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn reads_youtube_links() {

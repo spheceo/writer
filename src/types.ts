@@ -31,6 +31,9 @@ export type Part = {
   claimedMs?: number;
   /** The recording's YouTube or Drive link, which its timestamps link to. */
   url?: string;
+  /** Registry identity of a composite Drive-folder case master. The folder remains in url. */
+  mediaSource?: string;
+  originalKey?: string;
   /** Footage of a compilation's reused case, joined after its own videos for intro clips: the reuse link. Never a case. */
   reuse?: string;
   /** A reused case's strongest short moments, picked once. */
@@ -102,7 +105,7 @@ export type Script = {
   /** A compilation's reused cases: each takes only its transition, carrying its link. */
   /** A reused case given as its earlier script's Doc carries the footage it lists and its narration. */
   /** `earlier`: the earlier compilation's card (or Doc) and case, as the card gave them; `script`: that compilation's Doc, once read. */
-  reuses?: { url: string; title: string; after: number; footage?: string; narration?: string; earlier?: string; script?: string; scriptTitle?: string }[];
+  reuses?: { url: string; title: string; after: number; footage?: string; narration?: string; earlier?: string; script?: string; scriptTitle?: string; scriptText?: string }[];
   /** Rewrites of saved narration waiting for the producer to accept or decline. */
   proposals?: Proposal[];
   /** The last full export to Google Docs. */

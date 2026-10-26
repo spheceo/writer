@@ -109,6 +109,24 @@ pub struct JoinPart<'a> {
 /// fitted to 854×480; an audio recording plays over black, and a silent video
 /// gets silence, so picture and sound stay in step at every join.
 pub fn join(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<(), String> {
+    join_sized(parts, dest, on_percent, 854, 480, "27")
+}
+
+/// One compilation case may be a folder. Keep a full-size case master for
+/// Edit, separately from the 480p preview, and retain all downloaded originals.
+pub fn join_original(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<(), String> {
+    let mut width = 854;
+    let mut height = 480;
+    for part in parts.iter().filter(|part| part.streams.video) {
+        let text = proc::run("ffprobe", &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", &part.path.to_string_lossy()], Duration::from_secs(30))?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+        width = width.max(value["streams"][0]["width"].as_u64().unwrap_or(854));
+        height = height.max(value["streams"][0]["height"].as_u64().unwrap_or(480));
+    }
+    join_sized(parts, dest, on_percent, width.div_ceil(2) * 2, height.div_ceil(2) * 2, "18")
+}
+
+fn join_sized(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8), width: u64, height: u64, crf: &str) -> Result<(), String> {
     let total: u64 = parts.iter().map(|part| part.streams.duration_ms).sum();
     if total == 0 || total > MAX_CASE_MS {
         return Err("Use footage between a second and twenty hours in all.".into());
@@ -122,10 +140,10 @@ pub fn join(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<
         let seconds = format!("{:.3}", part.streams.duration_ms as f64 / 1000.0);
         if part.streams.video {
             filters.push(format!(
-                "[{index}:v]scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]"
+                "[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p,trim=duration={seconds},setpts=PTS-STARTPTS[v{index}]"
             ));
         } else {
-            filters.push(format!("color=c=black:s=854x480:r=30:d={seconds},format=yuv420p,setsar=1[v{index}]"));
+            filters.push(format!("color=c=black:s={width}x{height}:r=30:d={seconds},format=yuv420p,setsar=1[v{index}]"));
         }
         if part.streams.audio {
             filters.push(format!(
@@ -141,7 +159,7 @@ pub fn join(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<
     args.extend(
         [
             "-filter_complex", &filters.join(";"), "-map", "[v]", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-g", "30",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-g", "30",
             "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
             "-progress", "pipe:1", "-nostats", &dest_text,
         ]
@@ -366,6 +384,7 @@ pub fn overview(peaks: &[f32], buckets: usize) -> Vec<f32> {
 #[cfg(test)]
 mod join_tests {
     use super::{append, join, streams, JoinPart};
+    use std::time::Duration;
     use std::path::Path;
     use std::process::Command;
 
@@ -393,6 +412,26 @@ mod join_tests {
         let found = streams(&out).unwrap();
         assert!(found.video && found.audio);
         assert!((6_900..=7_200).contains(&found.duration_ms), "{}", found.duration_ms);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg; exercises the master used for a multi-recording Drive case.
+    #[test]
+    #[ignore]
+    fn folder_master_retains_full_resolution_and_all_recordings() {
+        let dir = std::env::temp_dir().join(format!("writer-folder-master-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b, out) = (dir.join("a.mp4"), dir.join("b.mp4"), dir.join("master.mp4"));
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=1", "-f", "lavfi", "-i", "sine=d=1", "-shortest"], &a);
+        make(&["-f", "lavfi", "-i", "testsrc=s=640x360:d=1"], &b);
+        let parts: Vec<JoinPart> = [&a, &b].iter().map(|path| JoinPart { path, streams: streams(path).unwrap() }).collect();
+        super::join_original(&parts, &out, &|_| {}).unwrap();
+        let found = streams(&out).unwrap();
+        assert!(found.video && found.audio);
+        assert!((1900..=2200).contains(&found.duration_ms));
+        let dimensions = crate::proc::run("ffprobe", &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", &out.to_string_lossy()], Duration::from_secs(30)).unwrap();
+        assert_eq!(dimensions.trim(), "1280,720");
+        assert!(a.is_file() && b.is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -87,6 +87,10 @@ pub struct Reuse {
     /// from. It is never rewritten here: the editor lifts the segment whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub narration: Option<String>,
+    /// The complete original script/case as plain text, with footage ranges,
+    /// links and finished cut-ins untouched. Edit rebuilds from this evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_text: Option<String>,
     /// Where the channel's earlier script of this case is, as the card says:
     /// the earlier compilation's Trello card (or its Doc) and the case's
     /// number there ("https://trello.com/c/U0FrQAUk case 4").
@@ -140,6 +144,12 @@ pub struct Part {
     /// the script's timestamps and assets link to, as Repack's do.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// A composite case (Drive folder), registered as one full-size master.
+    /// The folder URL remains in `url`; Edit uses this registry source/key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_key: Option<String>,
     /// Footage of a compilation's reused case, joined after its own videos
     /// for the opening's intro clips: the reuse link it belongs to. It is
     /// never a case of its own.

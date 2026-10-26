@@ -1,7 +1,8 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { isCutIn } from "./clips";
 import { type CutPlayer, clipStarts, editedPosition, type Playhead, usePlayheadValue, usePlaying } from "./playback";
-import type { Clip } from "./types";
+import { captionAt, captionCues } from "./captions";
+import type { Clip, Word } from "./types";
 import { Icon } from "./ui";
 
 /** A timecode as an editor reads one: hours, minutes, seconds and frames at 30 fps. */
@@ -14,6 +15,15 @@ export function timecode(ms: number) {
 function PlayheadTimecode({ playhead }: { playhead: Playhead }) {
   const ms = usePlayheadValue(playhead, (p) => Math.floor((p.auditioning ? p.sourceMs : p.ms) / 33.34));
   return <span className="timecode">{timecode(ms * 33.34)}</span>;
+}
+
+/** Repack's source-timed cues: no subtitles over cut-ins or source audition. */
+function Caption({ clips, cues, corrections, playhead, frameRatio }: { frameRatio: number; clips: Clip[]; cues: Word[][]; corrections: Record<string, string>; playhead: Playhead }) {
+  const caption = usePlayheadValue(playhead, (p) => {
+    const at = editedPosition(clips, p.ms);
+    return !p.auditioning && at && !isCutIn(at.clip) ? captionAt(cues, p.sourceMs, at.clip, corrections) : null;
+  });
+  return caption ? <div className="caption-frame" style={{ ["--ratio" as string]: frameRatio }}><p className="caption">{caption}</p></div> : null;
 }
 
 /** Split's seek bar: the cut end to end, cut-ins marked, the playhead on it. */
@@ -70,8 +80,12 @@ export function Monitor({
   empty,
   multi = false,
   describe,
+  words,
+  corrections,
 }: {
   src: string;
+  words?: Word[];
+  corrections?: Record<string, string>;
   /** The cut plays from several recordings, which the player loads itself. */
   multi?: boolean;
   /** What a card says, where the cut's own cards are not cut-ins. */
@@ -86,11 +100,18 @@ export function Monitor({
   onVideo: (video: HTMLVideoElement | null) => void;
   empty?: ReactNode;
 }) {
+  const cues = useMemo(() => captionCues(words ?? []), [words]);
+  const [captions, setCaptions] = useState(true);
   const playing = usePlaying(playhead);
   const auditioning = usePlayheadValue(playhead, (p) => p.auditioning);
   const showing = usePlayheadValue(playhead, (p) => (p.auditioning ? null : (editedPosition(clips, p.ms)?.clip ?? null)));
   const [volume, setVolume] = useState(() => Number(window.localStorage.getItem("writer.volume") ?? "1"));
   const [rate, setRate] = useState(1);
+  const [frameRatio, setFrameRatio] = useState(16 / 9);
+  const measureVideo = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const video = event.currentTarget;
+    if (video.videoWidth && video.videoHeight) setFrameRatio(video.videoWidth / video.videoHeight);
+  };
   const before = useRef(1);
   const total = clipStarts(clips)[clips.length] ?? 0;
   const card = showing && isCutIn(showing) ? showing : null;
@@ -106,9 +127,9 @@ export function Monitor({
     <section className="panel monitor" aria-label="Program monitor">
       <div className="screen">
         {multi ? (
-          <video ref={onVideo} playsInline preload="auto" aria-label="Script preview" onClick={() => player?.toggle()} />
+          <video onLoadedMetadata={measureVideo} ref={onVideo} playsInline preload="auto" aria-label="Script preview" onClick={() => player?.toggle()} />
         ) : src ? (
-          <video ref={onVideo} src={src} playsInline preload="auto" aria-label="Edited video preview" onClick={() => player?.toggle()} />
+          <video onLoadedMetadata={measureVideo} ref={onVideo} src={src} playsInline preload="auto" aria-label="Edited video preview" onClick={() => player?.toggle()} />
         ) : (
           <div className="none">{empty ?? "No preview yet."}</div>
         )}
@@ -126,6 +147,7 @@ export function Monitor({
             {card.narration?.trim() ? <p>{card.narration.trim()}</p> : <p className="faint">No narration yet.</p>}
           </div>
         )}
+        {captions && words && <Caption clips={clips} cues={cues} corrections={corrections ?? {}} playhead={playhead} frameRatio={frameRatio} />}
         {auditioning && <span className="screen-badge">Source</span>}
       </div>
       {seekBar && <SeekBar clips={clips} playhead={playhead} player={player} />}
@@ -151,6 +173,8 @@ export function Monitor({
           </button>
         </div>
         <div className="transport-end">
+          {words && <button type="button" className="icon-tool" aria-pressed={captions} aria-label={captions ? "Hide subtitles" : "Show subtitles"} title={captions ? "Hide subtitles" : "Show subtitles"} onClick={() => setCaptions(!captions)}>CC</button>}
+
           <button
             type="button"
             className="icon-tool"

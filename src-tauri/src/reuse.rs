@@ -52,7 +52,8 @@ fn wanted(script: &Script, urls: &[String]) -> Result<Vec<Reuse>, String> {
 
 /// Whether a link is a Google Doc: a reused case given as its earlier script.
 pub fn is_doc(url: &str) -> bool {
-    url.contains("docs.google.com/document/d/")
+    url.strip_prefix("https://docs.google.com/document/d/")
+        .is_some_and(|tail| !tail.split(['/', '?', '#']).next().unwrap_or("").is_empty())
 }
 
 /// Where a reused case's video is: its own link, or the footage its script's Doc lists.
@@ -69,6 +70,7 @@ fn footage_of(reuse: &Reuse) -> Result<String, String> {
 /// that aren't timestamps. Nothing in it is rewritten; the transition into
 /// it is written from that narration.
 pub struct DocCase {
+    pub script_text: String,
     pub title: String,
     pub footage: Option<String>,
     pub narration: String,
@@ -135,7 +137,7 @@ fn parse_doc(name: &str, text: &str) -> DocCase {
         }
         narration.push_str(&plain);
     }
-    DocCase { title, footage, narration }
+    DocCase { title, footage, narration, script_text: text.to_string() }
 }
 
 /// "https://trello.com/c/U0FrQAUk case 4" (or a Doc's link): where a reused
@@ -160,6 +162,7 @@ pub fn earlier_link(text: &str) -> Option<(String, Option<usize>)> {
 /// A reused case's part of the channel's earlier script: the Doc it's in,
 /// what that Doc is called, and the case's narration, as written.
 pub struct Earlier {
+    pub script_text: String,
     pub doc: String,
     pub title: String,
     pub narration: String,
@@ -175,6 +178,11 @@ pub fn read_earlier(earlier: &str, video: &str, settings: &settings::Settings) -
     let (name, text) = crate::commentary::fetch(&doc, settings).map_err(|error| format!("The earlier script couldn't be read: {error}"))?;
     let title = name.trim().trim_start_matches("(DRAFT)").trim().to_string();
     let cases = case_sections(&text);
+    let script_text = match pick_case(&cases, case, video) {
+        Some(section) => exact_case_section(&text, &cases, section),
+        None if cases.len() < 2 => text.clone(),
+        None => String::new(),
+    };
     let narration = match pick_case(&cases, case, video) {
         // parse_doc passes over its first line, the Doc's name.
         Some(section) => parse_doc(&name, &format!("{name}\n{section}")).narration,
@@ -187,7 +195,7 @@ pub fn read_earlier(earlier: &str, video: &str, settings: &settings::Settings) -
     if narration.trim().is_empty() {
         return Err(format!("Case {} of “{title}” holds no script.", case.unwrap_or(1)));
     }
-    Ok(Earlier { doc, title, narration })
+    Ok(Earlier { doc, title, narration, script_text })
 }
 
 /// The script Doc on an earlier compilation's card: attached, linked in its
@@ -203,6 +211,28 @@ fn script_on_card(link: &str, settings: &settings::Settings) -> Result<String, S
         .map(|url| crate::trello::unwrap_redirect(&url))
         .find(|url| is_doc(url))
         .ok_or_else(|| format!("“{name}” has no script Doc on it."))
+}
+
+/// Select the original bytes, rather than the cleaned transition context.
+fn exact_case_section(text: &str, cases: &[String], selected: &String) -> String {
+    let index = cases.iter().position(|case| std::ptr::eq(case, selected)).unwrap_or(0);
+    let mut boundaries = Vec::new();
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if rule(line.trim()) { boundaries.push((offset, offset + line.len())); }
+        offset += line.len();
+    }
+    if !boundaries.is_empty() {
+        let sections: Vec<&str> = boundaries.iter().enumerate().map(|(i, (_, start))| {
+            &text[*start..boundaries.get(i + 1).map(|(end, _)| *end).unwrap_or(text.len())]
+        }).filter(|section| !section.trim().is_empty()).collect();
+        if let Some(section) = sections.get(index) { return section.to_string(); }
+    }
+    // The no-rule format has one case per paragraph. Keep its original text.
+    for line in text.split_inclusive('\n') {
+        if line.trim() == selected { return line.to_string(); }
+    }
+    selected.clone()
 }
 
 /// The case of `video` among an earlier compilation's: the one whose clips
@@ -601,6 +631,33 @@ fn placed(script: &Script, lines: &[Vec<usize>], moment: &Value) -> Option<Highl
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn original_script_ranges_and_finished_cut_ins_survive_serialization() {
+        let text = format!("Old case\nAssets:\nFootage <https://youtu.be/aaaaaaaaaaa>\nTotal Duration: 20:00\n\n(01:02–01:19 <https://youtu.be/aaaaaaaaaaa?t=62>)\n\n{}\n", "Finished cut-in words, unchanged. ".repeat(250));
+        let doc = parse_doc("Old case", &text);
+        assert_eq!(doc.script_text, text);
+        assert!(doc.narration.len() < text.len());
+        let mut script = script();
+        script.reuses[0].script_text = Some(doc.script_text);
+        script.reuses[0].script = Some("https://docs.google.com/document/d/1docdocdocdocdoc/edit".into());
+        script.reuses[0].script_title = Some(doc.title);
+        script.clips.push(crate::model::Clip { id: "transition".into(), start_ms: 0, end_ms: 3000, kind: Some("cut-in".into()), reuse: Some(script.reuses[0].url.clone()), ..Default::default() });
+        let value = serde_json::to_value(&script).unwrap();
+        assert_eq!(value["reuses"][0]["scriptText"], text);
+        assert_eq!(value["clips"][0]["reuse"], script.reuses[0].url);
+        assert_eq!(value["parts"][1]["reuse"], script.reuses[0].url);
+        let restored: Script = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.reuses[0].script_text.as_deref(), Some(text.as_str()));
+    }
+
+    #[test]
+    fn earlier_case_evidence_keeps_spacing_ranges_and_cut_ins() {
+        let text = "Title\nThese were the moments.\n________\nFirst case.\n________\n  Finished words.  \n\n(1:02-1:19 <https://youtu.be/bbbbbbbbbbb>)\n\nNext cut-in.\n________\nThird case.\n";
+        let cases = case_sections(text);
+        let selected = pick_case(&cases, Some(1), "https://youtu.be/bbbbbbbbbbb").unwrap();
+        assert_eq!(exact_case_section(text, &cases, selected), "  Finished words.  \n\n(1:02-1:19 <https://youtu.be/bbbbbbbbbbb>)\n\nNext cut-in.\n");
+    }
+
     #[test]
     fn an_earlier_compilation_splits_into_its_cases() {
         // Card 402's Doc: no rules, a case a paragraph after "These were…".

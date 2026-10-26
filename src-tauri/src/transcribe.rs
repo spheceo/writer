@@ -31,7 +31,10 @@ pub struct Heard {
 pub fn recordings(dir: &Path, script: &Script) -> Vec<Heard> {
     let footage = PathBuf::from(&script.original_path);
     if script.parts.len() < 2 {
-        return vec![Heard { file: footage, span: None, offset_ms: 0, length_ms: script.duration_ms, key: "whole".into() }];
+        // A compilation with one new case plus reuses still has its own full-
+        // quality case file. Never register its 480p preview as the original.
+        let file = if script.source_kind == "compilation" { crate::import::part_files(dir, script).into_iter().next().flatten().unwrap_or(footage) } else { footage };
+        return vec![Heard { file, span: None, offset_ms: 0, length_ms: script.duration_ms, key: "whole".into() }];
     }
     let own = crate::import::part_files(dir, script);
     script

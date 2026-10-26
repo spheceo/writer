@@ -668,6 +668,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           labels={labels}
           playhead={playhead}
           player={player}
+          words={script.words}
+          corrections={script.corrections}
           seekBar={view === "split"}
           expanded={expanded}
           onExpand={view === "video" ? setExpanded : undefined}

@@ -133,43 +133,29 @@ pub fn compilation_lines(lines: &[String]) -> Result<(Vec<String>, Vec<crate::mo
 fn lines_for(lines: &[String], case: bool) -> Result<(Vec<String>, Vec<crate::model::Reuse>), String> {
     let mut urls = Vec::new();
     let mut reuses = Vec::new();
-    for line in lines.iter().map(|line| line.trim()).filter(|line| !line.is_empty()) {
-        let (reuse, url) = match line.split_once(char::is_whitespace) {
-            Some((mark, rest)) if mark.eq_ignore_ascii_case("reuse") || mark.eq_ignore_ascii_case("reuse:") => (true, rest.trim()),
-            _ => (false, line),
-        };
-        // "REUSE <video> <earlier card or Doc> case N": where the case's earlier script is.
-        let (url, earlier) = match url.split_once(char::is_whitespace) {
-            Some((video, rest)) if reuse && crate::reuse::earlier_link(rest).is_some() => (video, Some(rest.trim().to_string())),
-            _ => (url, None),
-        };
-        // A Google Doc is the script of a case the channel already made: a reused case, always.
-        let doc = crate::reuse::is_doc(url);
-        if doc {
-            if !url.starts_with("https://docs.google.com/document/d/") || url.chars().any(char::is_whitespace) {
-                return Err("That Google Docs link is not complete.".into());
-            }
-        } else if url.contains("drive.google.com") {
-            if !matches!(drive::parse(url)?, drive::Link::File(_)) {
-                return Err("In a compilation, each Drive link is one video, not a folder.".into());
-            }
-        } else {
-            youtube::check_url(url)?;
+    let text = lines.join("\n");
+    let links = crate::trello::links_in(&text);
+    // Never silently discard a malformed source among otherwise valid cases.
+    for url in crate::trello::urls(&text).iter().map(|url| crate::trello::unwrap_redirect(url)) {
+        if !crate::reuse::is_doc(&url) && drive::parse(&url).is_err() && youtube::check_url(&url).is_err() && crate::trello::card_id(&url).is_none() {
+            return Err(format!("Unsupported compilation source: {url}"));
         }
-        if reuse || doc {
-            reuses.push(crate::model::Reuse { url: url.to_string(), title: String::new(), after: urls.len(), earlier, ..Default::default() });
+    }
+    for link in links {
+        if link.reuse {
+            reuses.push(crate::model::Reuse { url: link.url, title: String::new(), after: urls.len(), earlier: link.earlier, ..Default::default() });
         } else {
-            urls.push(url.to_string());
+            urls.push(link.url);
         }
     }
     if case && !reuses.is_empty() {
         return Err("A reused case belongs in a compilation, not one Courtroom case.".into());
     }
-    if !(2..=20).contains(&urls.len()) {
+    if urls.is_empty() || urls.len() > 20 || urls.len() + reuses.len() < 2 {
         return Err(if case {
             "A Courtroom case across videos takes 2 to 20 links; for one video, use YouTube.".into()
         } else {
-            "A compilation takes 2 to 20 videos to import, one link each.".into()
+            "A compilation takes at least two cases, including at least one new footage source (up to 20 new and 20 reused).".into()
         });
     }
     if reuses.len() > 20 {
@@ -232,8 +218,8 @@ pub fn check_videos(data: &Path, lines: &[String]) -> Result<Vec<VideoCheck>, St
                             Ok((title, recordings)) => Probe {
                                 title,
                                 channel: "Google Drive".into(),
-                                duration_ms: recordings.first().and_then(|recording| recording.claimed_ms),
-                                problem: recordings.first().is_some_and(|recording| recording.audio).then(|| "It's an audio recording, not a video.".into()),
+                                duration_ms: recordings.iter().map(|recording| recording.claimed_ms).sum(),
+                                problem: recordings.is_empty().then(|| "That Drive link has no recordings.".into()),
                                 warning: None,
                             },
                             Err(error) => Probe { problem: Some(error), ..Default::default() },
@@ -803,10 +789,42 @@ pub(crate) fn fetch_video_paced(data: &Path, url: &str, dest: &Path, settings: &
     }
     if url.contains("drive.google.com") {
         let token = drive::access_token(settings)?;
-        let (_, recordings) = drive::recordings(&token, &drive::parse(url)?)?;
-        let recording = recordings.first().ok_or("That Drive link has no video.")?;
-        let size = recording.size.max(1);
-        return drive::download(&token, recording, dest, &|bytes| on((bytes.min(size) * 100 / size) as u8, None));
+        let link = drive::parse(url)?;
+        let folder = dest.with_extension("recordings");
+        let manifest = folder.join("manifest.json");
+        let recordings: Vec<Recording> = if matches!(link, drive::Link::Folder(_)) && manifest.is_file() {
+            serde_json::from_slice(&fs::read(&manifest).map_err(|error| error.to_string())?).map_err(|error| format!("The saved case folder listing couldn't be read: {error}"))?
+        } else {
+            drive::recordings(&token, &link)?.1
+        };
+        if recordings.is_empty() { return Err("That Drive link has no recordings.".into()); }
+        if let Some(problem) = over_limits(&recordings.iter().collect::<Vec<_>>()) { return Err(problem); }
+        if matches!(link, drive::Link::File(_)) {
+            let recording = &recordings[0];
+            let size = recording.size.max(1);
+            return drive::download(&token, recording, dest, &|bytes| on((bytes.min(size) * 100 / size) as u8, None));
+        }
+        // One folder is one case; its name-ordered recordings share one case
+        // clock. Keep every original and its manifest for retries and provenance.
+        fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+        fs::write(&manifest, serde_json::to_vec_pretty(&recordings).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        let mut paths = Vec::new();
+        for (index, recording) in recordings.iter().enumerate() {
+            let path = drive_file(&folder, index, recording);
+            if !downloaded(&path, recording) {
+                drive::download(&token, recording, &path, &|bytes| {
+                    let fraction = bytes.min(recording.size.max(1)) * 100 / recording.size.max(1);
+                    on(((index as u64 * 100 + fraction) * 70 / (recordings.len() as u64 * 100)) as u8, None);
+                })?;
+            }
+            paths.push(path);
+        }
+        let parts = paths.iter().map(|path| media::streams(path).map(|streams| media::JoinPart { path, streams })).collect::<Result<Vec<_>, _>>()?;
+        let partial = dest.with_extension("joining.mp4");
+        let result = media::join_original(&parts, &partial, &|percent| on(70 + (u32::from(percent) * 3 / 10) as u8, Some("Joining the case's recordings.")));
+        if result.is_err() { let _ = fs::remove_file(&partial); }
+        result?;
+        return fs::rename(&partial, dest).map_err(|error| error.to_string());
     }
     youtube_paced(data, url, dest, settings, pace, on)
 }
@@ -1162,7 +1180,11 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
         if held < claimed {
             note(script, format!("{title} is cut short: it claims {} but holds {}. Writer joined what it holds.", clock(claimed), clock(held)));
         }
-        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone(), ..Default::default() });
+        let media_source = if url.as_deref().is_some_and(|url| matches!(drive::parse(url), Ok(drive::Link::Folder(_)))) {
+            Some(format!("sha256:{}", crate::handoff::sha256_of(path)?))
+        } else { None };
+        let original_key = media_source.as_deref().map(|source| crate::handoff::original_key(source, &path.file_name().unwrap_or_default().to_string_lossy()));
+        parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone(), media_source, original_key, ..Default::default() });
         start_ms += held;
         join.push(media::JoinPart { path: path.as_path(), streams: media::Streams { duration_ms: held, ..found } });
     }
@@ -1237,7 +1259,7 @@ pub fn part_sources(dir: &Path, script: &Script) -> Vec<Option<(String, String)>
         crate::handoff::youtube_id(url).map(|id| (format!("youtube:{id}"), format!("{} [{id}].mp4", title.chars().take(120).collect::<String>().trim())))
     };
     let joined = script.parts.len() > 1;
-    let listed: Vec<Option<(String, String)>> = match script.source_kind.as_str() {
+    let mut listed: Vec<Option<(String, String)>> = match script.source_kind.as_str() {
         "drive" => match Manifest::read(dir) {
             Some(manifest) => manifest.wanted().iter().map(|(_, recording)| Some((format!("drive:{}", recording.id), recording.name.clone()))).collect(),
             None => vec![of_link(&script.source_url, &script.title)],
@@ -1249,6 +1271,11 @@ pub fn part_sources(dir: &Path, script: &Script) -> Vec<Option<(String, String)>
         "youtube" => vec![of_link(&script.source_url, &script.title)],
         _ => vec![None],
     };
+    for (index, part) in script.parts.iter().enumerate() {
+        if let (Some(source), Some(key), Some(slot)) = (&part.media_source, &part.original_key, listed.get_mut(index)) {
+            *slot = Some((source.clone(), key.rsplit('/').next().unwrap_or("case.mp4").to_string()));
+        }
+    }
     if !joined {
         return vec![listed.into_iter().next().flatten()];
     }
@@ -1332,9 +1359,9 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         }
     };
     // A reused case is never downloaded; its title is what its transition is written from.
-    if script.reuses.iter().any(|reuse| reuse.title.is_empty()) {
+    if script.reuses.iter().any(|reuse| reuse.title.is_empty() || (reuse.script_text.is_none() && (crate::reuse::is_doc(&reuse.url) || reuse.earlier.is_some()))) {
         for index in 0..script.reuses.len() {
-            if !script.reuses[index].title.is_empty() {
+            if !script.reuses[index].title.is_empty() && (script.reuses[index].script_text.is_some() || (!crate::reuse::is_doc(&script.reuses[index].url) && script.reuses[index].earlier.is_none())) {
                 continue;
             }
             let url = script.reuses[index].url.clone();
@@ -1344,6 +1371,9 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
                 let reuse = &mut script.reuses[index];
                 reuse.title = if doc.title.is_empty() { "Reused case".into() } else { doc.title };
                 reuse.footage = doc.footage;
+                reuse.script = Some(url.clone());
+                reuse.script_title = Some(reuse.title.clone());
+                reuse.script_text = Some(doc.script_text);
                 reuse.narration = Some(doc.narration).filter(|text| !text.trim().is_empty());
                 continue;
             }
@@ -1364,6 +1394,7 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
                         let case = crate::reuse::earlier_link(&earlier).and_then(|(_, case)| case).map(|case| format!("case {case} of ")).unwrap_or_default();
                         crate::log::info("import", format!("{}: reused case {url}'s script read from {case}“{}” ({} characters)", crate::log::named(&script.id, &script.title), found.title, found.narration.len()));
                         let reuse = &mut script.reuses[index];
+                        reuse.script_text = Some(found.script_text);
                         reuse.script = Some(found.doc);
                         reuse.script_title = Some(found.title);
                         reuse.narration = Some(found.narration);
@@ -1386,8 +1417,8 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
         .enumerate()
         .filter(|(index, _)| !videos.skipped.contains(&index.to_string()))
         .collect();
-    if wanted.len() < 2 {
-        return Err(if script.compilation { "A compilation needs at least two videos." } else { "A case across videos needs at least two of them." }.into());
+    if wanted.is_empty() || (!script.compilation && wanted.len() < 2) {
+        return Err(if script.compilation { "A compilation needs new footage." } else { "A case across videos needs at least two of them." }.into());
     }
     let count = wanted.len();
     if wanted.iter().any(|(_, video)| !video.url.contains("drive.google.com")) {
@@ -1601,6 +1632,34 @@ impl Drop for DeleteFile<'_> {
 mod tests {
     use super::{over_limits, Manifest};
     use crate::drive::Recording;
+
+    #[test]
+    fn mixed_labeled_sources_keep_the_case_order_and_reuse_associations() {
+        let lines = vec![
+            "Case 1: [751) Teacher - Google Drive](https://drive.google.com/drive/folders/1folderfolderfolder)".into(),
+            "Case 2: [Special Ed Teacher](https://youtu.be/aaaaaaaaaaa)".into(),
+            "Case 3 (reuse): [Interrogation: Principal](https://docs.google.com/document/d/1docdocdocdocdoc/edit)".into(),
+            "Case 4: [Substitute Teacher](https://youtu.be/bbbbbbbbbbb)".into(),
+            "Case 5: https://youtu.be/ccccccccccc [reuse]".into(),
+        ];
+        let (urls, reused) = super::compilation_lines(&lines).unwrap();
+        assert_eq!(urls, ["https://drive.google.com/drive/folders/1folderfolderfolder", "https://youtu.be/aaaaaaaaaaa", "https://youtu.be/bbbbbbbbbbb"]);
+        assert_eq!(reused.iter().map(|case| case.after).collect::<Vec<_>>(), [2, 3]);
+        assert!(reused[0].url.contains("docs.google.com"));
+        assert!(super::lines_for(&lines, true).unwrap_err().contains("reused case"));
+        let canonical: Vec<String> = crate::trello::links_in(&lines.join("\n")).iter().map(crate::trello::Link::line).collect();
+        let (again, reuses) = super::compilation_lines(&canonical).unwrap();
+        assert_eq!(urls, again);
+        assert_eq!(serde_json::to_value(&reused).unwrap(), serde_json::to_value(&reuses).unwrap());
+    }
+
+    #[test]
+    fn a_new_case_and_a_script_are_enough_and_invalid_sources_are_not_dropped() {
+        let lines = vec!["https://youtu.be/aaaaaaaaaaa https://docs.google.com/document/d/1docdocdocdocdoc/edit".into()];
+        let (urls, reuses) = super::compilation_lines(&lines).unwrap();
+        assert_eq!((urls.len(), reuses.len(), reuses[0].after), (1, 1, 1));
+        assert!(super::compilation_lines(&[lines[0].clone(), "https://example.com/wrong".into()]).is_err());
+    }
 
     fn recording(id: &str, hours: u64) -> Recording {
         Recording { id: id.into(), name: format!("{id}.mp4"), size: 1_000, audio: false, claimed_ms: Some(hours * 3_600_000) }

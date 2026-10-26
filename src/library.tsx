@@ -18,6 +18,7 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { pastedTrelloCard } from "./import-input";
 import { AccountMenu } from "./account";
 import { Avatar } from "./avatar";
 import mark from "./assets/writer-mark.svg";
@@ -703,7 +704,7 @@ const SOURCES: Record<Source, { placeholder: string; hint: string }> = {
     hint: "A video essay written from sources rather than one case's footage. You can add sources once it's made.",
   },
   compilation: {
-    placeholder: "One YouTube or Drive link per line, a case each, or paste a Trello card link.\nPut REUSE before a link the channel already covered.",
+    placeholder: "Paste YouTube, Drive files or folders, and Google Docs script links in case order, or a Trello card.\nMark an earlier video REUSE or (reuse). Script Docs are always reused.",
     hint: "2 to 20 videos, in the order they play. A title that starts with \"When\" makes a standard compilation.",
   },
 };
@@ -889,7 +890,7 @@ function ImportDialog({
   const [readingCard, setReadingCard] = useState(false);
   const paste = (text: string) => {
     setValue(text);
-    const link = text.match(/https?:\/\/(?:www\.)?trello\.com\/c\/[A-Za-z0-9]+[^\s]*/)?.[0];
+    const link = pastedTrelloCard(text);
     if (!link) return;
     setReadingCard(true);
     setError(null);
@@ -925,8 +926,8 @@ function ImportDialog({
         ? "Remove or replace the script Docs that can't be read."
       : oneCase && checked.some((row) => row.reuse)
         ? "A reused case belongs in a compilation, not one Courtroom case."
-        : imported.length < 2
-        ? "A compilation needs at least two videos to import."
+        : (oneCase ? imported.length < 2 : imported.length < 1 || checked.length < 2)
+        ? "Use at least two cases, including new footage."
         : imported.length > 20
           ? "A compilation takes at most 20 videos to import."
           : totalMs > 20 * 3_600_000
@@ -959,8 +960,8 @@ function ImportDialog({
       }
       return;
     }
-    if (source === "compilation" && (!title.trim() || links.length < 2)) {
-      setError("Give the compilation a title and at least two links.");
+    if (source === "compilation" && (!title.trim() || links.length < 1)) {
+      setError("Give the compilation a title and paste its case links.");
       return;
     }
     // A compilation's videos are checked before they import.
@@ -1146,7 +1147,7 @@ function ImportDialog({
                 <div className="checklist video-checks">
                   {checked.map((row, index) => (
                     <div key={`${row.url}-${index}`} className={row.problem && (!row.reuse || isDoc(row.url)) ? "video-check bad-row" : "video-check"}>
-                      <span className="faint mono">{row.reuse ? "↺" : checked.slice(0, index + 1).filter((item) => !item.reuse).length}</span>
+                      <span className="faint mono">{row.reuse ? `↺ ${index + 1}` : index + 1}</span>
                       <span className="video-check-what">
                         <strong className="truncate" title={row.title || row.url}>{row.title || row.url}</strong>
                         <span className={row.problem && (!row.reuse || isDoc(row.url)) ? "bad" : "faint"}>

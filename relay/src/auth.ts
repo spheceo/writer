@@ -9,7 +9,9 @@ import { createRemoteJWKSet, type JWTVerifyGetKey, jwtVerify } from "jose";
  * (manifest.ts) Writer checks itself; ids the relay doesn't know, v1's
  * `ai`, `cloud`… included, are simply ignored.
  *
- * Nothing else passes. The team-wide token older Writers had built in was
+ * The read-only Trello endpoints also accept Edit tokens with use plus an
+ * editing grant; Docs export accepts Feedback tokens. Other routes stay
+ * Writer-only. The team-wide token older Writers had built in was
  * retired on 2026-10-23; they're told to update and sign in.
  */
 
@@ -26,6 +28,13 @@ const AUDIENCE = "writer";
 /** May use Writer at all: every route needs this and nothing more. */
 export function mayUse(caller: Caller): boolean {
   return caller.admin || caller.perms.has("use");
+}
+
+/** Edit may read Trello for script import with use plus an editing style.
+ * A subtitle-only account has no script import capability. */
+export function mayReadTrello(caller: Caller): boolean {
+  if (caller.audience === "writer") return mayUse(caller);
+  return caller.audience === "edit" && (caller.admin || (caller.perms.has("use") && [...caller.perms].some((perm) => perm.startsWith("edit."))));
 }
 
 /** The keys, per isolate: jose caches them ten minutes and refetches once on an unknown `kid`. */

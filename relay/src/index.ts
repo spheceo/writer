@@ -1,4 +1,4 @@
-import { type AuthEnv, type Caller, identify, limitKey, mayUse, named } from "./auth";
+import { type AuthEnv, type Caller, identify, limitKey, mayReadTrello, mayUse, named } from "./auth";
 import { type CloudEnv, cloud } from "./cloud";
 import { manifestResponse } from "./manifest";
 
@@ -117,11 +117,17 @@ export default {
     if (!url.pathname.startsWith("/v1/")) return json(404, { error: "not found" });
     // Docs export is also offered from the feedback site, whose tokens say aud "feedback".
     const docsRoute = url.pathname.startsWith("/v1/docs/");
-    const who = await identify(request, env, docsRoute ? ["writer", "feedback"] : "writer");
+    // Edit borrows only the fixed read-only Trello routes, using its own
+    // short-lived accounts token. No shared credentials leave this relay.
+    const trelloRoute = url.pathname === "/v1/trello/card" || url.pathname === "/v1/trello/cards";
+    const who = await identify(request, env, docsRoute ? ["writer", "feedback"] : trelloRoute ? ["writer", "edit"] : "writer");
     if ("refused" in who) return json(401, { error: who.refused });
     const caller = who.caller;
     console.log(JSON.stringify({ who: named(caller), method: request.method, route: url.pathname }));
     // A reviewer on Feedback may export a script. Every other route still needs Writer.
+    if (trelloRoute && !mayReadTrello(caller)) {
+      return json(403, { error: "Your account can't import Trello scripts. Ask an admin for app access and an editing permission at accounts.spheceo.com." });
+    }
     if (!mayUse(caller) && !(docsRoute && caller.audience === "feedback")) {
       return json(403, { error: "Your account can't use Writer yet. Ask an admin at accounts.spheceo.com." });
     }
@@ -133,7 +139,7 @@ export default {
     if (["/v1/drive/token", "/v1/proxy", "/v1/docs/export", "/v1/docs/exports", "/v1/docs/comments"].includes(url.pathname)) {
       if (!(await env.ROUTE_BURST.limit({ key: limitKey(caller) })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
     }
-    if ((url.pathname === "/v1/trello/cards" || url.pathname === "/v1/trello/card") && !(await env.TRELLO_BURST.limit({ key: limitKey(caller) })).success) {
+    if (trelloRoute && !(await env.TRELLO_BURST.limit({ key: limitKey(caller) })).success) {
       return json(429, { error: "Too many Trello requests at once; try again in a minute." });
     }
     if (url.pathname === "/v1/drive/token") {
@@ -577,6 +583,11 @@ const TRELLO_LISTS: Record<string, { id: string; name: string }> = {
  * Trello token can read, with everything a script's links can be in: its
  * description, attachments, checklist items and comments. Read only.
  */
+/** Keep the attachment's label: it can carry its case number or reuse marker. */
+export function attachmentLabels(items: { name?: string; url?: string }[]) {
+  return items.filter((item) => item.url?.startsWith("http")).map((item) => `${(item.name ?? "").replace(/[\r\n]/g, " ")} <${item.url}>`);
+}
+
 async function trelloCard(card: string, env: Env): Promise<Response> {
   if (!env.TRELLO_API_KEY || !env.TRELLO_TOKEN) return json(503, { error: "Trello is not configured on the relay yet." });
   if (!/^[A-Za-z0-9]{6,32}$/.test(card)) return json(400, { error: "That isn't a Trello card link." });
@@ -597,7 +608,7 @@ async function trelloCard(card: string, env: Env): Promise<Response> {
   if (!answer.ok) return json(502, { error: `Trello answered ${answer.status}.` });
   type Found = {
     id: string; name: string; desc?: string; url: string; dateLastActivity?: string;
-    labels?: { name?: string }[]; attachments?: { url?: string }[];
+    labels?: { name?: string }[]; attachments?: { name?: string; url?: string }[];
     checklists?: { checkItems?: { name?: string }[] }[];
     actions?: { data?: { text?: string } }[];
   };
@@ -609,6 +620,7 @@ async function trelloCard(card: string, env: Env): Promise<Response> {
     url: found.url,
     activity: found.dateLastActivity ?? null,
     labels: (found.labels ?? []).map((label) => label.name ?? "").filter(Boolean),
+    attachmentLabels: attachmentLabels(found.attachments ?? []),
     attachments: (found.attachments ?? []).map((item) => item.url ?? "").filter((link) => link.startsWith("http")),
     checklists: (found.checklists ?? []).flatMap((list) => (list.checkItems ?? []).map((item) => item.name ?? "")).filter(Boolean),
     comments: (found.actions ?? []).map((action) => action.data?.text ?? "").filter(Boolean),
@@ -640,6 +652,7 @@ async function trelloCards(list: string, env: Env): Promise<Response> {
       url: card.url,
       activity: card.dateLastActivity ?? null,
       labels: (card.labels ?? []).map((label) => label.name ?? "").filter(Boolean),
+      attachmentLabels: attachmentLabels(card.attachments ?? []),
       attachments: (card.attachments ?? []).map((item) => item.url ?? "").filter((link) => link.startsWith("http")),
     })),
   });

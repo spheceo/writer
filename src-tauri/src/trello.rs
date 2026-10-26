@@ -74,17 +74,15 @@ pub fn cards(settings: &Settings, list: &str, titles: &[String]) -> Result<Cards
 pub fn card(settings: &Settings, link: &str, titles: &[String]) -> Result<Card, String> {
     let id = card_id(link).ok_or("That isn't a Trello card link (trello.com/c/…).")?;
     let value = Relay::new(settings)?.trello_card(&id)?;
+    Ok(pasted_card(&value, &id, link, titles))
+}
+
+fn pasted_card(value: &Value, id: &str, link: &str, titles: &[String]) -> Card {
     let name: String = value["name"].as_str().unwrap_or("Trello card").trim().chars().take(180).collect();
     let desc = value["desc"].as_str().unwrap_or("");
-    let more: Vec<String> = ["attachments", "checklists", "comments"].iter().flat_map(|field| value[*field].as_array().cloned().unwrap_or_default()).filter_map(|item| item.as_str().map(str::to_string)).collect();
+    let more: Vec<String> = ["attachmentLabels", "attachments", "checklists", "comments"].iter().flat_map(|field| value[*field].as_array().cloned().unwrap_or_default()).filter_map(|item| item.as_str().map(str::to_string)).collect();
     // The description's cases first, as the compilation list reads them; then any video found elsewhere on the card.
-    let mut links = compilation_links(desc);
-    for found in links_in(&format!("{desc}\n{}", more.join("\n"))) {
-        if crate::handoff::youtube_id(&found.url).is_some() && !links.iter().any(|known| same_video(&known.url, &found.url)) {
-            links.push(found);
-        }
-    }
-    links.retain(|link| link.reuse || crate::handoff::youtube_id(&link.url).is_some() || link.url.contains("drive.google.com"));
+    let links = card_links(desc, &more);
     let videos = links.iter().filter(|link| !link.reuse).count();
     let mut found = Card {
         id: value["id"].as_str().unwrap_or(&id).to_string(),
@@ -93,7 +91,7 @@ pub fn card(settings: &Settings, link: &str, titles: &[String]) -> Result<Card, 
         url: value["url"].as_str().unwrap_or(link).to_string(),
         labels: value["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
         activity: value["activity"].as_str().map(str::to_string),
-        kind: if videos >= 2 { "compilation" } else { "video" },
+        kind: if links.len() >= 2 { "compilation" } else { "video" },
         footage: None,
         article: None,
         lines: links.iter().map(Link::line).collect(),
@@ -107,7 +105,21 @@ pub fn card(settings: &Settings, link: &str, titles: &[String]) -> Result<Card, 
     if videos == 0 {
         found.problem = Some("No YouTube or Drive video on the card.".into());
     }
-    Ok(found)
+    found
+}
+
+/// Cases in the description lead; supported sources elsewhere supplement them.
+/// Parse each attachment separately so an annotation cannot leak to the next.
+fn card_links(description: &str, more: &[String]) -> Vec<Link> {
+    let mut links = compilation_links(description);
+    for text in more {
+        for found in links_in(text) {
+            if !links.iter().any(|known| same_video(&known.url, &found.url)) {
+                links.push(found);
+            }
+        }
+    }
+    links
 }
 
 /// The id in a card link: trello.com/c/<id>/<slug>.
@@ -124,7 +136,7 @@ fn parse(card: &Value, compilation: bool, titles: &[String]) -> Option<Card> {
         return None;
     }
     let desc = card["desc"].as_str().unwrap_or("");
-    let attachments: Vec<String> = card["attachments"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+    let attachments: Vec<String> = ["attachmentLabels", "attachments"].iter().flat_map(|field| card[*field].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string)).collect();
     let mut found = Card {
         id: card["id"].as_str().unwrap_or("").to_string(),
         scripted: titles.iter().any(|title| *title == name.to_lowercase()),
@@ -141,12 +153,12 @@ fn parse(card: &Value, compilation: bool, titles: &[String]) -> Option<Card> {
         problem: None,
     };
     if compilation {
-        let links = compilation_links(desc);
+        let links = card_links(desc, &attachments);
         found.videos = links.iter().filter(|link| !link.reuse).count();
         found.reuses = links.len() - found.videos;
         found.lines = links.iter().map(Link::line).collect();
-        found.problem = (found.videos < 2).then(|| {
-            if found.videos == 0 { "No video links in the description.".into() } else { "Only one video to import; a compilation needs two.".into() }
+        found.problem = (found.videos == 0 || links.len() < 2).then(|| {
+            if found.videos == 0 { "No new footage links on the card.".into() } else { "A compilation needs at least two cases.".into() }
         });
     } else {
         let (footage, article) = case_links(desc, &attachments);
@@ -261,8 +273,12 @@ pub fn links_in(text: &str) -> Vec<Link> {
         }
         let videos: Vec<&String> = urls
             .iter()
-            .filter(|url| crate::youtube::check_url(url).is_ok() || matches!(crate::drive::parse(url), Ok(crate::drive::Link::File(_))))
+            .filter(|url| crate::youtube::check_url(url).is_ok() || crate::drive::parse(url).is_ok())
             .collect();
+        if case_line(line) {
+            section = false;
+            marked = false;
+        }
         let marked_here = says || marked || section;
         // A Doc beside a reused video is that case's earlier script; any other Doc is a reused case of its own.
         let (beside, docs): (Vec<&String>, Vec<&String>) = urls.iter().filter(|url| crate::reuse::is_doc(url)).partition(|_| marked_here && !videos.is_empty());
@@ -286,22 +302,16 @@ pub fn links_in(text: &str) -> Vec<Link> {
             open = false;
             continue;
         }
-        for doc in &docs {
-            if !found.iter().any(|known| same_video(&known.url, doc)) {
-                found.push(Link { url: doc.to_string(), reuse: true, earlier: None });
+        // Keep mixed sources in their pasted order, including Docs on the same line.
+        for url in &urls {
+            let doc = docs.contains(&url);
+            if !doc && !videos.contains(&url) { continue; }
+            let reuse = doc || marked_here || earlier.as_deref().is_some_and(|link| link.contains(" case "));
+            if !found.iter().any(|known| same_video(&known.url, url) && known.reuse == reuse) {
+                found.push(Link { url: url.clone(), reuse, earlier: if reuse && !doc { earlier.clone() } else { None } });
             }
         }
-        if videos.is_empty() {
-            open = false;
-        } else {
-            for url in videos {
-                let reuse = marked_here || earlier.as_deref().is_some_and(|link| link.contains(" case "));
-                if !found.iter().any(|known| same_video(&known.url, url) && known.reuse == reuse) {
-                    found.push(Link { url: url.clone(), reuse, earlier: if reuse { earlier.clone() } else { None } });
-                }
-            }
-            open = found.last().is_some_and(|last| last.earlier.is_none());
-        }
+        open = !videos.is_empty() && found.last().is_some_and(|last| last.earlier.is_none());
         marked = false;
     }
     found
@@ -368,8 +378,10 @@ fn key(url: &str) -> String {
     if let Some(id) = url.split_once("docs.google.com/document/d/").map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or("")) {
         return format!("doc {id}");
     }
-    if let Ok(crate::drive::Link::File(id)) = crate::drive::parse(url) {
-        return format!("drive {id}");
+    match crate::drive::parse(url) {
+        Ok(crate::drive::Link::File(id)) => return format!("drive {id}"),
+        Ok(crate::drive::Link::Folder(id)) => return format!("folder {id}"),
+        Err(_) => {}
     }
     let (path, query) = url.split_once('?').unwrap_or((url, ""));
     if let Some(id) = query.split('&').find_map(|pair| pair.strip_prefix("v=")) {
@@ -388,7 +400,7 @@ const NOT_ARTICLE: &[&str] = &[
 /// A case card's footage (its first Drive folder, or failing that its first
 /// Drive video) and article (its first link to any other page).
 pub fn case_links(description: &str, attachments: &[String]) -> (Option<String>, Option<String>) {
-    let all: Vec<String> = description.lines().flat_map(urls).chain(attachments.iter().cloned()).map(|url| unwrap_redirect(&url)).collect();
+    let all: Vec<String> = description.lines().flat_map(urls).chain(attachments.iter().flat_map(|text| urls(text))).map(|url| unwrap_redirect(&url)).collect();
     let drive: Vec<(String, bool)> = all
         .iter()
         .filter_map(|url| match crate::drive::parse(url) {
@@ -414,6 +426,30 @@ pub fn case_links(description: &str, attachments: &[String]) -> (Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drive_folder_is_retained_from_description_labels_and_attachments() {
+        let desc = "Case 1: [751) Teacher - Google Drive](https://drive.google.com/drive/folders/1folderfolderfolder)\nCase 2: [Special Ed Teacher](https://youtu.be/aaaaaaaaaaa)\nCase 3 (reuse): [Interrogation: Principal](https://docs.google.com/document/d/1docdocdocdocdoc/edit)\nCase 4: [Substitute Teacher](https://youtu.be/bbbbbbbbbbb)";
+        let card = serde_json::json!({ "name": "Predator Teacher", "desc": desc, "attachments": ["https://drive.google.com/drive/folders/1folderfolderfolder?usp=sharing", "https://drive.google.com/file/d/1additionalvideo/view"], "attachmentLabels": ["Case 5 (reuse) <https://drive.google.com/file/d/1additionalvideo/view>"] });
+        let list = parse(&card, true, &[]).unwrap();
+        let more = vec!["Case 5 (reuse) <https://drive.google.com/file/d/1additionalvideo/view>".to_string()];
+        let pasted = pasted_card(&card, "card1234", "https://trello.com/c/card1234", &[]);
+        assert_eq!(list.lines, pasted.lines);
+        assert_eq!(pasted.kind, "compilation");
+        assert_eq!(card_links(desc, &more).len(), 5);
+        assert_eq!(list.lines.len(), 5);
+        assert_eq!(list.videos, 3);
+        assert_eq!(list.reuses, 2);
+        assert!(list.lines[0].contains("folders/"));
+        assert!(list.lines[2].starts_with("REUSE https://docs"));
+        assert!(list.lines[4].starts_with("REUSE https://drive"));
+    }
+
+    #[test]
+    fn inline_reuse_does_not_leak_into_the_next_numbered_case() {
+        let links = links_in("Reused:\nCase 1 (reuse): https://youtu.be/aaaaaaaaaaa\nCase 2: https://youtu.be/bbbbbbbbbbb\nCase 3:\nhttps://drive.google.com/drive/folders/1folderfolderfolder");
+        assert_eq!(links.iter().map(|link| link.reuse).collect::<Vec<_>>(), [true, false, false]);
+    }
 
     #[test]
     fn card_id_from_links() {

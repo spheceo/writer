@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { clock, cutInCard, insertAfter, isCutIn, moveItems, nearestEdge, range, recordingSpans, splitClip, trimClip } from "./clips";
 import { type CutPlayer, clipStarts, editedPosition, type Playhead } from "./playback";
 import type { Clip, Part, Word } from "./types";
+import { resizeTimelineWindow } from "./timeline-zoom";
 import { Icon } from "./ui";
 
 /** Left inset, so the playhead at 0:00 is not flush with the edge. */
@@ -17,6 +18,7 @@ type Drag =
   | { mode: "scrub" }
   | { mode: "trim"; id: string; edge: "in" | "out"; x: number; clip: Clip; ms: number; snapped: boolean }
   | { mode: "bar"; x: number; scroll: number }
+  | { mode: "zoom"; edge: "in" | "out"; x: number; start: number; end: number; msPerPx: number }
   /** Clips being dragged to a new place: where they would land, once the pointer has moved. */
   | { mode: "move"; ids: string[]; clicked: string; x: number; moved: boolean; to: number | null; shrink: boolean };
 
@@ -60,6 +62,7 @@ export function Timeline({
   const wave = useRef<HTMLCanvasElement>(null);
   const line = useRef<HTMLSpanElement>(null);
   const [view, setView] = useState({ width: 800, scroll: 0 });
+  const anchor = useRef<{ ms: number; offset: number } | null>(null);
   const [zoom, setZoom] = useState<number | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -153,16 +156,25 @@ export function Timeline({
     return playhead.subscribe(paint);
   });
 
+  const zoomTo = (next: number | null, ms: number, offset: number) => {
+    const scale = next === null ? fit : Math.max(fit, Math.min(MAX_PPMS, next));
+    if (scale !== ppms) anchor.current = { ms, offset };
+    else if (next === null && scroller.current) scroller.current.scrollLeft = 0;
+    setZoom(scale <= fit * 1.001 ? null : scale);
+  };
+  useLayoutEffect(() => {
+    const box = scroller.current;
+    const held = anchor.current;
+    if (!box || !held) return;
+    anchor.current = null;
+    box.scrollLeft = INSET + held.ms * ppms - held.offset;
+    setView({ width: box.clientWidth, scroll: box.scrollLeft });
+  }, [ppms]);
   const zoomAround = (factor: number, clientX?: number) => {
     const box = scroller.current;
     if (!box) return;
     const pointer = clientX === undefined ? box.clientWidth / 2 : clientX - box.getBoundingClientRect().left;
-    const ms = (box.scrollLeft + pointer - INSET) / ppms;
-    const next = Math.max(fit, Math.min(MAX_PPMS, ppms * factor));
-    setZoom(next <= fit * 1.001 ? null : next);
-    requestAnimationFrame(() => {
-      box.scrollLeft = INSET + ms * next - pointer;
-    });
+    zoomTo(ppms * factor, (box.scrollLeft + pointer - INSET) / ppms, pointer);
   };
 
   useEffect(() => {
@@ -184,7 +196,10 @@ export function Timeline({
 
   const move = (event: React.PointerEvent) => {
     if (!drag) return;
-    if (drag.mode === "scrub") player?.seek(msAt(event.clientX));
+    if (drag.mode === "zoom") {
+      const next = resizeTimelineWindow(drag.start, drag.end, (event.clientX - drag.x) * drag.msPerPx, drag.edge, total);
+      zoomTo((view.width - INSET * 2) / Math.max(1, next.end - next.start), next.start, INSET);
+    } else if (drag.mode === "scrub") player?.seek(msAt(event.clientX));
     else if (drag.mode === "trim") {
       const shift = (event.clientX - drag.x) / ppms;
       const raw = (drag.edge === "in" ? drag.clip.startMs : drag.clip.endMs) + shift;
@@ -414,10 +429,11 @@ export function Timeline({
           <span className="zoom-label" aria-hidden="true" />
           <div
             className="zoom-track"
-            title="Drag to scroll · double-click to fit"
-            onDoubleClick={() => setZoom(null)}
+            title="Drag to scroll · drag an end to zoom · double-click to fit"
+            onDoubleClick={() => zoomTo(null, 0, INSET)}
             onPointerMove={move}
             onPointerUp={release}
+            onPointerCancel={() => setDrag(null)}
           >
             <span
               className="zoom-thumb"
@@ -426,7 +442,24 @@ export function Timeline({
                 event.currentTarget.parentElement?.setPointerCapture(event.pointerId);
                 setDrag({ mode: "bar", x: event.clientX, scroll: scroller.current?.scrollLeft ?? 0 });
               }}
-            />
+            >
+              {(["in", "out"] as const).map((edge) => <button
+                key={edge} type="button" className="zoom-end" aria-label={`Zoom ${edge === "in" ? "start" : "end"} of timeline`}
+                onKeyDown={(event) => {
+                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                    event.preventDefault();
+                    zoomAround(event.key === "ArrowRight" ? 1.6 : 1 / 1.6);
+                  }
+                }}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  const box = scroller.current;
+                  if (!box) return;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setDrag({ mode: "zoom", edge, x: event.clientX, start: Math.max(0, (box.scrollLeft) / ppms), end: Math.min(total, (box.scrollLeft + box.clientWidth - INSET * 2) / ppms), msPerPx: total / Math.max(1, box.clientWidth) });
+                }}
+              />)}
+            </span>
           </div>
         </div>
       </div>
