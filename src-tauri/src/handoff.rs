@@ -217,7 +217,7 @@ pub fn share(data: &Path, id: &str, hear: bool) -> Result<String, String> {
         } else {
             record
         };
-        keep_shared(&dir, &recording.file, &recording.source, record["originalKey"].as_str().unwrap_or(&key));
+        keep_shared(&dir, &recording.file, &recording.source, record["originalKey"].as_str().unwrap_or(&key))?;
         let at = transcript_key(&recording.source);
         if !script.words.is_empty() && cloud::head(data, &at)?.is_none() {
             // Heard as Edit hears it, with the case's names, if it wasn't yet
@@ -280,13 +280,36 @@ pub fn replace_originals(data: &Path, id: &str) -> Result<(), String> {
 /// What of the script is in Edit's originals: its file (by its path in the
 /// script's folder), source and key. Writer stops syncing its own copy of
 /// those (cloud.rs), and another Mac finds them there.
-fn keep_shared(dir: &Path, file: &Path, source: &str, key: &str) {
+fn keep_shared(dir: &Path, file: &Path, source: &str, key: &str) -> Result<(), String> {
     let path = dir.join("edit-shared.json");
     let mut kept: Vec<serde_json::Value> = fs::read(&path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
     let relative = file.strip_prefix(dir).map(|rest| rest.to_string_lossy().replace('\\', "/")).ok();
     kept.retain(|entry| entry["source"] != source);
     kept.push(json!({ "source": source, "key": key, "file": relative }));
-    let _ = fs::write(&path, serde_json::to_vec_pretty(&kept).unwrap_or_default());
+    fs::write(&path, serde_json::to_vec_pretty(&kept).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    // Read the current script after the upload, preserving edits made while
+    // sharing. store::write reconciles receipts on every later save too.
+    if source.starts_with("sha256:") {
+        let current = store::read(dir)?;
+        if matches!(script_with_shared_keys(dir, &current), std::borrow::Cow::Owned(_)) { store::write(dir, &current)?; }
+    }
+    Ok(())
+}
+
+/// Registry keys may predate this script's local filename. Keep the actual
+/// shared key in every serialized body, including a later save of an older
+/// in-memory script that still held its proposed filename.
+pub(crate) fn script_with_shared_keys<'a>(dir: &Path, script: &'a Script) -> std::borrow::Cow<'a, Script> {
+    if !script.parts.iter().any(|part| part.media_source.as_deref().is_some_and(|source| source.starts_with("sha256:"))) { return std::borrow::Cow::Borrowed(script); }
+    let entries: Vec<serde_json::Value> = fs::read(dir.join("edit-shared.json")).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+    let mut changed = None;
+    for (index, part) in script.parts.iter().enumerate() {
+        let Some(source) = part.media_source.as_deref() else { continue };
+        let Some(key) = entries.iter().find(|entry| entry["source"] == source).and_then(|entry| entry["key"].as_str()) else { continue };
+        if !source.starts_with("sha256:") || !key.starts_with(&format!("edit/originals/{}/", source_path(source))) || key.split('/').any(|piece| piece == "..") || part.original_key.as_deref() == Some(key) { continue; }
+        changed.get_or_insert_with(|| script.clone()).parts[index].original_key = Some(key.to_string());
+    }
+    changed.map(std::borrow::Cow::Owned).unwrap_or(std::borrow::Cow::Borrowed(script))
 }
 
 /// The files of a script's folder in Edit's originals, with their keys
@@ -328,6 +351,33 @@ pub fn shared_transcript(data: &Path, dir: &Path, script: &Script, key: &str, ke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_registry_basename_wins_and_survives_later_saves_of_an_older_script() {
+        let dir = std::env::temp_dir().join(format!("writer-existing-master-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let source = format!("sha256:{}", "a".repeat(64));
+        let proposed = original_key(&source, "01.mp4");
+        let existing = original_key(&source, "00.mp4");
+        let script: Script = serde_json::from_value(json!({
+            "id":"a", "title":"Second compilation", "sourceKind":"compilation", "sourceUrl":"", "originalPath":"", "status":"ready", "stage":"", "progress":100,
+            "durationMs":1000, "revision":1, "createdAt":0, "updatedAt":0,
+            "parts":[{"title":"Same folder", "startMs":0, "durationMs":1000, "mediaSource":source, "originalKey":proposed}]
+        })).unwrap();
+        store::write(&dir, &script).unwrap();
+        let mut current = script.clone();
+        current.title = "Producer's newer title".into();
+        store::write(&dir, &current).unwrap();
+        keep_shared(&dir, &dir.join("01.mp4"), &source, &existing).unwrap();
+        let saved = store::read(&dir).unwrap();
+        assert_eq!(saved.title, "Producer's newer title");
+        assert_eq!(saved.parts[0].original_key.as_deref(), Some(existing.as_str()));
+        store::write(&dir, &script).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("script.json")).unwrap()).unwrap();
+        assert_eq!(body["parts"][0]["originalKey"], existing);
+        assert_eq!(body["parts"][0]["mediaSource"], source);
+        let _ = fs::remove_dir_all(dir);
+    }
 
     /// Needs ffmpeg; verifies the one-new-case-plus-reuse path shares the
     /// master under exactly the identity exported to Edit, never the preview.

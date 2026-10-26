@@ -111,15 +111,62 @@ fn pasted_card(value: &Value, id: &str, link: &str, titles: &[String]) -> Card {
 /// Cases in the description lead; supported sources elsewhere supplement them.
 /// Parse each attachment separately so an annotation cannot leak to the next.
 fn card_links(description: &str, more: &[String]) -> Vec<Link> {
-    let mut links = compilation_links(description);
+    let mut sections = case_sections(description);
+    // The relay sends both labeled attachment text and its plain URL.
+    let excluded: Vec<String> = more.iter().filter(|text| reference_label(text)).flat_map(|text| urls(text)).map(|url| key(&unwrap_redirect(&url))).collect();
     for text in more {
+        if reference_label(text) { continue; }
+        let number = case_line(text).then(|| case_number(text)).flatten();
+        if let Some(number) = number {
+            if let Some((_, section)) = sections.iter_mut().find(|(known, _)| *known == Some(number)) {
+                section.push('\n');
+                section.push_str(text);
+            } else {
+                let before = sections.iter().position(|(known, _)| known.is_some_and(|known| known > number)).unwrap_or(sections.len());
+                sections.insert(before, (Some(number), text.clone()));
+            }
+            continue;
+        }
         for found in links_in(text) {
-            if !links.iter().any(|known| same_video(&known.url, &found.url)) {
-                links.push(found);
+            if excluded.contains(&key(&found.url)) { continue; }
+            if !sections.iter().flat_map(|(_, text)| links_in(text)).any(|known| same_video(&known.url, &found.url)) {
+                sections.push((None, found.line()));
             }
         }
     }
-    links
+    sections.iter().flat_map(|(_, text)| links_in(text)).collect()
+}
+
+fn reference_label(text: &str) -> bool {
+    let label = text.trim_start_matches(|c: char| !c.is_alphanumeric()).split(|c: char| c.is_whitespace() || c == ':').next().unwrap_or("").to_ascii_lowercase();
+    matches!(label.as_str(), "thumb" | "thumbnail" | "cover" | "reference" | "references" | "article" | "articles")
+}
+
+fn source_label(text: &str) -> bool {
+    let label = text.trim_start_matches(|c: char| !c.is_alphanumeric()).split_once(':').map(|(label, _)| label.trim().to_ascii_lowercase());
+    label.is_some_and(|label| matches!(label.as_str(), "footage" | "source" | "video" | "script"))
+}
+
+fn case_sections(description: &str) -> Vec<(Option<usize>, String)> {
+    if !description.lines().any(case_line) { return vec![(None, description.to_string())]; }
+    let mut sections: Vec<(Option<usize>, String)> = Vec::new();
+    let mut current = None;
+    for line in description.lines() {
+        if case_line(line) {
+            sections.push((case_number(line), String::new()));
+            current = Some(sections.len() - 1);
+        } else if let Some(index) = current {
+            let has_source = !links_in(&sections[index].1).is_empty();
+            if reference_label(line) || (source_label(line) && has_source) || (heading_line(line) && !says_reuse(line) && !source_label(line)) {
+                current = None;
+            }
+        }
+        if let Some(index) = current {
+            sections[index].1.push_str(line);
+            sections[index].1.push('\n');
+        }
+    }
+    sections
 }
 
 /// The id in a card link: trello.com/c/<id>/<slug>.
@@ -217,21 +264,7 @@ fn heading_line(line: &str) -> bool {
 /// A compilation card's links: every line from a "case N" line to the next
 /// heading, or, when the card numbers no cases, the whole description.
 pub fn compilation_links(description: &str) -> Vec<Link> {
-    let mut cases = Vec::new();
-    let mut in_case = false;
-    for line in description.lines() {
-        if case_line(line) {
-            in_case = true;
-        } else if heading_line(line) {
-            // "Reused:" heads more of the cases.
-            in_case = in_case && says_reuse(line);
-        }
-        if in_case {
-            cases.push(line);
-        }
-    }
-    let links = links_in(&cases.join("\n"));
-    if links.is_empty() { links_in(description) } else { links }
+    case_sections(description).iter().flat_map(|(_, text)| links_in(text)).collect()
 }
 
 /// The video and script links in some text, in order. A link is a reuse when
@@ -247,7 +280,17 @@ pub fn links_in(text: &str) -> Vec<Link> {
     let mut section = false;
     // The last link found can still take the earlier card on a line after it.
     let mut open = false;
+    let mut scope = 0;
+    let mut numbered = false;
+    let mut current_number = None;
     for line in text.lines() {
+        if case_line(line) {
+            let number = case_number(line);
+            if !numbered || number != current_number { scope = found.len(); }
+            current_number = number;
+            numbered = true;
+        }
+        else if !numbered { scope = found.len(); }
         let urls: Vec<String> = urls(line).iter().map(|raw| unwrap_redirect(raw)).collect();
         let mut words = line.to_string();
         for url in &urls {
@@ -307,7 +350,10 @@ pub fn links_in(text: &str) -> Vec<Link> {
             let doc = docs.contains(&url);
             if !doc && !videos.contains(&url) { continue; }
             let reuse = doc || marked_here || earlier.as_deref().is_some_and(|link| link.contains(" case "));
-            if !found.iter().any(|known| same_video(&known.url, url) && known.reuse == reuse) {
+            if let Some(known) = found[scope..].iter_mut().find(|known| same_video(&known.url, url)) {
+                known.reuse |= reuse;
+                if known.earlier.is_none() && reuse && !doc { known.earlier = earlier.clone(); }
+            } else {
                 found.push(Link { url: url.clone(), reuse, earlier: if reuse && !doc { earlier.clone() } else { None } });
             }
         }
@@ -371,7 +417,12 @@ pub fn unwrap_redirect(url: &str) -> String {
 
 /// The same video or Doc, however its link is written.
 fn same_video(a: &str, b: &str) -> bool {
-    key(a) == key(b)
+    let hints = |url: &str| {
+        let query = url.split_once('?').map(|(_, query)| query.split('#').next().unwrap_or(query)).unwrap_or("");
+        let value = |name: &str| query.split('&').find_map(|pair| pair.strip_prefix(&format!("{name}="))).unwrap_or("").to_string();
+        (value("t"), value("start"), value("end"))
+    };
+    key(a) == key(b) && hints(a) == hints(b)
 }
 
 fn key(url: &str) -> String {
@@ -426,6 +477,30 @@ pub fn case_links(description: &str, attachments: &[String]) -> (Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numbered_cases_and_canonical_roundtrip_keep_shared_recordings_and_time_hints() {
+        let text = "Case 1: [A](https://youtu.be/aaaaaaaaaaa?t=10)\nCase 2: https://youtu.be/aaaaaaaaaaa?t=120\nCase 3: https://youtu.be/aaaaaaaaaaa?t=120";
+        let found = compilation_links(text);
+        assert_eq!(found.len(), 3);
+        let lines: Vec<_> = found.iter().map(Link::line).collect();
+        let (urls, reuses) = crate::import::compilation_lines(&lines).unwrap();
+        assert_eq!(urls, found.iter().map(|link| link.url.clone()).collect::<Vec<_>>());
+        assert!(reuses.is_empty());
+    }
+
+    #[test]
+    fn attachment_cases_fill_their_numbered_slot_and_references_never_become_cases() {
+        let desc = "Case 1: https://youtu.be/aaaaaaaaaaa\nCase 3 (reuse): https://docs.google.com/document/d/1docdocdocdocdoc/edit\nFootage: https://youtu.be/ccccccccccc";
+        let more = vec!["Case 2 <https://youtu.be/aaaaaaaaaaa>".into(), "Case 3 (reuse) <https://docs.google.com/document/d/1docdocdocdocdoc/edit>".into(), "Thumbnail <https://youtu.be/ddddddddddd>".into(), "https://youtu.be/ddddddddddd".into()];
+        let found = card_links(desc, &more);
+        assert_eq!(found.iter().map(Link::line).collect::<Vec<_>>(), ["https://youtu.be/aaaaaaaaaaa", "https://youtu.be/aaaaaaaaaaa", "REUSE https://docs.google.com/document/d/1docdocdocdocdoc/edit"]);
+        assert_eq!(compilation_links(desc).len(), 2);
+        assert_eq!(compilation_links("Case 1:\nFootage: https://youtu.be/aaaaaaaaaaa\nCase 2: https://youtu.be/bbbbbbbbbbb").len(), 2);
+        let duplicate = card_links("Case 1: https://youtu.be/aaaaaaaaaaa", &["Case 1 (reuse) <https://youtu.be/aaaaaaaaaaa>".into()]);
+        assert_eq!(duplicate.len(), 1);
+        assert!(duplicate[0].reuse);
+    }
 
     #[test]
     fn drive_folder_is_retained_from_description_labels_and_attachments() {

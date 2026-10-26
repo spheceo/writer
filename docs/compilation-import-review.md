@@ -2,6 +2,25 @@
 
 Ready for code review; no deployment, release, tag or PR was published.
 
+## Main integration
+
+The compilation/player work is now committed on `main` in the normal Writer
+checkout, with no PR. The temporary feature worktree and branch were removed.
+Existing unrelated Brief, courtroom and packaging changes in the main checkout
+were preserved as uncommitted work; verification ran against the combined tree.
+
+Agent review caught and fixed distinct numbered cases sharing a recording being
+deduplicated, missing attachment case slots, and trailing footage/thumbnail
+references becoming cases. Canonical URL lines retain distinct cases and their
+timestamp hints. A folder master already registered under another compilation's
+filename now keeps that actual registry key in serialized `script.json`, including
+later saves from an older in-memory script. These fixes have offline regressions.
+
+Final combined verification passed `just check` (58 JavaScript tests, 198 Rust
+tests; 10 optional integrations ignored), frontend production build, explicit
+relay typecheck, and both selected real-ffmpeg folder-master integrations. Relay
+auth/transport regressions also passed independently (5 tests, 53 assertions).
+
 ## Changes
 
 - `src-tauri/src/trello.rs`: the list picker and pasted card use the same supported-source extraction. Drive folders survive alongside YouTube and script Docs; Markdown labels, reuse annotations, attachment labels, attachments, checklists and comments are read. Description cases lead; additional unique sources follow. A numbered new case clears the previous case's reuse annotation.

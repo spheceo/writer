@@ -82,7 +82,8 @@ pub fn write(dir: &Path, script: &Script) -> Result<(), String> {
     fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let path = dir.join("script.json");
     let tmp = dir.join("script.json.tmp");
-    let bytes = serde_json::to_vec_pretty(script).map_err(|error| error.to_string())?;
+    let shared = crate::handoff::script_with_shared_keys(dir, script);
+    let bytes = serde_json::to_vec_pretty(shared.as_ref()).map_err(|error| error.to_string())?;
     fs::write(&tmp, bytes).map_err(|error| error.to_string())?;
     fs::rename(&tmp, path).map_err(|error| error.to_string())
 }
