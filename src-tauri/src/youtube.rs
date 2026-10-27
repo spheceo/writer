@@ -221,6 +221,12 @@ pub fn download(
         args.push(path);
     }
     args.push(url);
+    // The merge needs ffmpeg. A missing one used to leave two streams and an
+    // exit of 0, which this function then reported as no video. proc names
+    // the ffmpeg it found; say so here when there is none to name.
+    if crate::tools::locate("ffmpeg").is_none() {
+        return Err("Writer couldn't find ffmpeg, so the video and its sound can't be joined. The packaged app bundles it; for development, brew install ffmpeg.".into());
+    }
     proc::run_lines(
         "yt-dlp",
         &args,
@@ -295,7 +301,7 @@ pub fn trouble(error: &str) -> Trouble {
     if lower.contains("video unavailable") || lower.contains("has been removed") || lower.contains("not available") {
         return Trouble::Final(format!("YouTube says that video is unavailable.{stale}"));
     }
-    if lower.contains("install yt-dlp") {
+    if lower.contains("install yt-dlp") || lower.contains("couldn't find ffmpeg") {
         return Trouble::Final(error.to_string());
     }
     if lower.contains("not a bot") || lower.contains("sign in to confirm") || lower.contains("http error 403") || lower.contains("http error 429") {
@@ -356,6 +362,10 @@ mod tests {
         assert_eq!(trouble("ERROR: unable to download video data: HTTP Error 403: Forbidden"), Trouble::Blocked);
         assert_eq!(trouble("ERROR: The read operation timed out"), Trouble::Connection);
         assert!(matches!(trouble("ERROR: Private video. Sign in"), Trouble::Final(text) if text.contains("private")));
+        assert_eq!(
+            trouble("Writer couldn't find ffmpeg, so the video and its sound can't be joined. The packaged app bundles it; for development, brew install ffmpeg."),
+            Trouble::Final("Writer couldn't find ffmpeg, so the video and its sound can't be joined. The packaged app bundles it; for development, brew install ffmpeg.".into())
+        );
         assert!(matches!(trouble("WARNING: older than 90 days ERROR: Video unavailable"), Trouble::Final(text) if text.contains("brew upgrade")));
     }
 
@@ -402,6 +412,83 @@ mod tests {
         assert!((10_000..20_001).contains(&port));
         let other = "http://user:secret@proxy.example:823";
         assert_eq!(sticky_proxy(other), other);
+    }
+
+    struct RestoreEnv {
+        key: &'static str,
+        value: Option<std::ffi::OsString>,
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.value.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    /// The news clip from the failed import. A Dock PATH cannot see Homebrew,
+    /// so the first run is the old bug (two streams, no mp4). The second is
+    /// `download`, which must merge those parts into a playable file.
+    /// `cargo test --manifest-path src-tauri/Cargo.toml -- --ignored download_merges_under_a_dock_path --test-threads=1 --nocapture`
+    #[test]
+    #[ignore]
+    fn download_merges_under_a_dock_path() {
+        const DOCK: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
+        let url = "https://www.youtube.com/watch?v=liWNx2Vpv5U";
+        let dir = std::env::temp_dir().join(format!("writer-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("00.mp4");
+        let ytdlp = crate::tools::resolve("yt-dlp");
+        let fetch = std::time::Instant::now();
+        // The runtime is named, as Writer does. ffmpeg is not, which is the bug.
+        let mut broken_cmd = std::process::Command::new(&ytdlp);
+        broken_cmd.env("PATH", DOCK);
+        if let Some((name, path)) = crate::tools::js_runtime() {
+            broken_cmd.arg("--js-runtimes").arg(crate::tools::js_runtime_arg(name, &path));
+        }
+        let broken = broken_cmd
+            .args([
+                "--no-playlist",
+                "--no-progress",
+                "--no-warnings",
+                "--newline",
+                "--retries",
+                "1",
+                "--fragment-retries",
+                "1",
+                "--continue",
+                "--socket-timeout",
+                "30",
+                "-f",
+                FORMAT,
+                "--merge-output-format",
+                "mp4",
+                "-o",
+            ])
+            .arg(&dest)
+            .arg(url)
+            .status()
+            .expect("yt-dlp");
+        let fetched = fetch.elapsed();
+        assert!(broken.success(), "the unmerged fetch should still exit 0");
+        assert!(!dest.is_file(), "without ffmpeg the mp4 must be absent");
+        let parts: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|entry| entry.file_name()).collect();
+        assert!(parts.len() >= 2, "expected the picture and the sound, got {parts:?}");
+        let previous = std::env::var_os("PATH");
+        std::env::set_var("PATH", DOCK);
+        let _restore = RestoreEnv { key: "PATH", value: previous };
+        let merge = std::time::Instant::now();
+        download(url, &dest, None, None, &|_| {}).expect("download");
+        let merged = merge.elapsed();
+        let streams = crate::media::streams(&dest).expect("ffprobe");
+        assert!(streams.video && streams.audio, "video {} audio {}", streams.video, streams.audio);
+        assert!((120_000..180_000).contains(&streams.duration_ms), "duration {}", streams.duration_ms);
+        assert!(dest.metadata().expect("mp4").len() > 1_000_000, "the merged file is too small to be the footage");
+        println!("dock merge: parts {parts:?}, fetch {fetched:?}, retry {merged:?}, duration {} ms", streams.duration_ms);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

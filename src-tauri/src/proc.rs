@@ -30,6 +30,23 @@ fn is_yt_dlp(program: &str) -> bool {
     matches!(name, "yt-dlp" | "yt-dlp_macos")
 }
 
+/// Arguments for a yt-dlp run: Writer's JavaScript runtime and ffmpeg first,
+/// then whatever the caller asked for. Both are absolute paths from
+/// `tools::locate`, never a name looked up on PATH.
+fn yt_dlp_args(args: &[&str]) -> Vec<String> {
+    let mut owned = Vec::new();
+    if let Some((name, path)) = crate::tools::js_runtime() {
+        owned.push("--js-runtimes".to_string());
+        owned.push(crate::tools::js_runtime_arg(name, &path));
+    }
+    if let Some((path, _)) = crate::tools::locate("ffmpeg") {
+        owned.push("--ffmpeg-location".to_string());
+        owned.push(path.to_string_lossy().into_owned());
+    }
+    owned.extend(args.iter().map(|arg| (*arg).to_string()));
+    owned
+}
+
 fn for_claude(command: &mut Command) {
     command.env_clear();
     for key in CLAUDE_ENV {
@@ -50,17 +67,12 @@ pub fn run_lines(
     mut on_line: impl FnMut(&str),
 ) -> Result<(), String> {
     crate::jobs::check_cancelled()?;
-    // yt-dlp needs a JavaScript runtime for YouTube, named explicitly: a
-    // Dock-launched Writer has no PATH worth searching, and yt-dlp enables
-    // only deno by default (Writer's own copy is found the same way).
-    let owned_args: Vec<String> = if is_yt_dlp(program) {
-        match crate::tools::js_runtime() {
-            Some((name, path)) => std::iter::once("--js-runtimes".to_string()).chain(std::iter::once(crate::tools::js_runtime_arg(name, &path))).chain(args.iter().map(|arg| arg.to_string())).collect(),
-            None => args.iter().map(|arg| arg.to_string()).collect(),
-        }
-    } else {
-        args.iter().map(|arg| arg.to_string()).collect()
-    };
+    // yt-dlp needs a JavaScript runtime for YouTube, and ffmpeg to join a
+    // picture stream to its sound, both named explicitly: a Dock-launched
+    // Writer has no PATH worth searching. yt-dlp enables only deno by
+    // default, and without ffmpeg it exits 0 having written the two streams
+    // and not the file it was asked for.
+    let owned_args: Vec<String> = if is_yt_dlp(program) { yt_dlp_args(args) } else { args.iter().map(|arg| arg.to_string()).collect() };
     let arg_refs: Vec<&str> = owned_args.iter().map(String::as_str).collect();
     let args: &[&str] = &arg_refs;
     let mut command = Command::new(crate::tools::resolve(program));
@@ -220,6 +232,15 @@ mod tests {
         request.store(true, std::sync::atomic::Ordering::Relaxed);
         assert!(worker.join().unwrap().unwrap_err().contains("Stopped by you"));
         assert!(began.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn yt_dlp_is_pointed_at_ffmpeg() {
+        let args = yt_dlp_args(&["--version"]);
+        let place = args.iter().position(|arg| arg == "--ffmpeg-location").expect("ffmpeg location");
+        let path = args.get(place + 1).map(String::as_str).unwrap_or("");
+        assert!(std::path::Path::new(path).is_file(), "{path}");
+        assert!(args.iter().any(|arg| arg == "--version"));
     }
 
     #[test]
