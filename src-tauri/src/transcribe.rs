@@ -43,12 +43,27 @@ pub fn recordings(dir: &Path, script: &Script) -> Vec<Heard> {
         .enumerate()
         .map(|(index, part)| {
             let end = (part.start_ms + part.duration_ms).min(script.duration_ms);
+            let key = recording_key(dir, script, index, part.reuse.as_deref());
             match own.get(index).cloned().flatten() {
-                Some(file) => Heard { file, span: None, offset_ms: part.start_ms, length_ms: end - part.start_ms, key: format!("part-{:02}", index + 1) },
-                None => Heard { file: footage.clone(), span: Some((part.start_ms, end)), offset_ms: part.start_ms, length_ms: end - part.start_ms, key: format!("part-{:02}", index + 1) },
+                Some(file) => Heard { file, span: None, offset_ms: part.start_ms, length_ms: end - part.start_ms, key },
+                None => Heard { file: footage.clone(), span: Some((part.start_ms, end)), offset_ms: part.start_ms, length_ms: end - part.start_ms, key },
             }
         })
         .collect()
+}
+
+/// Reused cases are cached as `reuse-NN`, matching the import that brought
+/// them in. An older completion stored that hearing as `part-NN`; keep using
+/// it until a captions cache exists, so the paid transcript is not bought again.
+fn recording_key(dir: &Path, script: &Script, index: usize, reuse: Option<&str>) -> String {
+    let legacy = format!("part-{:02}", index + 1);
+    let Some(slot) = reuse.and_then(|url| script.reuses.iter().position(|known| known.url == url)) else { return legacy };
+    let reuse_key = format!("reuse-{slot:02}");
+    let has = |key: &str| {
+        let folder = dir.join("transcript").join(key);
+        folder.join("captions.json").is_file() || folder.join("transcript.json").is_file()
+    };
+    if has(&reuse_key) || !has(&legacy) { reuse_key } else { legacy }
 }
 
 /// `on_piece` gets how far it has got, in thousandths of the whole.
@@ -115,7 +130,7 @@ pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece
         let tag = (count > 1).then(|| format!("{}", index + 1));
         let recovered = on_clock(&transcript, recording.offset_ms, recording.length_ms, tag.as_deref());
         let saved: Vec<Word> = script.words.iter().filter(|word| word.start_ms >= recording.offset_ms && word.start_ms < recording.offset_ms + recording.length_ms).cloned().collect();
-        heard.extend(fill_missing(&saved, recovered));
+        heard.extend(fill_missing(&saved, recovered, &script.corrections));
     }
     if heard.is_empty() {
         return Err(NO_WORDS.into());
@@ -145,22 +160,60 @@ fn resolve(
     local.or_else(captions).or_else(shared).map(Ok).unwrap_or_else(audio)
 }
 
-/// Keep the saved words exactly. Insert recovered words only where they do
-/// not overlap saved speech (150 ms tolerance for caption timing drift).
-fn fill_missing(saved: &[Word], recovered: Vec<Word>) -> Vec<Word> {
+/// Match saved words to their recovered counterparts before filling gaps.
+/// Timing alone cannot tell a duplicate from a short missing word between
+/// two saved ones. Matches are monotone and local in time, so repeated words
+/// in another sentence cannot consume this sentence's missing speech.
+fn fill_missing(saved: &[Word], recovered: Vec<Word>, corrections: &std::collections::BTreeMap<String, String>) -> Vec<Word> {
+    const DRIFT: u64 = 1_500;
+    let normalized: Vec<String> = recovered.iter().map(|word| hearing::normal(&word.text)).collect();
+    let mut anchors: Vec<Option<std::ops::Range<usize>>> = vec![None; saved.len()];
+    let mut taken = vec![false; recovered.len()];
+    let tokens = |text: &str| text.split_whitespace().map(hearing::normal).filter(|word| !word.is_empty()).collect::<Vec<_>>();
+    let (mut first, mut floor) = (0, 0);
+    for (index, old) in saved.iter().enumerate() {
+        while first < recovered.len() && recovered[first].end_ms.saturating_add(DRIFT) < old.start_ms { first += 1; }
+        let mut variants = vec![tokens(&old.text)];
+        if let Some(corrected) = corrections.get(&old.id) { variants.insert(0, tokens(corrected)); }
+        let mut best: Option<(u64, std::ops::Range<usize>)> = None;
+        for at in first.max(floor)..recovered.len() {
+            if recovered[at].start_ms > old.end_ms.saturating_add(DRIFT) { break; }
+            for wanted in variants.iter().filter(|words| !words.is_empty()) {
+                let end = at + wanted.len();
+                if normalized.get(at..end) == Some(wanted.as_slice()) && !taken[at..end].iter().any(|used| *used) {
+                    let distance = old.start_ms.abs_diff(recovered[at].start_ms);
+                    if best.as_ref().is_none_or(|(known, _)| distance < *known) { best = Some((distance, at..end)); }
+                }
+            }
+        }
+        if let Some((_, range)) = best {
+            taken[range.clone()].fill(true);
+            floor = range.end;
+            anchors[index] = Some(range);
+        }
+    }
+    // Unmatched saved spellings still stand. Pair each with at most one
+    // overlapping recovered word between the same anchors, never all nearby
+    // speech. This retains disagreements without swallowing adjacent gaps.
+    let mut ceiling = vec![recovered.len(); saved.len()];
+    let mut next = recovered.len();
+    for index in (0..saved.len()).rev() {
+        ceiling[index] = next;
+        if let Some(range) = &anchors[index] { next = range.start; }
+    }
+    first = 0;
+    floor = 0;
+    for (index, old) in saved.iter().enumerate() {
+        if let Some(range) = &anchors[index] { floor = range.end; continue; }
+        while first < recovered.len() && recovered[first].end_ms.saturating_add(150) < old.start_ms { first += 1; }
+        let best = (first.max(floor)..ceiling[index]).take_while(|&at| recovered[at].start_ms < old.end_ms.saturating_add(150))
+            .filter(|&at| !taken[at] && old.start_ms < recovered[at].end_ms.saturating_add(150))
+            .min_by_key(|&at| old.start_ms.abs_diff(recovered[at].start_ms));
+        if let Some(at) = best { taken[at] = true; floor = at + 1; }
+    }
     let mut out = saved.to_vec();
-    let mut first = 0;
-    for mut word in recovered {
-        while first < saved.len() && saved[first].end_ms.saturating_add(150) < word.start_ms {
-            first += 1;
-        }
-        let present = saved[first..].iter().take_while(|old| old.start_ms <= word.end_ms.saturating_add(150)).any(|old| {
-            old.start_ms < word.end_ms.saturating_add(150) && word.start_ms < old.end_ms.saturating_add(150)
-        });
-        if !present {
-            word.id = format!("w-{}", uuid::Uuid::new_v4());
-            out.push(word);
-        }
+    for (mut word, used) in recovered.into_iter().zip(taken) {
+        if !used { word.id = format!("w-{}", uuid::Uuid::new_v4()); out.push(word); }
     }
     out.sort_by_key(|word| (word.start_ms, word.end_ms));
     out
@@ -253,16 +306,37 @@ fn on_clock(transcript: &hearing::Transcript, offset_ms: u64, length_ms: u64, ta
         .collect()
 }
 
-/// One stretch of the footage heard alone (a reused case's video joined to
-/// the end of a compilation, or a video with no captions), on the footage's
-/// clock. Its voices are its own, marked with `tag`. Kept in `work`, so a
-/// retry never pays twice. No speech at all is no words, not a failure.
-pub fn hear_span(source: &Path, settings: &Settings, work: &Path, span: (u64, u64), keyterms: &[String], tag: &str, on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<Vec<Word>, String> {
-    let whole = media::streams(source).map(|found| found.duration_ms).unwrap_or(0);
-    let span = (span.0 > 0 || span.1 < whole).then_some(span);
-    let transcript = hearing::hear(&Recording { file: source, span }, work, settings, keyterms, on_piece)?;
+/// One recording already joined onto a compilation. Captions stay on that
+/// recording's own clock until mapped onto `span` in the joined footage.
+pub struct SpanSource<'a> {
+    pub file: &'a Path,
+    pub span: (u64, u64),
+    pub url: Option<&'a str>,
+    pub cookies: Option<&'a Path>,
+}
+
+pub fn transcribe_span(source: SpanSource<'_>, settings: &Settings, work: &Path, keyterms: &[String], tag: &str, on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<(Vec<Word>, bool), String> {
+    crate::jobs::check_cancelled()?;
+    if let Some(url) = source.url.filter(|url| crate::youtube::check_url(url).is_ok()) {
+        if let Some(transcript) = crate::captions::transcript(url, work, source.cookies) {
+            on_piece(1, 1);
+            let length = source.span.1.saturating_sub(source.span.0).max(1);
+            return Ok((on_clock(&transcript, source.span.0, length, Some(tag)), true));
+        }
+    }
+    // Audio keeps the previous rule: a span that covers the whole file is
+    // heard as the file, and a finished hearing is reused only when it
+    // already listened for these names.
+    let whole = media::streams(source.file).map(|found| found.duration_ms).unwrap_or(0);
+    let span = (source.span.0 > 0 || source.span.1 < whole).then_some(source.span);
+    let transcript = hearing::hear(&Recording { file: source.file, span }, work, settings, keyterms, on_piece)?;
     let (from, to) = span.unwrap_or((0, whole.max(1)));
-    Ok(on_clock(&transcript, from, to.saturating_sub(from).max(1), Some(tag)))
+    Ok((on_clock(&transcript, from, to.saturating_sub(from).max(1), Some(tag)), false))
+}
+
+/// Audio-only fallback for the clip finder, which already tried captions.
+pub fn hear_span(source: &Path, settings: &Settings, work: &Path, span: (u64, u64), keyterms: &[String], tag: &str, on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<Vec<Word>, String> {
+    transcribe_span(SpanSource { file: source, span, url: None, cookies: None }, settings, work, keyterms, tag, on_piece).map(|(words, _)| words)
 }
 
 /// What a relay refusal means for the producer.
@@ -311,14 +385,74 @@ mod tests {
             Word { id: String::new(), text: "Missing".into(), start_ms: 3_000, end_ms: 3_300, speaker: Some("turn".into()) },
             Word { id: String::new(), text: "END!".into(), start_ms: 9_100, end_ms: 9_300, speaker: None },
         ];
-        let filled = fill_missing(&saved, recovered.clone());
+        let filled = fill_missing(&saved, recovered.clone(), &Default::default());
         assert_eq!(filled.len(), 3);
         assert_eq!(serde_json::to_value(&filled[0]).unwrap(), serde_json::to_value(&saved[0]).unwrap());
         assert_eq!(serde_json::to_value(&filled[2]).unwrap(), serde_json::to_value(&saved[1]).unwrap());
         assert_eq!(filled[1].text, "Missing");
         assert!(filled[1].id.starts_with("w-"));
         // Repeating completion adds no copies and keeps every saved ID.
-        assert_eq!(serde_json::to_value(fill_missing(&filled, recovered)).unwrap(), serde_json::to_value(&filled).unwrap());
+        assert_eq!(serde_json::to_value(fill_missing(&filled, recovered, &Default::default())).unwrap(), serde_json::to_value(&filled).unwrap());
+    }
+
+    #[test]
+    fn short_gaps_repeated_words_and_corrected_phrases_are_merged_once() {
+        let w = |id: &str, text: &str, start_ms, end_ms| Word { id: id.into(), text: text.into(), start_ms, end_ms, speaker: Some("kept".into()) };
+        let saved = vec![w("we", "We", 0, 120), w("ready", "ready", 230, 450)];
+        let recovered = vec![w("", "We", 0, 120), w("", "are", 130, 220), w("", "ready", 230, 450)];
+        let filled = fill_missing(&saved, recovered.clone(), &Default::default());
+        assert_eq!(filled.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(), ["We", "are", "ready"]);
+        assert_eq!((&filled[0].id, &filled[2].id), (&saved[0].id, &saved[1].id));
+        assert_eq!(serde_json::to_value(fill_missing(&filled, recovered, &Default::default())).unwrap(), serde_json::to_value(&filled).unwrap());
+        let repeated = fill_missing(&[w("no", "No", 0, 150)], vec![w("", "No", 50, 200), w("", "no", 500, 650)], &Default::default());
+        assert_eq!(repeated.len(), 2);
+        assert_eq!(repeated[0].id, "no");
+        let corrections = std::collections::BTreeMap::from([("name".into(), "Jane Doe".into())]);
+        let saved = vec![w("name", "Jadon", 0, 120), w("ready", "ready", 230, 450)];
+        let recovered = vec![w("", "Jane", 0, 80), w("", "Doe", 90, 120), w("", "is", 130, 220), w("", "ready", 230, 450)];
+        let filled = fill_missing(&saved, recovered, &corrections);
+        assert_eq!(filled.iter().map(|word| word.text.as_str()).collect::<Vec<_>>(), ["Jadon", "is", "ready"]);
+        assert_eq!(filled[0].id, "name");
+        assert_eq!(corrections[&filled[0].id], "Jane Doe");
+    }
+
+    #[test]
+    fn reused_youtube_recordings_take_captions_before_cached_audio_on_the_joined_clock() {
+        let dir = std::env::temp_dir().join(format!("writer-reuse-captions-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut captions = transcript(crate::captions::MODEL);
+        captions.words.push(hearing::Word { text: "outside".into(), start: 2.0, end: 2.2, speaker: None });
+        std::fs::write(dir.join("captions.json"), hearing::serialize(&captions)).unwrap();
+        std::fs::write(dir.join("transcript.json"), hearing::serialize(&transcript("scribe_v2"))).unwrap();
+        let source = || SpanSource { file: Path::new("/missing/joined.mp4"), span: (60_000, 61_000), url: Some("https://youtu.be/aaaaaaaaaaa"), cookies: None };
+        let (words, captioned) = transcribe_span(source(), &Settings::default(), &dir, &[], "reuse1", &|_, _| {}).unwrap();
+        assert!(captioned);
+        assert_eq!(words.len(), 1);
+        assert_eq!((words[0].start_ms, words[0].end_ms), (60_500, 60_800));
+        assert_eq!(words[0].speaker.as_deref(), Some("reuse1:voice"));
+        assert_eq!(hearing::cached(&dir).unwrap().model, "scribe_v2");
+        // Drive/audio-only sources reuse their completed hearing, not a
+        // caption file accidentally kept in that recording's folder.
+        let (audio, captioned) = transcribe_span(SpanSource { url: None, ..source() }, &Settings::default(), &dir, &[], "reuse1", &|_, _| {}).unwrap();
+        assert!(!captioned);
+        assert_eq!(audio.len(), 1);
+        let script: Script = serde_json::from_value(serde_json::json!({
+            "id":"abc", "title":"Existing", "sourceKind":"compilation", "sourceUrl":"", "originalPath":"/missing/joined.mp4",
+            "status":"ready", "stage":"ready", "progress":100, "durationMs":61000, "revision":2,"createdAt":0,"updatedAt":0,
+            "reuses":[{"url":"https://docs.google.com/document/d/earlier/edit", "after":1,"footage":"https://youtu.be/aaaaaaaaaaa"}],
+            "parts":[{"title":"First", "startMs":0,"durationMs":60000}, {"title":"Reused", "startMs":60000,"durationMs":1000,"reuse":"https://docs.google.com/document/d/earlier/edit", "url":"https://youtu.be/aaaaaaaaaaa"}]
+        })).unwrap();
+        assert_eq!(recordings(&dir, &script)[1].key, "reuse-00");
+        let legacy = dir.join("transcript/part-02");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("transcript.json"), hearing::serialize(&transcript("scribe_v2"))).unwrap();
+        assert_eq!(recordings(&dir, &script)[1].key, "part-02", "an older hearing kept under the part key is still found");
+        let reuse_cache = dir.join("transcript/reuse-00");
+        std::fs::create_dir_all(&reuse_cache).unwrap();
+        std::fs::write(reuse_cache.join("captions.json"), hearing::serialize(&captions)).unwrap();
+        assert_eq!(recordings(&dir, &script)[1].key, "reuse-00", "captions cached by the reused-case import win");
+        assert_eq!(links(&script)[1].as_deref(), Some("https://youtu.be/aaaaaaaaaaa"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -361,6 +495,46 @@ mod tests {
         transcribe(&mut script, &dir, &Settings::default(), &|_, _| {}).unwrap();
         assert_eq!(script.words.iter().map(|word| &word.id).collect::<std::collections::HashSet<_>>().len(), script.words.len());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Real caption fetch -> joined-clock reused source -> SDK speaker pass
+    /// -> cached retry, entirely in /tmp and without downloading/hearing audio.
+    /// cargo test --manifest-path src-tauri/Cargo.toml youtube_caption_recovery_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn youtube_caption_recovery_live() {
+        let dir = std::env::temp_dir().join(format!("writer-caption-live-{}", uuid::Uuid::new_v4()));
+        let work = dir.join("transcript/reuse-00");
+        std::fs::create_dir_all(&work).unwrap();
+        crate::tools::init(&dir);
+        let (mut words, captioned) = transcribe_span(
+            SpanSource { file: &dir.join("no-footage.mp4"), span: (60_000, 210_000), url: Some("https://www.youtube.com/watch?v=liWNx2Vpv5U"), cookies: None },
+            &Settings::default(), &work, &[], "reuse1", &|_, _| {},
+        ).expect("real YouTube captions");
+        assert!(captioned && words.len() > 20);
+        assert!(!work.join("transcript.json").exists(), "no audio hearing should be purchased");
+        for word in &mut words { word.id = format!("w-{}", uuid::Uuid::new_v4()); }
+        let mut script: Script = serde_json::from_value(serde_json::json!({
+            "id":"abc", "title":"Local news caption recovery check", "sourceKind":"compilation", "sourceUrl":"", "originalPath":"",
+            "status":"ready", "stage":"ready", "progress":100, "durationMs":210000, "revision":2,"createdAt":0,"updatedAt":0,
+            "captions":true,
+            "parts":[{"title":"Existing", "startMs":0,"durationMs":60000}, {"title":"YouTube news", "startMs":60000,"durationMs":150000,"reuse":"https://www.youtube.com/watch?v=liWNx2Vpv5U", "url":"https://www.youtube.com/watch?v=liWNx2Vpv5U"}],
+            "words":[{"id":"keep-word","text":"Saved","startMs":0,"endMs":120}],
+            "corrections":{"keep-word":"Saved correction"},
+            "clips":[{"id":"keep-cut", "startMs":0,"endMs":1000},{"id":"keep-narration","kind":"cut-in","startMs":0,"endMs":3000,"narration":"Keep this narration."}]
+        })).unwrap();
+        script.words.extend(words);
+        let before = serde_json::to_value(&script).unwrap();
+        let ids = script.words.iter().map(|word| word.id.clone()).collect::<Vec<_>>();
+        let report = crate::turns::run(&mut script, &dir, &[], "", &|done, total| println!("speaker pass: {done}/{total}")).expect("SDK speaker labeling");
+        assert_eq!(report.failed, 0);
+        assert!(report.people > 0);
+        assert_eq!(ids, script.words.iter().map(|word| word.id.clone()).collect::<Vec<_>>());
+        for field in ["clips", "corrections"] { assert_eq!(before[field], serde_json::to_value(&script).unwrap()[field]); }
+        let retry = crate::turns::run(&mut script, &dir, &[], "", &|_, _| {}).unwrap();
+        assert_eq!(retry.failed, 0);
+        assert!(retry.cached >= retry.windows + 1, "cast and windows should be reused");
+        println!("live captions: {} words, {} people, {} windows; retry reused {} answers; saved cuts/narration/corrections/IDs intact; cache {}", script.words.len(), report.people, report.windows, retry.cached, dir.display());
     }
 
     #[test]

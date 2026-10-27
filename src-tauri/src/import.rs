@@ -626,9 +626,8 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
 /// failure is a note: the turns stay unnamed, and Retry unfinished speaker
 /// checks reads them again, paying only for what wasn't answered.
 pub(crate) fn read_turns(app: &AppHandle, dir: &Path, script: &mut Script, settings: &crate::settings::Settings) -> bool {
-    script.progress = 90;
     let importing = importing(&script.id);
-    if importing { emit(app, script, "Reading who says each line."); }
+    if importing { script.progress = 90; emit(app, script, "Reading who says each line."); }
     let (id, title) = (script.id.clone(), script.title.clone());
     let began = Instant::now();
     let names = crate::names::case_names(dir, script, settings);
@@ -644,6 +643,7 @@ pub(crate) fn read_turns(app: &AppHandle, dir: &Path, script: &mut Script, setti
     // Caption turns replace visual speaker checks, including warnings left
     // by an earlier audio-based import of this project.
     crate::watch::clear_notes(script);
+    script.notes.retain(|note| !note.starts_with("Who says each line"));
     let before = script.clone();
     let outcome = catch_unwind(AssertUnwindSafe(|| crate::turns::run(script, dir, &names, &notes, &on_window))).unwrap_or_else(|_| Err("Writer hit a bug".into()));
     script.notes.retain(|note| !note.starts_with("Who says each line"));

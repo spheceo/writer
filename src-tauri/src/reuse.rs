@@ -330,7 +330,7 @@ pub fn import(app: &AppHandle, id: &str, urls: &[String]) -> Result<(String, f64
     let data = crate::data_dir(app)?;
     let dir = store::script_dir(&data, id)?;
     chat::add(&dir, "producer", REQUEST, None, false);
-    let outcome = run(&data, &dir, id, urls);
+    let outcome = run(app, &data, &dir, id, urls);
     match &outcome {
         Ok((report, cost)) => chat::add(&dir, "editor", report, Some(*cost), false),
         Err(error) => chat::add(&dir, "editor", error, None, true),
@@ -338,7 +338,7 @@ pub fn import(app: &AppHandle, id: &str, urls: &[String]) -> Result<(String, f64
     outcome
 }
 
-fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f64), String> {
+fn run(app: &AppHandle, data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f64), String> {
     let script = store::read(dir)?;
     let wanted = wanted(&script, urls)?;
     let settings = settings::load(data);
@@ -407,21 +407,24 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
         peaks.extend(heard);
     }
 
-    // Each video's words, heard alone, listening for the case's names.
+    // Each YouTube recording takes captions first, including a reused case
+    // given by an earlier script's Doc. Audio is only the fallback.
     let keyterms = crate::names::case_names(dir, &script, &settings);
     let mut words: Vec<Word> = Vec::new();
+    let mut captioned = false;
+    let cookies = crate::youtube::cookies_file(data);
     for (step, part) in parts.iter().enumerate() {
         let slot = script.reuses.iter().position(|known| Some(&known.url) == part.reuse.as_ref()).unwrap_or(step);
         let label = which(step);
-        let heard = transcribe::hear_span(
-            &joined,
+        let (heard, from_captions) = transcribe::transcribe_span(
+            transcribe::SpanSource { file: &joined, span: (part.start_ms, part.start_ms + part.duration_ms), url: part.url.as_deref(), cookies: Some(&cookies) },
             &settings,
             &dir.join("transcript").join(format!("reuse-{slot:02}")),
-            (part.start_ms, part.start_ms + part.duration_ms),
             &keyterms,
             &format!("reuse{}", slot + 1),
             &|done, pieces| jobs::stage(id, &format!("Transcribing the reused case{label} · {done} of {pieces}")),
         )?;
+        captioned |= from_captions;
         words.extend(heard);
     }
 
@@ -431,15 +434,58 @@ fn run(data: &Path, dir: &Path, id: &str, urls: &[String]) -> Result<(String, f6
     if now.duration_ms != script.duration_ms || now.parts.len() != script.parts.len() || now.words.len() != script.words.len() {
         return Err("The compilation's footage changed while its reused cases were being added, so nothing was added. Try again.".into());
     }
-    let first = now.words.len();
-    now.words.extend(words.into_iter().enumerate().map(|(index, mut word)| {
-        word.id = format!("w{:05}", first + index);
+    let revision = now.revision;
+    let added = words.len();
+    now.words.extend(words.into_iter().map(|mut word| {
+        word.id = format!("w-{}", uuid::Uuid::new_v4());
         word
     }));
     now.parts.extend(parts);
     now.duration_ms = total;
     now.original_path = base.to_string_lossy().into_owned();
     now.overview = media::overview(&peaks, 800);
+    now.captions |= captioned;
+    if captioned {
+        // The speaker pass reads the whole compilation. Keep words, labels
+        // and suspects that were already saved; only the new captions are named.
+        let prior = now.words.len() - added;
+        let prefix = now.words[..prior].to_vec();
+        let saved_speakers = now.speakers.clone();
+        let saved_suspects = now.suspects.clone();
+        let saved_notes = now.notes.clone();
+        let tags: Vec<String> = now.words[prior..].iter().map(|word| {
+            word.speaker.as_deref().and_then(|speaker| speaker.split_once(':')).map(|(tag, _)| tag.to_string()).unwrap_or_else(|| "reuse".into())
+        }).collect();
+        jobs::stage(id, "Reading who says each line");
+        crate::import::read_turns(app, dir, &mut now, &settings);
+        if now.words.len() == prefix.len() + tags.len() && now.words.iter().zip(&prefix).all(|(word, saved)| word.id == saved.id) {
+            for (word, saved) in now.words.iter_mut().zip(&prefix) {
+                word.text.clone_from(&saved.text);
+                word.speaker.clone_from(&saved.speaker);
+            }
+            let assigned = std::mem::take(&mut now.speakers);
+            now.speakers = saved_speakers;
+            for (word, tag) in now.words.iter_mut().skip(prior).zip(tags) {
+                let Some(id) = word.speaker.clone() else { continue };
+                let namespaced = format!("{tag}:{id}");
+                if let Some(label) = assigned.get(&id) {
+                    now.speakers.entry(namespaced.clone()).or_insert_with(|| label.clone());
+                }
+                word.speaker = Some(namespaced);
+            }
+            if !saved_suspects.is_empty() {
+                now.suspects = saved_suspects;
+            }
+            let fresh: Vec<String> = now.notes.iter().filter(|note| note.starts_with("Who says each line")).cloned().collect();
+            now.notes = saved_notes;
+            now.notes.retain(|note| !note.starts_with("Who says each line"));
+            now.notes.extend(fresh);
+        }
+    }
+    jobs::check_cancelled()?;
+    if store::read(dir)?.revision != revision {
+        return Err("The script changed while its reused cases were being transcribed. The recordings and answers are kept; try again to apply them.".into());
+    }
     fs::rename(&joined, &base).map_err(|error| format!("The footage couldn't be saved: {error}"))?;
     crate::tidy::keep_peaks(dir, &peaks);
     now.revision += 1;

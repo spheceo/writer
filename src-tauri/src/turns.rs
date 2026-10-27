@@ -143,6 +143,10 @@ fn same_input(saved: &[Word], current: &[Word]) -> bool {
 /// captions. `names` are the case's names (names.rs), `notes` what the
 /// producer and the research say about the case.
 pub fn run(script: &mut Script, dir: &Path, names: &[String], notes: &str, on_window: &(dyn Fn(usize, usize) + Sync)) -> Result<Report, String> {
+    run_with(script, dir, names, notes, on_window, &ask)
+}
+
+fn run_with(script: &mut Script, dir: &Path, names: &[String], notes: &str, on_window: &(dyn Fn(usize, usize) + Sync), ask: &(dyn Fn(&Path, &Value, &str) -> Result<(Value, bool), String> + Sync)) -> Result<Report, String> {
     let kept = dir.join("turns");
     let _ = std::fs::create_dir_all(&kept);
     // Always from the turns as captioned, so a retry asks what it asked before.
@@ -490,15 +494,7 @@ fn sample(script: &Script, lines: &[Line]) -> Vec<String> {
 
 /// One structured answer from Sonnet, kept by what was asked: (answer, whether it was kept).
 fn ask(kept: &Path, schema: &Value, prompt: &str) -> Result<(Value, bool), String> {
-    let key = {
-        let mut hash = Sha256::new();
-        hash.update(MODEL);
-        hash.update(SYSTEM);
-        hash.update(schema.to_string());
-        hash.update(prompt);
-        hash.finalize().iter().take(12).map(|byte| format!("{byte:02x}")).collect::<String>()
-    };
-    let file = kept.join(format!("{key}.json"));
+    let file = answer_file(kept, schema, prompt);
     if let Some(found) = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok()) {
         return Ok((found, true));
     }
@@ -507,12 +503,60 @@ fn ask(kept: &Path, schema: &Value, prompt: &str) -> Result<(Value, bool), Strin
     Ok((answer, false))
 }
 
+fn answer_file(kept: &Path, schema: &Value, prompt: &str) -> std::path::PathBuf {
+    let mut hash = Sha256::new();
+    hash.update(MODEL);
+    hash.update(SYSTEM);
+    hash.update(schema.to_string());
+    hash.update(prompt);
+    let key = hash.finalize().iter().take(12).map(|byte| format!("{byte:02x}")).collect::<String>();
+    kept.join(format!("{key}.json"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn word(text: &str, start_ms: u64, speaker: &str) -> Word {
         Word { id: String::new(), text: text.into(), start_ms, end_ms: start_ms + 200, speaker: Some(speaker.into()) }
+    }
+
+    #[test]
+    fn manual_caption_speakers_apply_and_retry_from_saved_answers_without_changing_edits() {
+        let dir = std::env::temp_dir().join(format!("writer-caption-speakers-{}", uuid::Uuid::new_v4()));
+        let transcript = crate::captions::parse(&json!({"events":[
+            {"tStartMs":500,"dDurationMs":500,"segs":[{"utf8":">> Where?"}]},
+            {"tStartMs":1500,"dDurationMs":500,"segs":[{"utf8":">> Here."}]}
+        ]}));
+        let mut script: Script = serde_json::from_value(json!({
+            "id":"abc", "title":"Interview", "sourceKind":"youtube", "sourceUrl":"https://youtu.be/aaaaaaaaaaa", "originalPath":"",
+            "status":"ready", "stage":"ready", "progress":100, "durationMs":3000,"revision":2,"createdAt":0,"updatedAt":0,
+            "corrections":{"keep-0":"Where exactly?"},
+            "clips":[{"id":"keep-cut", "startMs":500,"endMs":2000}, {"id":"keep-narration","kind":"cut-in","startMs":0,"endMs":3000,"narration":"Keep this narration."}]
+        })).unwrap();
+        script.words = transcript.words.iter().enumerate().map(|(index, word)| Word { id:format!("keep-{index}"),text:word.text.clone(),start_ms:(word.start * 1000.0) as u64,end_ms:(word.end * 1000.0) as u64,speaker:word.speaker.clone() }).collect();
+        let before = serde_json::to_value(&script).unwrap();
+        let responses = |kept: &Path, schema: &Value, prompt: &str| {
+            let answer = if schema["properties"]["people"].is_object() {
+                json!({"people":[{"id":"p1","name":null,"role":"Officer","how":"asks questions"},{"id":"p2","name":null,"role":"Witness","how":"answers"}],"suspects":[]})
+            } else {
+                json!({"lines":[{"n":0,"person":"p1"},{"n":1,"person":"p2"}],"splits":[],"newPeople":[],"spellings":[]})
+            };
+            std::fs::write(answer_file(kept, schema, prompt), answer.to_string()).unwrap();
+            Ok((answer, false))
+        };
+        let report = run_with(&mut script, &dir, &[], "", &|_, _| {}, &responses).unwrap();
+        assert_eq!((report.people, report.failed), (2, 0));
+        assert_eq!(script.speakers["p1"], "Officer");
+        assert_eq!(script.speakers["p2"], "Witness");
+        assert_eq!(script.words[0].speaker.as_deref(), Some("p1"));
+        assert_eq!(script.words[1].speaker.as_deref(), Some("p2"));
+        let retry = run(&mut script, &dir, &[], "", &|_, _| {}).unwrap();
+        assert_eq!((retry.cached, retry.failed), (2, 0));
+        let after = serde_json::to_value(&script).unwrap();
+        for field in ["clips", "corrections", "revision"] { assert_eq!(before[field], after[field]); }
+        assert_eq!(script.words.iter().map(|word| word.id.as_str()).collect::<Vec<_>>(), ["keep-0", "keep-1"]);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
