@@ -58,7 +58,7 @@ pub fn detail(script: Script, dir: &Path) -> ScriptDetail {
     ScriptDetail {
         proxy_path: proxy.is_file().then(|| proxy.to_string_lossy().into_owned()),
         archive,
-        speaker_check: crate::watch::status(dir),
+        speaker_check: if script.captions { None } else { crate::watch::status(dir) },
         script,
     }
 }

@@ -681,6 +681,12 @@ fn prepare_input(script: &mut Script, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Warnings belonging to the visual path, superseded by a successful retry
+/// or by switching a project to caption turns.
+pub(crate) fn clear_notes(script: &mut Script) {
+    script.notes.retain(|note| !note.contains("stretches of footage couldn't be watched") && !note.contains("Visual speaker checks couldn't finish") && !note.starts_with("Writer couldn't watch the footage"));
+}
+
 /// Explicit retry: completed answers are reused; only unfinished checks ask
 /// the service again. Reloading, polling and opening a script never call this.
 pub fn retry(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> {
@@ -703,7 +709,7 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> 
     let before = fresh.clone();
     fresh.words = script.words;
     fresh.speakers = script.speakers;
-    fresh.notes.retain(|note| !note.contains("stretches of footage couldn't be watched") && !note.contains("Visual speaker checks couldn't finish") && !note.starts_with("Writer couldn't watch the footage"));
+    clear_notes(&mut fresh);
     if !report.failed.is_empty() { fresh.notes.push(format!("Visual speaker checks couldn't finish for {} of {} stretches. Retry unfinished speaker checks to continue; the transcript is kept.", report.failed.len(), report.windows)); }
     fresh.revision += 1;
     fresh.updated_at = crate::model::now_ms();

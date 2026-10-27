@@ -41,6 +41,9 @@ struct Busy {
 
 impl Busy {
     fn start(id: String) -> Result<Self, String> {
+        if crate::jobs::running(&id) {
+            return Err("Wait for this project's current job to finish before retrying its import.".into());
+        }
         let mut jobs = JOBS.lock().map_err(|_| "The import lock failed.".to_string())?;
         if jobs.contains(&id) {
             return Err("This import is already running.".into());
@@ -624,7 +627,8 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
 /// checks reads them again, paying only for what wasn't answered.
 pub(crate) fn read_turns(app: &AppHandle, dir: &Path, script: &mut Script, settings: &crate::settings::Settings) -> bool {
     script.progress = 90;
-    emit(app, script, "Reading who says each line.");
+    let importing = importing(&script.id);
+    if importing { emit(app, script, "Reading who says each line."); }
     let (id, title) = (script.id.clone(), script.title.clone());
     let began = Instant::now();
     let names = crate::names::case_names(dir, script, settings);
@@ -633,8 +637,13 @@ pub(crate) fn read_turns(app: &AppHandle, dir: &Path, script: &mut Script, setti
         .unwrap_or_default();
     let on_window = |done: usize, count: usize| {
         let percent = 90 + ((done * 8) / count.max(1)) as u8;
-        emit_parts(app, &id, &title, "transcribing", percent, &format!("Reading who says each line: {done} of {count} stretches."));
+        let detail = format!("Reading who says each line: {done} of {count} stretches.");
+        if importing { emit_parts(app, &id, &title, "transcribing", percent, &detail); }
+        else { crate::jobs::stage(&id, &detail); }
     };
+    // Caption turns replace visual speaker checks, including warnings left
+    // by an earlier audio-based import of this project.
+    crate::watch::clear_notes(script);
     let before = script.clone();
     let outcome = catch_unwind(AssertUnwindSafe(|| crate::turns::run(script, dir, &names, &notes, &on_window))).unwrap_or_else(|_| Err("Writer hit a bug".into()));
     script.notes.retain(|note| !note.starts_with("Who says each line"));

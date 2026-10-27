@@ -182,6 +182,8 @@ pub enum Work {
     Speakers,
     /// Hear a built captioned script's footage exactly and cut it again (exact.rs).
     Exact,
+    /// Fill missing words in an already imported project, captions first.
+    Transcribe,
 }
 
 /// What the signed-in person may do to this script (can.rs): see it, write
@@ -220,6 +222,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                 Work::Restore => "Bringing the footage back".into(),
                 Work::Speakers => "Checking speakers".into(),
                 Work::Exact => "Hearing the chosen footage exactly".into(),
+                Work::Transcribe => "Completing transcription".into(),
                 Work::Build { .. } => "Starting".into(),
             },
             started_at: now_ms(),
@@ -247,6 +250,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
         Work::Restore => "bringing the footage back".to_string(),
         Work::Speakers => "retrying unfinished speaker checks".to_string(),
         Work::Exact => "hearing the chosen footage exactly".to_string(),
+        Work::Transcribe => "completing transcription".to_string(),
     };
     let name = crate::log::named(&id, &title);
     crate::log::info("agent", format!("{name}: started: {what}"));
@@ -267,6 +271,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
             Work::Restore => crate::archive::restore(&app, &id),
             Work::Speakers => crate::watch::retry(&app, &id),
             Work::Exact => crate::exact_once(&app, &id),
+            Work::Transcribe => crate::transcribe::complete(&app, &id),
         }))
         .unwrap_or_else(|_| Err("Writer hit a bug while Claude worked. Nothing was changed; ask again.".into()));
         let result = check_cancelled().and(result);
@@ -281,7 +286,7 @@ pub fn start(app: AppHandle, id: String, work: Work) -> Result<BuildStatus, Stri
                         job.report = Some(report);
                         job.cost_usd = Some(cost);
                         // A commentary's clips may have changed: their footage comes down now.
-                        if !matches!(work, Work::Restore | Work::Speakers) {
+                        if !matches!(work, Work::Restore | Work::Speakers | Work::Transcribe) {
                             let _ = crate::footage::now(&data, &id);
                         }
                     }

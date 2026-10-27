@@ -398,6 +398,9 @@ fn route(
         ("POST", ["api", "scripts", id, "transcribe"]) => {
             json_result(stream, crate::import::transcribe_existing(&app, &data_dir(&app)?, id))
         }
+        ("POST", ["api", "scripts", id, "complete-transcription"]) => {
+            json_result(stream, crate::complete_transcription(app, (*id).to_string()))
+        }
         ("POST", ["api", "scripts", id, "build"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
             let note = value["note"].as_str().unwrap_or("").to_string();

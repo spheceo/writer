@@ -54,71 +54,170 @@ pub fn recordings(dir: &Path, script: &Script) -> Vec<Heard> {
 /// `on_piece` gets how far it has got, in thousandths of the whole.
 pub fn transcribe(script: &mut Script, dir: &Path, settings: &Settings, on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<(), String> {
     let source = Path::new(&script.original_path);
-    if !source.is_file() {
-        return Err("The original video is missing, so it can't be transcribed.".into());
-    }
     // The waveform and quiet cut points are a help, not a need.
-    let peaks = media::peaks(source).unwrap_or_default();
-    script.overview = media::overview(&peaks, 800);
+    let peaks = if source.is_file() { media::peaks(source).unwrap_or_default() } else { Vec::new() };
     if !peaks.is_empty() {
+        script.overview = media::overview(&peaks, 800);
         crate::tidy::keep_peaks(dir, &peaks);
     }
     if script.duration_ms == 0 {
         return Err("This footage has no length.".into());
     }
-    let keyterms = crate::names::case_names(dir, script, settings);
+    // Caption reads and completed hearings need no new network call for names.
+    let names = std::sync::OnceLock::new();
+    let keyterms = || names.get_or_init(|| crate::names::case_names(dir, script, settings));
     let recordings = recordings(dir, script);
     let count = recordings.len();
     let links = links(script);
+    let want_captions = crate::captions::wanted(script);
     let data = dir.parent().and_then(Path::parent).map(Path::to_path_buf);
     let cookies = data.as_deref().map(crate::youtube::cookies_file);
     let mut captioned = 0;
     let mut heard: Vec<Word> = Vec::new();
     for (index, recording) in recordings.iter().enumerate() {
         let progress = |done: usize, total: usize| on_piece((index * 1000 + done * 1000 / total.max(1)) / count, 1000);
-        // Heard once for both apps: Edit's transcript of this recording, when it has one.
+        crate::jobs::check_cancelled()?;
         let work = dir.join("transcript").join(&recording.key);
-        if let Some(data) = dir.parent().and_then(Path::parent) {
-            if let Some(found) = crate::handoff::shared_transcript(data, dir, script, &recording.key, &keyterms) {
-                let _ = std::fs::create_dir_all(&work);
-                let _ = std::fs::write(work.join("transcript.json"), hearing::serialize(&found));
-            }
+        // A completion explicitly asks for the caption path even for an older
+        // audio import with unfinished visual speaker checks. Its saved words
+        // stay; caption turns supply the gaps and speaker labels. Ordinary
+        // import retries still reuse a completed hearing first.
+        let local = hearing::cached(&work).filter(|found| !found.words.is_empty());
+        let (before_captions, after_captions) = if script.status == "ready" { (None, local) } else { (local, None) };
+        let transcript = resolve(
+            before_captions,
+            || links.get(index).filter(|_| want_captions).and_then(Option::as_deref).and_then(|url| crate::captions::transcript(url, &work, cookies.as_deref())),
+            || after_captions.or_else(|| data.as_deref().and_then(|data| crate::handoff::shared_transcript(data, dir, script, &recording.key, keyterms()))),
+            || {
+                let preview;
+                let (file, span) = if recording.file.is_file() {
+                    (recording.file.as_path(), recording.span)
+                } else if let Some(data) = data.as_deref() {
+                    // Only fetch footage if neither captions nor a shared hearing
+                    // could supply the words. Synced YouTube projects need neither.
+                    preview = crate::storage::fetch_preview(data, &script.id)?;
+                    (preview.as_path(), Some((recording.offset_ms, recording.offset_ms + recording.length_ms)))
+                } else {
+                    return Err("The original video is missing, so it can't be transcribed.".into());
+                };
+                hearing::hear(&Recording { file, span }, &work, settings, keyterms(), &progress)
+            },
+        )?;
+        if transcript.model == crate::captions::MODEL {
+            captioned += 1;
+            crate::log::info("hear", format!("{}: {} words from YouTube's captions", recording.key, transcript.words.len()));
+        } else {
+            let _ = std::fs::create_dir_all(&work);
+            std::fs::write(work.join("transcript.json"), hearing::serialize(&transcript)).map_err(|error| error.to_string())?;
         }
-        // Every YouTube recording takes its own captions first, across all formats. A cached hearing wins.
-        let captions = match links.get(index).cloned().flatten() {
-            Some(url) if crate::captions::wanted(script) && !work.join("transcript.json").is_file() => crate::captions::transcript(&url, &work, cookies.as_deref()),
-            _ => None,
-        };
-        let transcript = match captions {
-            Some(found) => {
-                captioned += 1;
-                crate::log::info("hear", format!("{}: {} words from YouTube's captions", recording.key, found.words.len()));
-                progress(1, 1);
-                found
-            }
-            None => hearing::hear(&Recording { file: &recording.file, span: recording.span }, &work, settings, &keyterms, &progress)?,
-        };
+        progress(1, 1);
         // A joined case's voices are its recordings' own: one recording's speaker_0 is not the next one's.
         let tag = (count > 1).then(|| format!("{}", index + 1));
-        heard.extend(on_clock(&transcript, recording.offset_ms, recording.length_ms, tag.as_deref()));
+        let recovered = on_clock(&transcript, recording.offset_ms, recording.length_ms, tag.as_deref());
+        let saved: Vec<Word> = script.words.iter().filter(|word| word.start_ms >= recording.offset_ms && word.start_ms < recording.offset_ms + recording.length_ms).cloned().collect();
+        heard.extend(fill_missing(&saved, recovered));
     }
     if heard.is_empty() {
         return Err(NO_WORDS.into());
     }
-    script.captions = captioned > 0;
-    script.words = heard
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut word)| {
-            word.id = format!("w{index:05}");
-            word
-        })
-        .collect();
+    script.captions |= captioned > 0;
+    // A recovery adds missing words without changing existing text, corrections,
+    // word IDs (also used by reuse highlights), or the producer's timeline.
+    if script.words.is_empty() {
+        for (index, word) in heard.iter_mut().enumerate() { word.id = format!("w{index:05}"); }
+    }
+    script.words = heard;
     if script.clips.is_empty() {
         script.clips = vec![Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: 0, end_ms: script.duration_ms, ..Default::default() }];
     }
     script.updated_at = now_ms();
     Ok(())
+}
+
+/// Source order is deliberately lazy: a completed local hearing, captions,
+/// a shared hearing, then audio. Caption-only words never become an audio cache.
+fn resolve(
+    local: Option<hearing::Transcript>,
+    captions: impl FnOnce() -> Option<hearing::Transcript>,
+    shared: impl FnOnce() -> Option<hearing::Transcript>,
+    audio: impl FnOnce() -> Result<hearing::Transcript, String>,
+) -> Result<hearing::Transcript, String> {
+    local.or_else(captions).or_else(shared).map(Ok).unwrap_or_else(audio)
+}
+
+/// Keep the saved words exactly. Insert recovered words only where they do
+/// not overlap saved speech (150 ms tolerance for caption timing drift).
+fn fill_missing(saved: &[Word], recovered: Vec<Word>) -> Vec<Word> {
+    let mut out = saved.to_vec();
+    let mut first = 0;
+    for mut word in recovered {
+        while first < saved.len() && saved[first].end_ms.saturating_add(150) < word.start_ms {
+            first += 1;
+        }
+        let present = saved[first..].iter().take_while(|old| old.start_ms <= word.end_ms.saturating_add(150)).any(|old| {
+            old.start_ms < word.end_ms.saturating_add(150) && word.start_ms < old.end_ms.saturating_add(150)
+        });
+        if !present {
+            word.id = format!("w-{}", uuid::Uuid::new_v4());
+            out.push(word);
+        }
+    }
+    out.sort_by_key(|word| (word.start_ms, word.end_ms));
+    out
+}
+
+/// Explicit completion of an existing project, including one with only some
+/// words. The job caches each recording and applies only transcript fields to
+/// the current script; cuts, narration and corrections are kept as saved.
+pub fn complete(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> {
+    let data = crate::data_dir(app)?;
+    crate::can::require_id(&data, id)?;
+    if crate::archive::state(&data, id).is_some() {
+        return Err("Restore the footage before completing its transcription.".into());
+    }
+    let dir = crate::store::script_dir(&data, id)?;
+    let mut script = crate::store::read(&dir)?;
+    if script.status != "ready" || script.commentary.is_some() {
+        return Err("Finish or retry the import before completing its transcription.".into());
+    }
+    if script.no_speech {
+        return Err("This project was opened without speech. It has no transcription to complete.".into());
+    }
+    let revision = script.revision;
+    let before_count = script.words.len();
+    let settings = crate::settings::load(&data);
+    transcribe(&mut script, &dir, &settings, &|done, total| {
+        crate::jobs::stage(id, &format!("Completing transcription: {}%", done * 100 / total.max(1)));
+    })?;
+    crate::jobs::check_cancelled()?;
+    if script.captions {
+        crate::jobs::stage(id, "Reading who says each line");
+        crate::import::read_turns(app, &dir, &mut script, &settings);
+    } else if script.speakers.is_empty() {
+        let _ = crate::speakers::identify(&mut script);
+    }
+    crate::jobs::check_cancelled()?;
+    let mut fresh = crate::store::read(&dir)?;
+    if fresh.revision != revision {
+        return Err("The project changed during transcription. The transcripts are saved; complete transcription again to apply them.".into());
+    }
+    let before = fresh.clone();
+    // Newly recovered speech needs exact timing before it is used in a cut,
+    // even if this region had been checked before those words were available.
+    let known: std::collections::HashSet<&str> = fresh.words.iter().map(|word| word.id.as_str()).collect();
+    fresh.exact.retain(|[from, to]| !script.words.iter().any(|word| !known.contains(word.id.as_str()) && word.start_ms < *to && word.end_ms > *from));
+    fresh.words = script.words;
+    fresh.speakers = script.speakers;
+    fresh.suspects = script.suspects;
+    fresh.captions = script.captions;
+    fresh.notes = script.notes;
+    fresh.revision += 1;
+    fresh.updated_at = now_ms();
+    crate::store::write(&dir, &fresh)?;
+    crate::versions::keep(&dir, "complete transcription", &before, &fresh);
+    crate::store::library_changed();
+    crate::handoff::share_soon(data, id.to_string());
+    Ok((format!("Transcription completed: {} words added; {} words in total. Existing cuts, narration and spelling corrections kept.", fresh.words.len().saturating_sub(before_count), fresh.words.len()), 0.0))
 }
 
 /// Each recording's YouTube link, in the order of `recordings`.
@@ -185,6 +284,84 @@ pub fn explain(code: u16, said: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transcript(model: &str) -> hearing::Transcript {
+        hearing::Transcript { model: model.into(), words: vec![hearing::Word { text: "Hello".into(), start: 0.5, end: 0.8, speaker: Some("voice".into()) }], ..Default::default() }
+    }
+
+    #[test]
+    fn captions_run_before_shared_or_paid_audio_and_finished_hearings_are_reused() {
+        let captioned = resolve(None, || Some(transcript(crate::captions::MODEL)), || panic!("must not request Edit's audio transcript"), || panic!("must not buy audio transcription")).unwrap();
+        assert_eq!(captioned.model, crate::captions::MODEL);
+        let local = resolve(Some(transcript("scribe_v2")), || panic!("already completed"), || panic!("already completed"), || panic!("already completed")).unwrap();
+        assert_eq!(local.model, "scribe_v2");
+        let shared = resolve(None, || None, || Some(transcript("scribe_v2")), || panic!("must reuse Edit's hearing")).unwrap();
+        assert_eq!(shared.model, "scribe_v2");
+        assert!(resolve(None, || None, || None, || Err("audio unavailable".into())).is_err());
+    }
+
+    #[test]
+    fn recovery_fills_missing_sections_and_keeps_saved_words_ids_and_labels() {
+        let saved = vec![
+            Word { id: "keep-first".into(), text: "Original".into(), start_ms: 500, end_ms: 850, speaker: Some("named-voice".into()) },
+            Word { id: "keep-last".into(), text: "End".into(), start_ms: 9_000, end_ms: 9_200, speaker: None },
+        ];
+        let recovered = vec![
+            Word { id: String::new(), text: "Different".into(), start_ms: 600, end_ms: 900, speaker: None },
+            Word { id: String::new(), text: "Missing".into(), start_ms: 3_000, end_ms: 3_300, speaker: Some("turn".into()) },
+            Word { id: String::new(), text: "END!".into(), start_ms: 9_100, end_ms: 9_300, speaker: None },
+        ];
+        let filled = fill_missing(&saved, recovered.clone());
+        assert_eq!(filled.len(), 3);
+        assert_eq!(serde_json::to_value(&filled[0]).unwrap(), serde_json::to_value(&saved[0]).unwrap());
+        assert_eq!(serde_json::to_value(&filled[2]).unwrap(), serde_json::to_value(&saved[1]).unwrap());
+        assert_eq!(filled[1].text, "Missing");
+        assert!(filled[1].id.starts_with("w-"));
+        // Repeating completion adds no copies and keeps every saved ID.
+        assert_eq!(serde_json::to_value(fill_missing(&filled, recovered)).unwrap(), serde_json::to_value(&filled).unwrap());
+    }
+
+    #[test]
+    fn an_existing_mixed_project_completes_from_caches_without_local_footage() {
+        let dir = std::env::temp_dir().join(format!("writer-complete-{}", uuid::Uuid::new_v4()));
+        let first = dir.join("transcript/part-01");
+        let second = dir.join("transcript/part-02");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let mut captions = transcript(crate::captions::MODEL);
+        captions.words.push(hearing::Word { text: "Recovered".into(), start: 3.0, end: 3.4, speaker: Some("t0002".into()) });
+        std::fs::write(first.join("captions.json"), hearing::serialize(&captions)).unwrap();
+        // Explicit completion switches older audio imports to captions too.
+        std::fs::write(first.join("transcript.json"), hearing::serialize(&transcript("scribe_v2"))).unwrap();
+        std::fs::write(second.join("transcript.json"), hearing::serialize(&transcript("scribe_v2"))).unwrap();
+        let mut script: Script = serde_json::from_value(serde_json::json!({
+            "id":"abc", "title":"Existing", "sourceKind":"compilation", "sourceUrl":"https://youtu.be/aaaaaaaaaaa", "originalPath":"/missing/footage.mp4",
+            "status":"ready", "stage":"ready", "progress":100, "durationMs":12000, "revision":2, "createdAt":0, "updatedAt":0,
+            "parts":[{"title":"YouTube", "startMs":0,"durationMs":6000,"url":"https://youtu.be/aaaaaaaaaaa"}, {"title":"Drive", "startMs":6000,"durationMs":6000,"url":"https://drive.google.com/file/d/1filefilefilefile/view"}],
+            "words":[{"id":"existing", "text":"Hello", "startMs":500, "endMs":800,"speaker":"named"}],
+            "corrections":{"existing":"Corrected"}, "overview":[0.5],
+            "clips":[{"id":"keep-cut", "startMs":500,"endMs":800},{"id":"keep-narration", "kind":"cut-in", "startMs":0,"endMs":3000,"narration":"Keep this narration"}]
+        })).unwrap();
+        let before = serde_json::to_value(&script).unwrap();
+        transcribe(&mut script, &dir, &Settings::default(), &|_, _| {}).unwrap();
+        let after = serde_json::to_value(&script).unwrap();
+        assert!(script.captions);
+        assert_eq!(script.words.iter().map(|word| word.start_ms).collect::<Vec<_>>(), vec![500, 3000, 6500]);
+        assert_eq!(script.words[0].id, "existing");
+        assert_eq!(script.words[0].speaker.as_deref(), Some("named"));
+        for field in ["clips", "corrections", "overview", "revision"] { assert_eq!(before[field], after[field], "{field}"); }
+        let words = serde_json::to_value(&script.words).unwrap();
+        // A corrupt prior hearing must not prevent using cached captions.
+        std::fs::write(first.join("transcript.json"), "broken").unwrap();
+        transcribe(&mut script, &dir, &Settings::default(), &|_, _| {}).unwrap();
+        assert_eq!(words, serde_json::to_value(&script.words).unwrap());
+        assert_eq!(crate::captions::cached(&first).unwrap().model, crate::captions::MODEL);
+        // Starting with no saved words assigns distinct IDs across recordings.
+        script.words.clear();
+        transcribe(&mut script, &dir, &Settings::default(), &|_, _| {}).unwrap();
+        assert_eq!(script.words.iter().map(|word| &word.id).collect::<std::collections::HashSet<_>>().len(), script.words.len());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn youtube_cases_use_captions_in_every_format_including_one_new_case_plus_reuse() {

@@ -403,6 +403,12 @@ async fn retry_transcribe(app: AppHandle, id: String) -> Result<ScriptDetail, St
 }
 
 #[tauri::command]
+fn complete_transcription(app: AppHandle, id: String) -> Result<jobs::BuildStatus, String> {
+    can::require_id(&data_dir(&app)?, &id)?;
+    jobs::start(app, id, jobs::Work::Transcribe)
+}
+
+#[tauri::command]
 fn save_clips(app: AppHandle, id: String, revision: u32, clips: Vec<Clip>) -> Result<ScriptDetail, String> {
     can::require_id(&data_dir(&app)?, &id)?;
     if import::importing(&id) {
@@ -1855,6 +1861,7 @@ pub fn run() {
             check_drive,
             rename_script,
             retry_transcribe,
+            complete_transcription,
             save_clips,
             delete_script,
             get_settings,

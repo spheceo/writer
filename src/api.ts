@@ -81,6 +81,11 @@ export const retryTranscribe = (id: string) =>
     ? invoke<Script>("retry_transcribe", { id })
     : http<Script>(`/api/scripts/${id}/transcribe`, { method: "POST" });
 
+export const completeTranscription = (id: string) =>
+  inTauri()
+    ? invoke<BuildStatus>("complete_transcription", { id })
+    : http<BuildStatus>(`/api/scripts/${id}/complete-transcription`, { method: "POST" });
+
 export const saveClips = (id: string, revision: number, clips: Script["clips"]) =>
   inTauri()
     ? invoke<Script>("save_clips", { id, revision, clips })

@@ -63,7 +63,7 @@ pub fn transcript(url: &str, work: &Path, cookies: Option<&Path>) -> Option<Tran
     let _ = fs::create_dir_all(work);
     let raw = fetch(url, work, cookies)?;
     let transcript = parse(&raw);
-    if transcript.words.len() < 20 {
+    if transcript.words.is_empty() {
         return None;
     }
     let _ = fs::write(&kept, serde_json::to_vec(&transcript).ok()?);

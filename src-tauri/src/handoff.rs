@@ -352,7 +352,7 @@ pub fn shared_transcript(data: &Path, dir: &Path, script: &Script, key: &str, ke
     let recording = shared(dir, script).into_iter().find(|recording| recording.key == key)?;
     let bytes = cloud::get_bytes(data, &transcript_key(&recording.source)).ok()??;
     let transcript: Transcript = serde_json::from_slice(&bytes).ok()?;
-    hearing::covers(&transcript.keyterms, keyterms).then_some(transcript).filter(|found| !found.words.is_empty())
+    (transcript.model == "scribe_v2" && hearing::covers(&transcript.keyterms, keyterms)).then_some(transcript).filter(|found| !found.words.is_empty())
 }
 
 #[cfg(test)]

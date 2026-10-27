@@ -1,6 +1,6 @@
 import { type CSSProperties, Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Asked, ChatLog, Composer, ResetAsk, Said, Working, useChatDraft } from "./agent";
-import { buildStatus, clearChat, correctWord, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, retryTranscribe, saveClips, setHeading, startBuild, startRevision, stopJob } from "./api";
+import { buildStatus, clearChat, completeTranscription, correctWord, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, saveClips, setHeading, startBuild, startRevision, stopJob } from "./api";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { UpdateButton } from "./update";
@@ -197,6 +197,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const working = started !== null;
   const archived = !!script.archive;
   const busy = working || archived || resolving;
+  const unfinishedSpeakers = !!(script.speakerCheck && (script.speakerCheck.failed.length || script.speakerCheck.needsApply))
+    || !!script.notes?.some((text) => text.startsWith("Who says each line couldn't be read"));
 
   // Undo and redo: up to 30 earlier timelines, cut edits and narration alike.
   // A fresh build goes on the list too, so it can be undone.
@@ -353,14 +355,12 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   }, []);
 
   const retry = async () => {
-    setSaving("saving");
     setError(null);
     try {
-      onChange(await retryTranscribe(script.id));
+      const job = await completeTranscription(script.id);
+      follow(job.startedAt);
     } catch (cause) {
       setError(message(cause));
-    } finally {
-      setSaving(null);
     }
   };
 
@@ -610,7 +610,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             label="More"
             items={[
               { label: "Google Doc", icon: "doc", disabled: !cueCount, onSelect: () => setDocsOpen(true) },
-              ...(script.speakerCheck && (script.speakerCheck.failed.length || script.speakerCheck.needsApply) ? [{ label: "Retry unfinished speaker checks", icon: "reset", disabled: busy, onSelect: () => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause))) }] : []),
+              ...(unfinishedSpeakers ? [{ label: "Retry unfinished speaker checks", icon: "reset", disabled: busy, onSelect: () => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause))) }] : []),
+              ...(!script.noSpeech ? [{ label: "Complete transcription", icon: "reset", disabled: busy || saving === "saving", onSelect: () => void retry() }] : []),
               { label: "Versions", icon: "history", onSelect: () => setVersionsOpen(true) },
               { label: copied ? "Copied" : "Copy script text", icon: "copy", disabled: !cueCount, onSelect: () => void copy() },
               { label: "Keyboard shortcuts", icon: "keyboard", hint: "?", onSelect: () => setShortcutsOpen(true) },
@@ -691,7 +692,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               {script.words.length === 0 && !script.noSpeech ? (
                 <div className="empty">
                   <p>No transcript yet.</p>
-                  <button type="button" style={{ marginTop: 12 }} disabled={saving === "saving"} onClick={() => void retry()}>
+                  <button type="button" style={{ marginTop: 12 }} disabled={busy || saving === "saving"} onClick={() => void retry()}>
                     Transcribe
                   </button>
                 </div>
@@ -813,7 +814,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                     <li key={text}>{text}</li>
                   ))}
                 </ul>
-                {!!script.speakerCheck?.failed.length && <button type="button" className="tool" disabled={busy} onClick={() => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause)))}>Retry unfinished speaker checks</button>}
+                {unfinishedSpeakers && <button type="button" className="tool" disabled={busy} onClick={() => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause)))}>Retry unfinished speaker checks</button>}
                 <button type="button" className="link-button faint" onClick={() => setNotesShown(false)}>
                   Dismiss
                 </button>

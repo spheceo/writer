@@ -133,6 +133,12 @@ fn window_schema() -> Value {
     })
 }
 
+// Speaker assignment and spelling may change after a run. Identity and
+// timing must still match before restoring its raw turns for a retry.
+fn same_input(saved: &[Word], current: &[Word]) -> bool {
+    saved.len() == current.len() && saved.iter().zip(current).all(|(a, b)| a.id == b.id && a.start_ms == b.start_ms && a.end_ms == b.end_ms)
+}
+
 /// Who says each line, for a script whose words came (some or all) from
 /// captions. `names` are the case's names (names.rs), `notes` what the
 /// producer and the research say about the case.
@@ -142,7 +148,7 @@ pub fn run(script: &mut Script, dir: &Path, names: &[String], notes: &str, on_wi
     // Always from the turns as captioned, so a retry asks what it asked before.
     let heard = kept.join("heard.json");
     match std::fs::read(&heard).ok().and_then(|bytes| serde_json::from_slice::<Vec<Word>>(&bytes).ok()) {
-        Some(words) if words.len() == script.words.len() => script.words = words,
+        Some(words) if same_input(&words, &script.words) => script.words = words,
         _ => {
             let _ = std::fs::write(&heard, serde_json::to_vec(&script.words).unwrap_or_default());
         }
@@ -507,6 +513,18 @@ mod tests {
 
     fn word(text: &str, start_ms: u64, speaker: &str) -> Word {
         Word { id: String::new(), text: text.into(), start_ms, end_ms: start_ms + 200, speaker: Some(speaker.into()) }
+    }
+
+    #[test]
+    fn raw_turns_are_not_reused_for_different_words_with_the_same_count() {
+        let word = Word { id: "original".into(), text: "Hello".into(), start_ms: 500, end_ms: 800, speaker: None };
+        let mut changed = word.clone();
+        changed.id = "recovered".into();
+        assert!(!same_input(&[word.clone()], &[changed]));
+        let mut renamed = word.clone();
+        renamed.speaker = Some("p1".into());
+        renamed.text = "Corrected".into();
+        assert!(same_input(&[word], &[renamed]));
     }
 
     #[test]

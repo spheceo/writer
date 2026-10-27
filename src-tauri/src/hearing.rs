@@ -375,6 +375,12 @@ pub struct Recording<'a> {
     pub span: Option<(u64, u64)>,
 }
 
+/// Only an actual audio hearing belongs in the paid-hearing cache.
+pub(crate) fn cached(work: &Path) -> Option<Transcript> {
+    serde_json::from_slice::<Transcript>(&fs::read(work.join("transcript.json")).ok()?).ok()
+        .filter(|found| found.model == "scribe_v2")
+}
+
 /// Hears a recording (or a stretch of one) into `work` and answers its
 /// transcript, times into what was heard. `work` keeps what was heard;
 /// `transcript.json` there is Edit's format. A transcript already there that
@@ -382,7 +388,7 @@ pub struct Recording<'a> {
 pub fn hear(recording: &Recording, work: &Path, settings: &Settings, keyterms: &[String], on_piece: &(dyn Fn(usize, usize) + Sync)) -> Result<Transcript, String> {
     fs::create_dir_all(work).map_err(|error| error.to_string())?;
     let target = work.join("transcript.json");
-    if let Some(kept) = fs::read(&target).ok().and_then(|bytes| serde_json::from_slice::<Transcript>(&bytes).ok()) {
+    if let Some(kept) = cached(work) {
         if covers(&kept.keyterms, keyterms) {
             crate::log::info("hear", format!("{}: heard before ({} words); not heard again", recording.file.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default(), kept.words.len()));
             return Ok(kept);
