@@ -293,14 +293,16 @@ fn route(
         ("POST", ["api", "scripts", "file"]) => {
             let path = json_str(body, "path")?;
             let article = json_str(body, "article").ok();
+            let title = json_str(body, "title").ok();
             let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
-            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path), article.as_deref(), kind))
+            json_result(stream, crate::import::from_file(&app, &data_dir(&app)?, std::path::Path::new(&path), article.as_deref(), title.as_deref(), kind))
         }
         ("POST", ["api", "scripts", "youtube"]) => {
             let url = json_str(body, "url")?;
             let article = json_str(body, "article").ok();
+            let title = json_str(body, "title").ok();
             let kind = serde_json::from_slice::<Value>(body).ok().and_then(|v| v.get("kind").filter(|value| !value.is_null()).cloned()).map(serde_json::from_value).transpose().map_err(|_| "Unknown script format.")?;
-            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url, article.as_deref(), kind))
+            json_result(stream, crate::import::from_youtube(&app, &data_dir(&app)?, &url, article.as_deref(), title.as_deref(), kind))
         }
         ("POST", ["api", "scripts", "compilation"]) => {
             let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;

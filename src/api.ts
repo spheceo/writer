@@ -40,15 +40,19 @@ export const getScript = (id: string) =>
   inTauri() ? invoke<Script>("get_script", { id }) : http<Script>(`/api/scripts/${id}`);
 
 /** The footage, and an optional article about the case, read in place of research, as Repack takes it. */
-export const importFile = (path: string, article?: string, kind?: Kind) =>
-  inTauri() ? invoke<Script>("import_file", { path, article: article || null, kind }) : http<Script>("/api/scripts/file", json({ path, article, kind }));
-
-export const importYoutube = (url: string, article?: string, kind?: Kind) =>
+/** A title given is kept in place of the file's name. */
+export const importFile = (path: string, article?: string, title?: string, kind?: Kind) =>
   inTauri()
-    ? invoke<Script>("import_youtube", { url, article: article || null, kind })
-    : http<Script>("/api/scripts/youtube", json({ url, article, kind }));
+    ? invoke<Script>("import_file", { path, article: article || null, title: title || null, kind })
+    : http<Script>("/api/scripts/file", json({ path, article, title, kind }));
 
-/** A title given (a Trello card's) is kept in place of the folder's name. */
+/** A title given is kept in place of the video's own. */
+export const importYoutube = (url: string, article?: string, title?: string, kind?: Kind) =>
+  inTauri()
+    ? invoke<Script>("import_youtube", { url, article: article || null, title: title || null, kind })
+    : http<Script>("/api/scripts/youtube", json({ url, article, title, kind }));
+
+/** A title given (typed, or a Trello card's) is kept in place of the folder's name. */
 export const importDrive = (url: string, article?: string, title?: string, kind?: Kind) =>
   inTauri()
     ? invoke<Script>("import_drive", { url, article: article || null, title: title || null, kind })

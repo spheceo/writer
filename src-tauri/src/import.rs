@@ -92,34 +92,42 @@ fn article(link: Option<&str>) -> Result<Option<crate::research::Research>, Stri
     link.map(str::trim).filter(|link| !link.is_empty()).map(crate::research::provided).transpose()
 }
 
-pub fn from_file(app: &AppHandle, data: &Path, source: &Path, link: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
+/// A title typed for an import, trimmed and cut to the length a title takes;
+/// none when it's blank, so the footage names the script.
+fn given_title(title: Option<&str>) -> Option<String> {
+    title.map(|title| title.trim().chars().take(180).collect::<String>()).filter(|title| !title.is_empty())
+}
+
+pub fn from_file(app: &AppHandle, data: &Path, source: &Path, link: Option<&str>, title: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     let source = fs::canonicalize(source).map_err(|_| "That file can't be opened.".to_string())?;
     if !source.is_file() {
         return Err("That file can't be opened.".into());
     }
-    let title = source
-        .file_stem()
-        .map(|name| name.to_string_lossy().chars().take(180).collect())
-        .unwrap_or_else(|| "Untitled".into());
+    let title = given_title(title).unwrap_or_else(|| {
+        source
+            .file_stem()
+            .map(|name| name.to_string_lossy().chars().take(180).collect())
+            .unwrap_or_else(|| "Untitled".into())
+    });
     let path = source.to_string_lossy().into_owned();
     let found = article(link)?;
     start(app, data, new_script(title, "file", path.clone(), path), found, kind)
 }
 
-pub fn from_youtube(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
+/// A title given is kept in place of the video's own, which is looked up otherwise.
+pub fn from_youtube(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, title: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     youtube::check_url(url)?;
     let found = article(link)?;
-    start(app, data, new_script("YouTube video".into(), "youtube", url.trim().to_string(), String::new()), found, kind)
+    start(app, data, new_script(given_title(title).unwrap_or_else(|| "YouTube video".into()), "youtube", url.trim().to_string(), String::new()), found, kind)
 }
 
 /// A Drive file, or a folder of recordings joined in name order, as Repack
 /// takes them. Downloads go straight from Google to this Mac.
-/// A title given (a Trello card's) is kept in place of the folder's name.
+/// A title given (typed, or a Trello card's) is kept in place of the folder's name.
 pub fn from_drive(app: &AppHandle, data: &Path, url: &str, link: Option<&str>, title: Option<&str>, kind: Option<crate::formats::Kind>) -> Result<ScriptDetail, String> {
     drive::parse(url)?;
     let found = article(link)?;
-    let title = title.map(|title| title.trim().chars().take(180).collect::<String>()).filter(|title| !title.is_empty());
-    start(app, data, new_script(title.unwrap_or_else(|| "Google Drive footage".into()), "drive", url.trim().to_string(), String::new()), found, kind)
+    start(app, data, new_script(given_title(title).unwrap_or_else(|| "Google Drive footage".into()), "drive", url.trim().to_string(), String::new()), found, kind)
 }
 
 /// Several videos, one case each, joined as one compilation. The title sets

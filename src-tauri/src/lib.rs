@@ -89,22 +89,22 @@ fn get_script(app: AppHandle, id: String) -> Result<ScriptDetail, String> {
 }
 
 #[tauri::command]
-async fn import_file(app: AppHandle, path: String, article: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
+async fn import_file(app: AppHandle, path: String, article: Option<String>, title: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_file(&app, &data, Path::new(&path), article.as_deref(), kind)
+        import::from_file(&app, &data, Path::new(&path), article.as_deref(), title.as_deref(), kind)
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-async fn import_youtube(app: AppHandle, url: String, article: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
+async fn import_youtube(app: AppHandle, url: String, article: Option<String>, title: Option<String>, kind: Option<formats::Kind>) -> Result<ScriptDetail, String> {
     // Off the window's thread: an import takes minutes.
     tauri::async_runtime::spawn_blocking(move || {
         let data = data_dir(&app)?;
-        import::from_youtube(&app, &data, &url, article.as_deref(), kind)
+        import::from_youtube(&app, &data, &url, article.as_deref(), title.as_deref(), kind)
     })
     .await
     .map_err(|error| error.to_string())?

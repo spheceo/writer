@@ -857,7 +857,7 @@ function ImportDialog({
   const [cards, setCards] = useState<Partial<Record<TrelloList, TrelloCards>>>({});
   const [cardsProblem, setCardsProblem] = useState<string | null>(null);
   const [allCards, setAllCards] = useState(false);
-  // A Raw Channels card's name, kept as the Drive import's title.
+  // A video's title: typed, or a Raw Channels card's name; blank keeps the footage's own.
   const [cardTitle, setCardTitle] = useState("");
   const fields = useRef<HTMLDivElement>(null);
   // A new tab puts the cursor in its first field, ready to paste.
@@ -1019,10 +1019,10 @@ function ImportDialog({
         : source === "compilation"
         ? importCompilation(title, checked ? checkedLines(checked) : links, oneCase, format)
         : file
-          ? importFile(file, article.trim(), format)
+          ? importFile(file, article.trim(), cardTitle.trim(), format)
           : isDrive(input)
-            ? importDrive(input, article.trim(), cardTitle, format)
-            : importYoutube(input, article.trim(), format);
+            ? importDrive(input, article.trim(), cardTitle.trim(), format)
+            : importYoutube(input, article.trim(), cardTitle.trim(), format);
     const outcome = work.then(
       (script) => ({ kind: "done" as const, script }),
       (cause: unknown) => ({ kind: "failed" as const, cause }),
@@ -1296,11 +1296,14 @@ function ImportDialog({
                   <Icon name="plus" size={12} /> Add a news article
                 </button>
               )}
-              {cardTitle && isDrive(value) && (
-                <p className="hint">
-                  Titled from Trello: <strong>{cardTitle}</strong> ·{" "}
-                  <button type="button" className="link-button" onClick={() => setCardTitle("")}>Use the video's own name</button>
-                </p>
+              {(value.trim() || file) && (
+                <input
+                  value={cardTitle}
+                  placeholder={`Title (optional): the ${file ? "file's" : isDrive(value) ? "folder's" : "video's"} own name if left blank`}
+                  maxLength={180}
+                  aria-label="Title"
+                  onChange={(event) => setCardTitle(event.target.value)}
+                />
               )}
             </>
           )}
