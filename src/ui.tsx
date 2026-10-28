@@ -374,6 +374,15 @@ export function Tabs<T extends string>({
 
 export type ToastMessage = { id: number; text: ReactNode; action?: { label: string; onClick: () => void } };
 
+/** How long a bottom-right toast stays before it leaves on its own. */
+export const TOAST_MS = 5000;
+
+/** One toast's dismiss timer. A later call leaves the earlier timer alone. Call the return on unmount. */
+export function startToastTimer(dismiss: () => void, ms = TOAST_MS): () => void {
+  const timer = window.setTimeout(dismiss, ms);
+  return () => window.clearTimeout(timer);
+}
+
 export function Toasts({ toasts, onDismiss }: { toasts: ToastMessage[]; onDismiss: (id: number) => void }) {
   return (
     <div className="toasts" aria-live="polite">
@@ -388,10 +397,7 @@ function Toast({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => voi
   // The list re-renders all the time (polling), handing a new onDismiss each time: the timer starts once and reads the latest.
   const dismiss = useRef(onDismiss);
   dismiss.current = onDismiss;
-  useEffect(() => {
-    const timer = window.setTimeout(() => dismiss.current(), 6000);
-    return () => window.clearTimeout(timer);
-  }, []);
+  useEffect(() => startToastTimer(() => dismiss.current()), []);
   return (
     <div className="toast">
       <span>{toast.text}</span>
@@ -413,6 +419,7 @@ function Toast({ toast, onDismiss }: { toast: ToastMessage; onDismiss: () => voi
 
 const PATHS: Record<string, ReactNode> = {
   plus: <path d="M8 3.5v9M3.5 8h9" />,
+  close: <path d="m4.5 4.5 7 7m0-7-7 7" />,
   undo: <path d="M5.5 4 2.75 6.75 5.5 9.5M3 6.75h6.25a3.75 3.75 0 0 1 0 7.5H7" />,
   redo: <path d="m10.5 4 2.75 2.75-2.75 2.75M13 6.75H6.75a3.75 3.75 0 0 0 0 7.5H9" />,
   more: (

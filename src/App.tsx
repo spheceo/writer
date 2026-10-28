@@ -3,7 +3,7 @@ import { claudeStatus, getProgress, getScript, listScripts, message, onLibrary }
 import { CommentaryEditor } from "./commentary-view";
 import { Editor } from "./editor";
 import { Library } from "./library";
-import { Icon } from "./ui";
+import { Icon, startToastTimer } from "./ui";
 import { SettingsDialog } from "./settings";
 import { LogsDialog } from "./logs";
 import { SyncDock } from "./sync-dock";
@@ -24,6 +24,30 @@ function parse(hash: string): Route {
 }
 
 const hashOf = (route: Route) => (route.name === "script" ? `#/script/${route.id}` : "#/");
+
+function ImportFinished({
+  notice,
+  onOpen,
+  onDismiss,
+}: {
+  notice: { id: string; title: string };
+  onOpen: () => void;
+  onDismiss: () => void;
+}) {
+  // App re-renders while imports poll, handing a new onDismiss each time. The timer starts once.
+  const dismiss = useRef(onDismiss);
+  dismiss.current = onDismiss;
+  useEffect(() => startToastTimer(() => dismiss.current()), []);
+  return (
+    <div className="toasts">
+      <div className="toast import-complete" role="status">
+        <span><b>Import finished</b> · {notice.title}</span>
+        <button type="button" className="tool" onClick={() => { onOpen(); onDismiss(); }}>Open script</button>
+        <button type="button" className="icon-tool" aria-label="Dismiss import notification" onClick={onDismiss}><Icon name="close" size={14} /></button>
+      </div>
+    </div>
+  );
+}
 
 export function App() {
   const [route, setRouteState] = useState<Route>(() => parse(window.location.hash));
@@ -248,11 +272,14 @@ export function App() {
         />
       )}
       <ImportScreen item={importing} onLeave={home} />
-      {importNotice && <div className="toasts"><div className="toast import-complete" role="status">
-        <span><b>Import finished</b> · {importNotice.title}</span>
-        <button type="button" className="tool" onClick={() => { setRoute({ name: "script", id: importNotice.id }); setImportNotice(null); }}>Open script</button>
-        <button type="button" className="icon-tool" aria-label="Dismiss import notification" onClick={() => setImportNotice(null)}><Icon name="close" size={14} /></button>
-      </div></div>}
+      {importNotice && (
+        <ImportFinished
+          key={importNotice.id}
+          notice={importNotice}
+          onOpen={() => setRoute({ name: "script", id: importNotice.id })}
+          onDismiss={() => setImportNotice(null)}
+        />
+      )}
       <SettingsDialog open={settings} onClose={() => setSettings(false)} />
       <LitStyle />
       <SyncDock onOpen={(id) => setRoute({ name: "script", id })} />
