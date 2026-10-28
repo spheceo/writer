@@ -638,7 +638,12 @@ fn ask(settings: &Settings, audio: &Path, keyterms: &[String]) -> Result<Transcr
                 None => return Err(format!("Could not reach Writer's service after {attempt} attempts ({reason}).")),
             },
             Err(Failed::Status(code, body)) => return Err(crate::transcribe::explain(code, &net::said(&body))),
-            Err(Failed::Network(reason)) => return Err(format!("The connection to Writer's service broke ({reason}). Retry: what was heard is kept.")),
+            Err(Failed::Network(reason)) => {
+                // A POST may already have reached Scribe and been charged. Keep
+                // completed answers, but leave another paid attempt to the user.
+                crate::log::error("hear", format!("{piece}: transcription connection failed after {}: {reason}; not automatically resending", crate::log::since_start(began)));
+                return Err("The connection to Writer's service closed before a transcription answer arrived. Retry to continue from the saved parts. Technical details are in Logs on the Mac that ran the import.".into());
+            }
         }
     }
 }
@@ -646,6 +651,23 @@ fn ask(settings: &Settings, audio: &Path, keyterms: &[String]) -> Result<Transcr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retry_after_a_dropped_whole_request_reuses_completed_pieces() {
+        let dir = std::env::temp_dir().join(format!("writer-hearing-retry-{}", uuid::Uuid::new_v4()));
+        let piece = dir.join("pieces/0.json");
+        let whole = dir.join("whole.json");
+        let transcript = Transcript { model: "scribe_v2".into(), words: vec![w("Hello", 1.0, Some("speaker_0"))], ..Default::default() };
+        saved(&piece, "", || Ok(transcript.clone())).unwrap();
+        assert!(saved(&whole, "3508.758", || Err("connection closed".into())).is_err());
+        assert!(!whole.exists(), "an interrupted request must not be cached as complete");
+        let reused = saved(&piece, "", || panic!("a completed piece must not be sent again")).unwrap();
+        assert_eq!(reused.words, transcript.words);
+        saved(&whole, "3508.758", || Ok(transcript.clone())).unwrap();
+        let reused = saved(&whole, "3508.758", || panic!("the completed whole pass must also be reused")).unwrap();
+        assert_eq!(reused.words, transcript.words);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     fn w(text: &str, start: f64, speaker: Option<&str>) -> Word {
         Word { text: text.into(), start, end: start + 0.3, speaker: speaker.map(str::to_string) }

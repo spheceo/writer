@@ -105,7 +105,7 @@ Import completion refreshes the open script even though importing does not make 
 
 When an import goes wrong it stops in a state you can act on, as in Repack:
 
-- **Retry** carries on from where it stopped. The YouTube download (its `.part` too), each Drive recording, the preview and each transcribed piece are kept, so nothing downloads or is paid for twice. An import that stopped because Writer closed, or that hit a bug, is retried the same way.
+- **Retry** carries on from where it stopped. The YouTube download (its `.part` too), each Drive recording, the preview and each completed transcription answer are kept and reused. If the connection drops before an answer arrives, that request may already have been charged; manually retrying may charge it again. Writer stops rather than automatically resending an ambiguous paid request, shows a short recovery message, and keeps the transport details in Logs on the importing Mac. An import that stopped because Writer closed, or that hit a bug, is retried the same way.
 - **Needs your choice** pauses an import on a question instead of failing it: some of a folder's recordings didn't come through (go on without them, retry them, or cancel); a folder holds more than an import takes (60 recordings, 20 hours, 10 hours or 30 GB a file: choose which); or no words were heard (open it without a transcript).
 - A recording cut short (an interrupted upload) imports what it holds, and the script says so. One that downloads short is fetched again once from where it stopped, then dropped so a retry starts it clean.
 - A YouTube bot check or dropped connection with nothing downloaded yet gets one more try, on a fresh proxy exit when there is one.

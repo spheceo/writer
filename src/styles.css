@@ -279,7 +279,7 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
 .dialog.out { animation: pop-out 0.14s ease-in forwards; }
 .dialog-head { padding: 18px 20px 0; }
 .dialog-head h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; line-height: 1.3; }
-.dialog-head p { margin-top: 4px; color: var(--muted); }
+.dialog-head p { margin-top: 4px; color: var(--muted); overflow-wrap: anywhere; }
 .dialog-body { padding: 16px 20px 4px; overflow: auto; }
 .dialog-foot { display: flex; align-items: center; gap: 8px; padding: 16px 20px 18px; }
 /* No hairline above the buttons; Cancel sits left of the answer. */
@@ -414,7 +414,7 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
   display: flex;
   align-items: center;
   gap: 12px;
-  max-width: 380px;
+  max-width: min(380px, calc(100vw - 32px));
   padding: 10px 10px 10px 14px;
   background: var(--surface);
   border: 1px solid var(--line-strong);
@@ -423,6 +423,8 @@ tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); 
   animation: toast-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.05);
 }
 .toast b { font-weight: 600; }
+.toast > span { min-width: 0; overflow-wrap: anywhere; }
+.toast > button { flex-shrink: 0; }
 .import-complete { max-width: min(560px, calc(100vw - 32px)); }
 .import-complete > span { min-width: 0; overflow-wrap: anywhere; }
 .import-complete > button { flex-shrink: 0; }

@@ -20,6 +20,7 @@ import {
   trelloCards,
 } from "./api";
 import { clock } from "./clips";
+import { importError } from "./import-error";
 import { pastedTrelloCard } from "./import-input";
 import { AccountMenu } from "./account";
 import { Avatar } from "./avatar";
@@ -440,7 +441,7 @@ export function Library({
         }}
         onFailed={(reason) => {
           onChanged();
-          toast(<span className="bad">{reason}</span>);
+          toast(<span className="bad">{importError(reason)}</span>);
         }}
         onOpenNow={(script) => onOpen(script.id)}
         onImporting={onOpen}
@@ -479,7 +480,7 @@ export function Library({
         }}
         onFailed={(reason) => {
           onChanged();
-          toast(<span className="bad">{reason}</span>);
+          toast(<span className="bad">{importError(reason)}</span>);
         }}
       />
       <Toasts toasts={toasts} onDismiss={dismiss} />
@@ -677,10 +678,10 @@ function RecoverDialog({
       title="The import stopped"
       description={
         <>
-          <span className="bad">{current?.error ?? "It didn't finish."}</span>
+          <span className="bad">{importError(current?.error)}</span>
           <br />
-          Retry carries on from where it stopped. Downloads, the preview and transcribed parts are kept, so nothing is
-          paid for twice.
+          Retry keeps completed downloads, the preview and saved transcription parts. An interrupted transcription
+          request may already have been charged and may be charged again on retry.
         </>
       }
       width={480}
