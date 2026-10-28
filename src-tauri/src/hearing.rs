@@ -7,9 +7,10 @@
 //! in even pieces of at most 40 s, each with 4 s either side, for its words
 //! and times (Scribe places words late on a long file), and whole, for who
 //! speaks (a piece only numbers the voices in it; the whole file's numbers
-//! hold from start to end). Every request listens for the case's names
-//! (names.rs) as keyterms; names Scribe refuses are dropped and it's asked
-//! again without them. A piece heard as gibberish is asked again without
+//! hold from start to end). Every request for words listens for the case's
+//! names (names.rs) as keyterms (the whole file's, used only for its voices,
+//! is asked without them: they cost a fifth more); names Scribe refuses are
+//! dropped and it's asked again without them. A piece heard as gibberish is asked again without
 //! names, else the whole file's words stand for it.
 //!
 //! What's heard is kept as it comes in: each piece until the file is done,
@@ -441,8 +442,10 @@ fn hear_audio(audio: &Path, work: &Path, settings: &Settings, keyterms: &[String
     let whole: Mutex<Option<Result<Transcript, String>>> = Mutex::new(None);
     std::thread::scope(|scope| {
         // The whole file, for its voices: any earlier hearing of it will do.
+        // Only its voices are used, so it's asked without the names (which
+        // cost a fifth more: Edit's audit, Oct 23); the pieces spell them.
         scope.spawn(|| {
-            let heard = whole_hearing(audio, work, settings, keyterms, &stretches, &tick);
+            let heard = whole_hearing(audio, work, settings, &stretches, &tick);
             if heard.is_err() {
                 stop.store(true, Ordering::Relaxed);
             }
@@ -511,10 +514,10 @@ fn whole_stretches(seconds: f64) -> Vec<(f64, f64)> {
 /// The whole file heard for its voices, kept for good. In stretches only
 /// when one request can't take it all; then each stretch's voices are its
 /// own ("2:speaker_0").
-fn whole_hearing(audio: &Path, work: &Path, settings: &Settings, keyterms: &[String], stretches: &[(f64, f64)], tick: &(dyn Fn() + Sync)) -> Result<Transcript, String> {
+fn whole_hearing(audio: &Path, work: &Path, settings: &Settings, stretches: &[(f64, f64)], tick: &(dyn Fn() + Sync)) -> Result<Transcript, String> {
     if stretches.len() == 1 {
         let seconds = stretches[0].1;
-        let heard = saved(&work.join("whole.json"), &fixed3(seconds), || ask(settings, audio, keyterms));
+        let heard = saved(&work.join("whole.json"), &fixed3(seconds), || ask(settings, audio, &[]));
         tick();
         return heard;
     }
@@ -523,7 +526,7 @@ fn whole_hearing(audio: &Path, work: &Path, settings: &Settings, keyterms: &[Str
         let file = work.join(format!("whole-{index}.json"));
         let heard = saved(&file, &format!("{}-{}", fixed3(from), fixed3(to)), || {
             let cut = work.join(format!("whole-{index}.ogg"));
-            let result = cut_audio(audio, from, to, &cut).and_then(|_| ask(settings, &cut, keyterms));
+            let result = cut_audio(audio, from, to, &cut).and_then(|_| ask(settings, &cut, &[]));
             let _ = fs::remove_file(&cut);
             result
         })?;

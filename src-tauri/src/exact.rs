@@ -120,6 +120,8 @@ pub fn run(script: &mut Script, dir: &Path, footage: &Path, clips: &[Clip], sett
     }
     on_step("Reading who says each line of the chosen footage");
     report.relabelled = speakers(script, dir, &spans, &voices)?;
+    // Words that spilled across a change of speaker there go back to who said them.
+    report.relabelled += crate::spills::fix(script, dir, settings, Some(&spans)).moved;
     script.exact.extend(spans.iter().map(|&(from, to)| [from, to]));
     script.exact.sort();
     Ok(report)

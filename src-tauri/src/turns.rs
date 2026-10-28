@@ -343,6 +343,8 @@ pub fn retry(data: &Path, id: &str) -> Result<(String, f64), String> {
     let notes = crate::research::load(&dir).map(|found| found.articles.iter().map(|article| format!("{}: {}", article.title, article.summary.chars().take(1_500).collect::<String>())).collect::<Vec<_>>().join("\n\n")).unwrap_or_default();
     let report = run(&mut script, &dir, &names, &notes, &|done, total| crate::jobs::stage(id, &format!("Reading who says each line: {done} of {total}")))?;
     crate::jobs::check_cancelled()?;
+    crate::jobs::stage(id, "Putting each word with its speaker");
+    crate::spills::fix(&mut script, &dir, &settings, None);
     let mut fresh = crate::store::read(&dir)?;
     if fresh.revision != revision {
         return Err("The script changed while reading who speaks. The answers are kept; retry to apply them.".into());

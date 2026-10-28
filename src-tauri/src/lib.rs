@@ -46,6 +46,7 @@ mod scout;
 mod revise;
 mod settings;
 mod speakers;
+mod spills;
 mod storage;
 mod stream;
 mod store;

@@ -616,6 +616,9 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
             }
         }
         }
+        // Words that spilled across a change of speaker go back to who said them.
+        emit(app, script, "Putting each word with its speaker.");
+        crate::spills::fix(script, dir, &settings, None);
     }
 
 

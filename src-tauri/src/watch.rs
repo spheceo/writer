@@ -700,10 +700,13 @@ pub fn retry(app: &tauri::AppHandle, id: &str) -> Result<(String, f64), String> 
     if !status(&dir).is_some_and(|status| !status.failed.is_empty() || status.needs_apply) { return Err("There are no unfinished speaker checks.".into()); }
     let revision = script.revision;
     let _preview = crate::storage::fetch_preview(&data, id)?;
-    let report = run(&mut script, &dir, &crate::settings::load(&data), &|done, total, cached| {
+    let settings = crate::settings::load(&data);
+    let report = run(&mut script, &dir, &settings, &|done, total, cached| {
         crate::jobs::stage(id, &format!("Checking speakers: {done} of {total}; {cached} saved checks reused"));
     })?.ok_or("There is no video speech to check.")?;
     crate::jobs::check_cancelled()?;
+    crate::jobs::stage(id, "Putting each word with its speaker");
+    crate::spills::fix(&mut script, &dir, &settings, None);
     let mut fresh = store::read(&dir)?;
     if fresh.revision != revision { return Err("The script changed while checking speakers. The check results are saved; retry to apply them.".into()); }
     let before = fresh.clone();
