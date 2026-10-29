@@ -548,9 +548,10 @@ fn built(draft: Draft, answer: Result<crate::agent::Answer, claude::Trouble>, co
     }
 }
 
-/// A fast build asked for (`WRITER_BUILD=fast`), until comparisons settle it.
+/// The fast build, everyone's; `WRITER_SCRIPT_BUILD=steps` asks for the
+/// build in steps instead (for comparisons).
 pub fn fast_chosen() -> bool {
-    std::env::var("WRITER_BUILD").is_ok_and(|value| value == "fast")
+    !std::env::var("WRITER_SCRIPT_BUILD").is_ok_and(|value| value == "steps")
 }
 
 /// How hard a fast build's Opus thinks, the same in every phase so the cache

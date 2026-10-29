@@ -605,7 +605,7 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
     chat::add(&dir, "producer", &if note.trim().is_empty() { "Build the script.".to_string() } else { format!("Build the script. {}", note.trim()) }, None, false);
-    // Setup's engine: the Agent SDK builds in steps (or fast, asked for); the CLI in one answer.
+    // Setup's engine: the Agent SDK builds fast (or in steps, asked for); the CLI in one answer.
     let built = match claude::engine() {
         settings::Engine::Sdk if steps::fast_chosen() => steps::build_fast(&script, note, Some(&research), &peaks),
         settings::Engine::Sdk => steps::build(&script, note, Some(&research), &peaks),
