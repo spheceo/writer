@@ -14,11 +14,11 @@ check:
     bun test
     cargo test --manifest-path src-tauri/Cargo.toml
 
-# Local relay. The ElevenLabs key is a worker secret, not an env file.
+# Local relay. Its keys are Worker secrets (from Infisical), never an env file.
 relay:
     bunx wrangler dev --cwd relay
 
-# Put the relay's secrets on the Worker from Infisical (/writer-relay), printing none
+# Put the relay's secrets on the Worker from Infisical (/writer-relay), printing names only: --yes to send, --only A,B
 relay-secrets *args:
     bun scripts/push-relay-secrets.ts {{args}}
 

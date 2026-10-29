@@ -1,5 +1,7 @@
-# Writer's relay: the only place the ElevenLabs key lives. The desktop app
-# sends audio here; the key never ships in the binary.
+# Writer's relay: the shared keys (ElevenLabs, Drive, Docs, Trello, the proxy,
+# the watcher, R2 and Convex) live here and never ship in the app. Every one
+# comes from Infisical (Repack's project, dev, /writer-relay), put on the
+# Worker with `just relay-secrets --yes` (scripts/push-relay-secrets.ts).
 # Deploy with `bunx wrangler deploy` from relay/.
 name = "writer-relay"
 main = "src/index.ts"
@@ -19,7 +21,7 @@ STAMP_CREATOR = "1"
 # in bytes of 32 kbps Opus (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
 # its words and whole for its voices, so an hour of footage is ~2.2 hours of
 # audio here. A long interview is a few hours.
-DAILY_BYTES_PER_IP = "216000000"  # per person: ~15 hours of audio, ~6.8 hours of footage (three quarters of the team's: a long compilation fits, one person still can't use everyone's day)
+DAILY_BYTES_PER_IP = "288000000"  # per person: ~20 hours, the whole shared day, as Edit's (Oct 29: a person's cap left a teammate's import untranscribed in Edit; was ~15 hours here)
 DAILY_BYTES_TOTAL = "288000000"   # ~20 hours, Edit's cap too (~16.6k credits a day at most)
 MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
 

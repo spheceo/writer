@@ -1,19 +1,18 @@
 /**
  * Puts writer-relay's secrets on the Worker from Infisical: Repack's project,
- * `dev`, folder `/writer-relay` (references to the canonical values at the
- * root). Each value goes from Infisical to `wrangler secret put` through
- * pipes, in memory: nothing is printed, written to disk or passed as an
- * argument.
+ * `dev`, folder `/writer-relay` (references to the canonical values: the root's,
+ * and ElevenLabs to /edit-relay's ELEVENLABS_MAIN_KEY, the key Edit's relay
+ * uses too). Each value goes from Infisical to `wrangler secret put` on its
+ * stdin, in memory: nothing is printed, written to disk or passed as an
+ * argument. It prints names only.
  *
- *   bun scripts/push-relay-secrets.ts             # every secret
- *   bun scripts/push-relay-secrets.ts --dry-run   # only says which it would put
- *   bun scripts/push-relay-secrets.ts PROXY_URL   # just these
+ *   bun scripts/push-relay-secrets.ts                    what it would put (names), nothing sent
+ *   bun scripts/push-relay-secrets.ts --yes              put them all
+ *   bun scripts/push-relay-secrets.ts --yes --only A,B   put only these (the rest of the Worker's untouched)
  *
- * ELEVENLABS_API_KEY isn't here: the relay's own key lives only in the Worker
- * (set by hand), and this script refuses to touch it.
- *
+ * A Worker secret that isn't in the folder is left as it is (never deleted).
  * Signed in to Infisical with `infisical login` (its keyring), and to
- * Cloudflare with `bunx wrangler login`.
+ * Cloudflare with `npx wrangler login`.
  */
 import { resolve } from "node:path";
 
@@ -22,6 +21,7 @@ const FOLDER = "/writer-relay";
 /** What the relay reads (relay/src/index.ts, cloud.ts, auth.ts); nothing else is put. */
 const EXPECTED = [
   "AI_GATEWAY_API_KEY",
+  "ELEVENLABS_MAIN_KEY",
   "GOOGLE_DRIVE_CLIENT_ID",
   "GOOGLE_DRIVE_CLIENT_SECRET",
   "GOOGLE_DRIVE_REFRESH_TOKEN",
@@ -40,11 +40,9 @@ const EXPECTED = [
 ];
 
 const args = process.argv.slice(2);
-const dry = args.includes("--dry-run");
-const only = args.filter((arg) => !arg.startsWith("--"));
-/** Kept in the Worker alone: never put from here, whatever Infisical holds. */
-const WORKER_ONLY = ["ELEVENLABS_API_KEY"];
-for (const name of only) if (WORKER_ONLY.includes(name)) throw new Error(`${name} lives only in the Worker; this script never puts it.`);
+const yes = args.includes("--yes");
+// `--only A,B` (or the names given bare): just these.
+const only = args.filter((arg) => !arg.startsWith("--")).flatMap((arg) => arg.split(",")).filter(Boolean);
 for (const name of only) if (!EXPECTED.includes(name)) throw new Error(`${name} isn't one of the relay's secrets.`);
 
 const exported = Bun.spawn(["infisical", "export", `--projectId=${PROJECT}`, "--env=dev", `--path=${FOLDER}`, "--format=json", "--silent"], { stdout: "pipe", stderr: "pipe" });
@@ -53,7 +51,6 @@ if (code !== 0) throw new Error(`Infisical refused (exit ${code}). Sign in with 
 const values = new Map((JSON.parse(text) as { key: string; value: string }[]).map((item) => [item.key, item.value]));
 
 const unexpected = [...values.keys()].filter((key) => !EXPECTED.includes(key));
-if (unexpected.some((key) => WORKER_ONLY.includes(key))) throw new Error(`${FOLDER} holds ${WORKER_ONLY.join(", ")}, which lives only in the Worker. Remove it from Infisical.`);
 if (unexpected.length) throw new Error(`${FOLDER} has keys the relay doesn't read: ${unexpected.join(", ")}. Remove them or add them here.`);
 const wanted = only.length ? only : EXPECTED;
 const missing = wanted.filter((key) => !values.get(key));
@@ -61,21 +58,26 @@ if (missing.length) throw new Error(`${FOLDER} is missing (or has empty, or an u
 const broken = wanted.filter((key) => values.get(key)!.includes("${"));
 if (broken.length) throw new Error(`These still hold an unresolved reference: ${broken.join(", ")}.`);
 
+if (!yes) {
+  console.log(`would put on writer-relay: ${[...wanted].sort().join(", ")}`);
+  console.log("nothing sent: add --yes to put them");
+  process.exit(0);
+}
 const relay = resolve(import.meta.dir, "../relay");
-for (const key of wanted) {
-  if (dry) {
-    console.log(`would put ${key}`);
-    continue;
-  }
-  const put = Bun.spawn(["bunx", "wrangler", "secret", "put", key], { cwd: relay, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+let failed = 0;
+for (const key of [...wanted].sort()) {
+  const put = Bun.spawn(["npx", "wrangler", "secret", "put", key], { cwd: relay, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   put.stdin.write(values.get(key)!);
   put.stdin.end();
   const done = await put.exited;
   // Wrangler's own output never holds the value, but it isn't shown either: only the outcome.
   if (done !== 0) {
+    failed += 1;
     const why = (await new Response(put.stderr).text()).split("\n").find((line) => line.includes("ERROR") || line.includes("✘")) ?? `exit ${done}`;
-    throw new Error(`Couldn't put ${key}: ${why.slice(0, 200)}`);
+    console.error(`couldn't put ${key}: ${why.slice(0, 200)}`);
+    continue;
   }
   console.log(`put ${key}`);
 }
-console.log(dry ? `${wanted.length} secrets would be put on writer-relay.` : `${wanted.length} secrets are on writer-relay.`);
+console.log(`${wanted.length - failed} of ${wanted.length} secrets are on writer-relay.`);
+process.exit(failed === 0 ? 0 : 1);

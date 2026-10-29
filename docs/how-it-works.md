@@ -125,7 +125,7 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 
 `relay/` holds Writer's keys. Everything but `/health` needs a signed-in person's token, with the route's permission (`relay/src/auth.ts`):
 
-- `POST /v1/transcribe` forwards Opus audio to ElevenLabs Scribe v2 with Edit's parameters, the case's names as `keyterm`s. It caps bursts and a day's audio per IP and across everyone (~20 hours, as Edit's). Byte caps stand in for duration; they are not a hard dollar cap.
+- `POST /v1/transcribe` forwards Opus audio to ElevenLabs Scribe v2 with Edit's parameters, the case's names as `keyterm`s. It caps bursts (60 requests a minute per person) and a day's audio per person and across everyone, ~20 hours each since Oct 29 2026, as Edit's: one person may use the whole shared day. A refusal says which cap it hit (yours or the team's, and how much it is; `cap: "person" | "team"`). Byte caps stand in for duration; they are not a hard dollar cap.
 - `GET /v1/drive/token` gives a one-hour access token for Repack's Drive account. The refresh token stays on the relay.
 - `GET /v1/proxy` gives the DataImpulse proxy for YouTube downloads.
 - `POST /v1/watch` sends a few minutes of footage to Gemini 3.8 Flash through the Vercel AI Gateway (the relay picks the model; 40 a minute per IP).
@@ -136,7 +136,7 @@ Builds and imports run on this Mac, not in the browser. A build is a background 
 
 To try it all on one Mac, `relay/test/accounts-stub.ts` stands in for the accounts site (its own keys; `STUB_PERMS`, `STUB_TTL`, `STUB_DENY`), with `wrangler dev --var ACCOUNTS_URL:http://127.0.0.1:8788` and a dev Writer started with `WRITER_ACCOUNTS_URL=http://127.0.0.1:8788` (debug builds only) and its relay URL set to the local worker.
 
-**Its secrets** live in Infisical, Repack's project, `dev`, folder `/writer-relay`: references to the canonical values at the root (`CONVEX_URL` is `NEXT_PUBLIC_CONVEX_URL`, the Docs client is the Drive client). The ElevenLabs key is the exception: `ELEVENLABS_API_KEY` lives only in the Worker (set once with `wrangler secret put`), and the script refuses to touch it. `just relay-secrets` puts them on the Worker with `wrangler secret put`, through pipes, printing none (`--dry-run` lists them; name keys to put only those). Then:
+**Its secrets** live in Infisical, Repack's project, `dev`, folder `/writer-relay`, every one of them: references to the canonical values at the root (`CONVEX_URL` is `NEXT_PUBLIC_CONVEX_URL`, the Docs client is the Drive client), and `ELEVENLABS_MAIN_KEY` a reference to `/edit-relay`'s, the key Edit's relay hears and speaks with (since Oct 29 2026; the Worker-only `ELEVENLABS_API_KEY` before it is gone). Infisical's root `ELEVENLABS_API_KEY` is Repack's speech-to-text key, not the relay's. `just relay-secrets` lists what it would put; `just relay-secrets --yes` puts them on the Worker with `wrangler secret put`, each value on its stdin, printing names only (`--only A,B` for just those). A Worker secret not in the folder is left alone. Then:
 
 ```sh
 cd relay && bunx wrangler deploy

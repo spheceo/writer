@@ -57,7 +57,8 @@ declare const FixedLengthStream: {
  */
 
 export interface Env extends CloudEnv, AuthEnv {
-  ELEVENLABS_API_KEY?: string;
+  /** ElevenLabs, Edit's main key (Infisical /writer-relay references /edit-relay's): Scribe, the transcription. */
+  ELEVENLABS_MAIN_KEY?: string;
   GOOGLE_DRIVE_CLIENT_ID?: string;
   GOOGLE_DRIVE_CLIENT_SECRET?: string;
   GOOGLE_DRIVE_REFRESH_TOKEN?: string;
@@ -100,7 +101,7 @@ export default {
     if (url.pathname === "/health") {
       return json(200, {
         ok: true,
-        transcription: Boolean(env.ELEVENLABS_API_KEY),
+        transcription: Boolean(env.ELEVENLABS_MAIN_KEY),
         drive: driveReady(env),
         proxy: Boolean(env.PROXY_URL),
         docs: docsReady(env),
@@ -176,7 +177,7 @@ export default {
     }
     if (url.pathname !== "/v1/transcribe") return json(404, { error: "not found" });
     if (request.method !== "POST") return json(405, { error: "POST audio to /v1/transcribe" });
-    if (!env.ELEVENLABS_API_KEY) {
+    if (!env.ELEVENLABS_MAIN_KEY) {
       return json(503, { error: "Transcription is not configured on the relay yet." });
     }
 
@@ -191,7 +192,7 @@ export default {
 
     const limit = limitKey(caller);
     if (!(await env.BURST.limit({ key: limit })).success) {
-      return json(429, { error: "Too many transcriptions at once; try again in a minute." });
+      return json(429, { error: "Too many transcriptions at once (the cap is 60 requests a minute per person); try again in a minute." });
     }
     const language = url.searchParams.get("language");
     if (language && !/^[a-zA-Z]{2,3}$/.test(language)) return json(400, { error: "Invalid language code." });
@@ -220,7 +221,7 @@ export default {
     ]);
     const upstream = await fetch(SCRIBE, {
       method: "POST",
-      headers: { "xi-api-key": env.ELEVENLABS_API_KEY, "content-type": form.contentType },
+      headers: { "xi-api-key": env.ELEVENLABS_MAIN_KEY, "content-type": form.contentType },
       body: form.body,
     });
 
@@ -665,6 +666,11 @@ function json(status: number, body: unknown) {
   });
 }
 
+/** A daily cap in words: hours of audio (32 kbps Opus, ~14.4 MB an hour) or watcher calls. */
+export function amount(cap: number, calls: boolean): string {
+  return calls ? `${cap} clips` : `about ${Math.round(cap / 14_400_000)} hours of audio`;
+}
+
 /** One object per UTC day. Reserve before calling Scribe: simultaneous
  * requests cannot spend the same allowance. A failed request keeps its
  * reservation, because a network error cannot prove Scribe did not bill. */
@@ -698,11 +704,13 @@ export class TranscriptionBudget {
       const ipKey = `ip:${client}`;
       const ipUsed = (await storage.get<number>(ipKey)) ?? 0;
       const allUsed = (await storage.get<number>("all")) ?? 0;
+      // Which cap was hit, said plainly ("allowance" is what Writer's hearing.rs
+      // looks for to stop asking again until tomorrow).
       if (ipUsed + size > perPerson) {
-        return json(429, { error: `Today's ${what} allowance for you is used up; it resets at midnight UTC.` });
+        return json(429, { cap: "person", error: `Your daily ${what} allowance (${amount(perPerson, watch)} per person) is used up; it resets at midnight UTC.` });
       }
       if (allUsed + size > total) {
-        return json(429, { error: `Writer's shared ${what} budget for today is used up; it resets at midnight UTC.` });
+        return json(429, { cap: "team", error: `The team's shared daily ${what} allowance (${amount(total, watch)} across everyone) is used up; it resets at midnight UTC.` });
       }
       await storage.put(ipKey, ipUsed + size);
       await storage.put("all", allUsed + size);
