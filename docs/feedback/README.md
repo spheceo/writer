@@ -45,4 +45,4 @@ Date, run location, what improved, misses/regressions and follow-up.
 
 These Markdown files hold the feedback, preparation and results summary. Existing local training materials live outside the repo in `~/writer-experiments/teach-1/` and `~/writer-experiments/teach-2/`; the latter has feedback items in `doc/` and private answer keys in `keys/`. Link the relevant run from its topic record after training.
 
-Writer's in-app teaching flow also keeps each script's feedback and rounds in its own `scripts/<id>/feedback/` folder. See the [main README](../../README.md) for **Teach from these notes**, **Run round**, and **Improve the lesson**.
+Writer's in-app teaching flow also keeps each script's feedback and rounds in its own `scripts/<id>/feedback/` folder. See [how Writer works](../how-it-works.md) for **Teach from these notes**, **Run round**, and **Improve the lesson**.
