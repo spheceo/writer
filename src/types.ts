@@ -124,6 +124,8 @@ export type Summary = {
   createdBy?: Creator;
   /** Footage a commentary was written from: that commentary's title. The list keeps it inside it. */
   inCommentary?: string;
+  /** The cloud refused its last save: what it said. Shown as "Not in the cloud". */
+  cloudRefused?: string;
   /** Interrogation, FOIA or Courtroom. */
   kind?: Kind;
   id: string;

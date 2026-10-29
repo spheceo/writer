@@ -28,6 +28,13 @@
  *   - Edit's footage registry: `edit:getMedia` and `edit:putMedia` only, and
  *     the keys under `edit/originals/` and `edit/analysis/` (presigned URLs,
  *     multipart and head; never delete or list, which stay Writer's own).
+ *
+ * Remote support (Writer's `writerSupport:` module in Repack, as Edit's
+ * `editSupport:`): every Writer registers its Mac and carries out an admin's
+ * commands; the relay names who's asking (`actor`: their id and whether
+ * they're an admin, from the verified sign-in, never the caller's). Problem
+ * reports go under `writer/reports/`: anyone may put one, only an admin may
+ * read, list or delete them.
  */
 
 export interface CloudEnv {
@@ -87,7 +94,19 @@ const FUNCTIONS: Record<string, "read" | "script" | "any" | string> = {
   "reviews:compress": "review.share",
   "edit:getMedia": "read",
   "edit:putMedia": "any",
+  // Remote support: a Mac's own commands for whoever's signed in on it; asking for one, an admin's.
+  "writerSupport:register": "read",
+  "writerSupport:claimed": "read",
+  "writerSupport:pending": "read",
+  "writerSupport:claim": "read",
+  "writerSupport:finish": "read",
+  "writerSupport:history": "read",
+  "writerSupport:devices": "admin",
+  "writerSupport:requestAction": "admin",
 };
+const SUPPORT_PATH = /^writerSupport:/;
+/** Problem reports (diagnostics an admin asked for): anyone puts one, only an admin reads them. */
+export const REPORTS = "writer/reports/";
 const REVIEWS_PATH = /^reviews:/;
 export const callable = (path: string) => Object.hasOwn(FUNCTIONS, path);
 /** The shared lessons every commentary build reads: only someone who may teach Writer writes them. */
@@ -132,7 +151,13 @@ export async function cloud(request: Request, url: URL, env: CloudEnv, actor?: A
   if (!handler) return json(404, { error: "not found" });
   // Reading is everyone's; writing needs script work, and the lessons the teaching capability.
   const writes = route === "r2/delete" || route.startsWith("r2/multipart/") || (route === "r2/url" && body.method === "PUT");
-  if (writes) {
+  const touched = route === "r2/delete" ? (Array.isArray(body.keys) ? body.keys : []) : route === "r2/list" ? [] : [body.key];
+  const reports = touched.some((key) => typeof key === "string" && key.startsWith(REPORTS));
+  const listsReports = route === "r2/list" && typeof body.prefix === "string" && (body.prefix === "writer/" || body.prefix.startsWith(REPORTS.slice(0, -1)));
+  if ((reports || listsReports) && !grants.admin) {
+    // A report is put in one request; reading, listing or deleting them is an admin's.
+    if (!(route === "r2/url" && body.method === "PUT" && touched.length === 1)) return refuse("read the team's problem reports");
+  } else if (writes) {
     const keys = route === "r2/delete" ? (Array.isArray(body.keys) ? body.keys : []) : [body.key];
     if (keys.includes(LESSONS_KEY) && !has(grants, "review.lessons")) return refuse("change Writer's shared lessons");
     if (!anyWork(grants)) return refuse("write scripts");
@@ -393,6 +418,13 @@ async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Acto
   if (body.args !== undefined && !isObject(body.args)) return json(400, { error: "args must be an object." });
   const needs = FUNCTIONS[body.path];
   if (needs === "any" && !anyWork(grants)) return refuse("write scripts");
+  if (needs === "admin" && !grants.admin) return refuse("do that: it's for admins");
+  // Remote support: who's asking is the verified sign-in, whatever the caller sends.
+  if (SUPPORT_PATH.test(body.path)) {
+    if (!actor) return json(401, { error: "Sign in to Writer first." });
+    const { actor: _sent, ...args } = (body.args as Record<string, unknown> | undefined) ?? {};
+    body.args = { ...args, actor: { sub: actor.sub, admin: grants.admin } };
+  }
   if (needs.includes(".") && !has(grants, needs)) return refuse(needs === "review.share" ? "share or fix reviews" : "do that");
   if (needs === "script" && !grants.admin) {
     const args = (body.args as Record<string, unknown> | undefined) ?? {};

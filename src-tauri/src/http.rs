@@ -173,6 +173,11 @@ fn route(
             crate::account::cancel();
             write_json(stream, 200, &crate::account::status())
         }
+        // An admin's remote support, as them (remote.rs; `just remote`).
+        ("POST", ["api", "remote"]) => {
+            let value: Value = serde_json::from_slice(body).map_err(|_| "The request could not be read.".to_string())?;
+            json_result(stream, crate::remote::admin(&data_dir(&app)?, &value))
+        }
         ("POST", ["api", "account", "sign-out"]) => {
             crate::account::sign_out();
             write_json(stream, 200, &crate::account::status())

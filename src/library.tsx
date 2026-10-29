@@ -84,6 +84,8 @@ function scriptStatus(script: Summary, progress: ImportProgress[]): { tone: Tone
   if (script.building) return { tone: "busy", label: "Claude writing" };
   if (script.status === "needs_choice") return { tone: "stale", label: "Needs your choice", title: script.decision?.summary };
   if (script.status === "error") return { tone: "error", label: "Import failed", title: script.error ?? undefined };
+  // The cloud refused it: the team can't open it until it's up (Edit's Home, Oct 29).
+  if (script.cloudRefused) return { tone: "error", label: "Not in the cloud", title: `Writer keeps trying to save it to the cloud: ${script.cloudRefused}` };
   const made =
     script.sourceKind === "commentary"
       ? script.draftWords

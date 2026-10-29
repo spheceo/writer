@@ -69,3 +69,26 @@ test("writes need script work, and the shared lessons the teaching capability", 
   expect((await cloud(r2("r2/url", { key: "writer/scripts/s1/body.json" }), new URL("https://relay/v1/cloud/r2/url"), store, actor, only())).status).toBe(200);
   expect((await cloud(r2("r2/delete", { keys: ["writer/scripts/s1/body.json"] }), new URL("https://relay/v1/cloud/r2/delete"), store, actor, only())).status).toBe(403);
 });
+
+test("remote support: who's asking comes from the sign-in, and asking a Mac for something is an admin's", async () => {
+  const where = new URL("https://relay/v1/cloud/convex");
+  await cloud(call("writerSupport:pending", { deviceId: "d1", kinds: ["diagnostics"], actor: { sub: "forged", admin: true } }, "query"), where, env("1"), actor, only());
+  expect(sent?.args.actor).toEqual({ sub: "p1", admin: false });
+  expect((await cloud(call("writerSupport:requestAction", { deviceId: "d1", commandId: "c1", kind: "diagnostics" }), where, env("1"), actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(call("writerSupport:devices", {}, "query"), where, env("1"), actor, only())).status).toBe(403);
+  expect((await cloud(call("writerSupport:devices", {}, "query"), where, env("1"), actor, { admin: true, perms: new Set() })).status).toBe(200);
+  expect(sent?.args.actor).toEqual({ sub: "p1", admin: true });
+});
+
+test("problem reports: anyone puts one, only an admin reads, lists or deletes them", async () => {
+  const store = { ...env("1"), R2_ACCOUNT_ID: "a", R2_ACCESS_KEY_ID: "k", R2_SECRET_ACCESS_KEY: "s", R2_BUCKET: "b" };
+  const at = (route: string) => new URL(`https://relay/v1/cloud/${route}`);
+  const key = "writer/reports/2026-10-29/macbook-1.txt";
+  expect((await cloud(r2("r2/url", { key, method: "PUT" }), at("r2/url"), store, actor, only())).status).toBe(200);
+  expect((await cloud(r2("r2/url", { key }), at("r2/url"), store, actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(r2("r2/head", { key }), at("r2/head"), store, actor, only())).status).toBe(403);
+  expect((await cloud(r2("r2/list", { prefix: "writer/reports/" }), at("r2/list"), store, actor, only())).status).toBe(403);
+  expect((await cloud(r2("r2/list", { prefix: "writer/" }), at("r2/list"), store, actor, only())).status).toBe(403);
+  expect((await cloud(r2("r2/delete", { keys: [key] }), at("r2/delete"), store, actor, only("scripts.foia"))).status).toBe(403);
+  expect((await cloud(r2("r2/url", { key }), at("r2/url"), store, actor, { admin: true, perms: new Set() })).status).toBe(200);
+});

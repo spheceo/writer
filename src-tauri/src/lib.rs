@@ -39,6 +39,7 @@ mod pages;
 mod proc;
 mod research;
 mod release;
+mod remote;
 mod house;
 mod reuse;
 mod reviews;
@@ -76,6 +77,7 @@ fn list_scripts(app: AppHandle) -> Result<Vec<model::Summary>, String> {
     rows.retain(|row| grants.may_write(can::summary_work(row)));
     for row in &mut rows {
         row.building = jobs::running(&row.id);
+        row.cloud_refused = cloud::refused(&row.id);
     }
     Ok(rows)
 }
@@ -1839,6 +1841,8 @@ pub fn run() {
                 archive::start(app.handle().clone(), dir.clone());
                 // Local footage cleared once verified in the cloud.
                 storage::start(dir.clone());
+                // An admin's diagnostics and resume commands for this Mac (remote.rs).
+                remote::start(app.handle().clone(), dir.clone());
                 // Self-update, for Writer as downloaded (release builds only).
                 update::start(dir);
             }

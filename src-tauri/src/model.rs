@@ -369,6 +369,9 @@ pub struct Summary {
     /// commentary's title. The list keeps it inside that commentary (filled in by store::list).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub in_commentary: Option<String>,
+    /// The cloud refused its last save: what it said (filled in by list_scripts). The list shows "Not in the cloud".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_refused: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -407,6 +410,7 @@ impl Script {
             archive: None,
             created_by: self.created_by.clone(),
             in_commentary: None,
+            cloud_refused: None,
         }
     }
 }

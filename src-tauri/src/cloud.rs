@@ -88,6 +88,31 @@ fn forgive(id: &str) {
     if let Ok(mut map) = BACKOFF.lock() {
         map.remove(id);
     }
+    if let Ok(mut map) = REFUSED.lock() {
+        map.remove(id);
+    }
+}
+
+/// Scripts the cloud last refused, and what it said: the library shows them
+/// as "Not in the cloud" with the reason, and diagnostics report it.
+static REFUSED: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// Why the cloud refused this script's last save, while it still does.
+pub fn refused(id: &str) -> Option<String> {
+    REFUSED.lock().ok().and_then(|map| map.get(id).cloned())
+}
+
+/// The cloud's rev of this script, as this Mac last saw it; None if it never reached the cloud.
+pub fn rev_of(data: &Path, id: &str) -> Option<u64> {
+    load(data).scripts.get(id).map(|known| known.rev)
+}
+
+/// Tries this script again on the next tick, however long it was waiting after a refusal.
+pub fn try_again(id: &str) {
+    if let Ok(mut map) = BACKOFF.lock() {
+        map.remove(id);
+    }
+    sync_soon();
 }
 
 pub fn status() -> Status {
@@ -632,6 +657,9 @@ impl Cloud {
                     let wait = back_off(&id);
                     crate::log::warn("cloud", format!("{}: couldn't save to the cloud ({}); trying again in {} s", crate::log::named(&id, &script.title), problem.message, wait.as_secs()));
                     waiting += 1;
+                    if let Ok(mut map) = REFUSED.lock() {
+                        map.insert(id.clone(), problem.message.clone());
+                    }
                     refused.get_or_insert(Problem::said(format!("{} couldn't be saved to the cloud: {}", script.title, problem.message)));
                 }
             }
