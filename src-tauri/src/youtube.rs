@@ -177,10 +177,16 @@ fn probe_trouble(error: &str) -> (String, bool) {
 pub const FORMAT: &str = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4]/bv*[height<=1080]+ba/b[vcodec!=none]";
 /// The same through the paid proxy, at 720p: about half the bytes.
 pub const FORMAT_PROXIED: &str = "bv*[vcodec^=avc1][height<=720][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720][vcodec!=none]";
+/// YouTube's own 480p H.264 picture, no sound: copied into a single video's
+/// preview (`media::copy_preview`) instead of encoding one, a fifth of the
+/// original's bytes or less.
+pub const PREVIEW: &str = "bv*[vcodec^=avc1][height=480][protocol=https]";
 
+/// `format` None is Edit's (`FORMAT`, or `FORMAT_PROXIED` through the proxy).
 pub fn download(
     url: &str,
     dest: &Path,
+    format: Option<&str>,
     proxy_file: Option<&Path>,
     cookies: Option<&Path>,
     on_percent: &dyn Fn(u8),
@@ -202,7 +208,7 @@ pub fn download(
         // Edit's format, so both apps download the same file: it is shared
         // under the video's ID (edit/originals/youtube/<id>/).
         "-f",
-        if proxy_file.is_some() { FORMAT_PROXIED } else { FORMAT },
+        format.unwrap_or(if proxy_file.is_some() { FORMAT_PROXIED } else { FORMAT }),
         "--merge-output-format",
         "mp4",
         "-o",
@@ -481,7 +487,7 @@ mod tests {
         std::env::set_var("PATH", DOCK);
         let _restore = RestoreEnv { key: "PATH", value: previous };
         let merge = std::time::Instant::now();
-        download(url, &dest, None, None, &|_| {}).expect("download");
+        download(url, &dest, None, None, None, &|_| {}).expect("download");
         let merged = merge.elapsed();
         let streams = crate::media::streams(&dest).expect("ffprobe");
         assert!(streams.video && streams.audio, "video {} audio {}", streams.video, streams.audio);

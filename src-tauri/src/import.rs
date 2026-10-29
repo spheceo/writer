@@ -469,6 +469,7 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
     let settings = settings::load(data);
 
     // The footage.
+    let mut build: Option<Build> = None;
     let mut joined = match script.source_kind.as_str() {
         "youtube" => {
             fetch_youtube(app, data, dir, script, &settings)?;
@@ -477,12 +478,18 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         "drive" => match fetch_drive(app, dir, script, &settings)? {
             Fetched::Paused => return Ok(Step::Paused),
             Fetched::One => false,
-            Fetched::Joined => true,
+            Fetched::Joined(made) => {
+                build = made;
+                true
+            }
         },
         "compilation" => match fetch_compilation(app, data, dir, script, &settings)? {
             Fetched::Paused => return Ok(Step::Paused),
             Fetched::One => false,
-            Fetched::Joined => true,
+            Fetched::Joined(made) => {
+                build = made;
+                true
+            }
         },
         _ => {
             if !Path::new(&script.original_path).is_file() {
@@ -500,7 +507,12 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
     script.stage = "processing".into();
     script.progress = script.progress.max(20);
     emit(app, script, "Reading the footage.");
-    let found = media::streams(&source).map_err(|_| "This file can't be read as video or audio.".to_string())?;
+    let found = if build.is_some() {
+        // A joined preview still to make: as long as its recordings, with picture and sound.
+        media::Streams { duration_ms: script.parts.iter().map(|part| part.duration_ms).sum(), video: true, audio: true }
+    } else {
+        media::streams(&source).map_err(|_| "This file can't be read as video or audio.".to_string())?
+    };
     if found.duration_ms == 0 {
         return Err("This file has no length to play.".into());
     }
@@ -524,14 +536,36 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         });
     }
 
-    // The preview. Sound with no picture plays over black.
+    // The preview, made beside the words: transcription reads the recordings
+    // themselves, so it needn't wait. Sound with no picture plays over black.
     if !found.video && !joined {
-        build_preview_from(app, dir, script, &source, found)?;
+        build = audio_preview(dir, script, &source, found);
         joined = true;
     }
     if !joined {
-        ensure_preview(app, dir, script, &source)?;
+        build = single_preview(dir, script, &source);
     }
+    let pending = Pending::default();
+    std::thread::scope(|scope| {
+        match build {
+            Some(build) => {
+                let (flag, pending) = (crate::jobs::cancellation_flag(), &pending);
+                scope.spawn(move || {
+                    let run = || std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)).unwrap_or_else(|_| Err("Making the preview stopped unexpectedly.".into()));
+                    pending.finish(match flag {
+                        Some(flag) => crate::jobs::with_cancellation(flag, run),
+                        None => run(),
+                    });
+                });
+            }
+            None => pending.finish(Ok(())),
+        }
+        words(app, dir, script, &settings, &pending)
+    })
+}
+
+/// The case's PDFs, the words and who says them, while `preview` is made.
+fn words(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Settings, preview: &Pending) -> Result<Step, String> {
 
     // A Drive case folder's PDFs (reports, court papers), read for the case's
     // facts, as Repack reads them, before the footage is heard: their names
@@ -566,6 +600,11 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
             script.clips = vec![Clip { id: uuid::Uuid::new_v4().to_string(), start_ms: 0, end_ms: script.duration_ms, ..Default::default() }];
         }
     } else {
+        // A recording heard only from the preview (none of its own here) waits for it.
+        if transcribe::recordings(dir, script).iter().any(|recording| !recording.file.is_file()) {
+            emit(app, script, "Making the preview.");
+            preview.wait()?;
+        }
         script.stage = "transcribing".into();
         script.progress = 60;
         emit(app, script, "Transcribing.");
@@ -603,6 +642,11 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         if script.captions {
             read_turns(app, dir, script, &settings);
         } else {
+        // The watcher watches the preview, or the video itself: a joined case has only its preview.
+        if !Path::new(&script.original_path).is_file() {
+            emit(app, script, "Making the preview.");
+            preview.wait()?;
+        }
         let began = Instant::now();
         let watched = watch_speakers(app, dir, script, &settings);
         crate::log::info("import", format!("{}: {} in {}", crate::log::named(&script.id, &script.title), if watched { "the watcher saw who speaks" } else { "the watcher didn't run; voices stay as heard" }, crate::log::since_start(began)));
@@ -621,6 +665,19 @@ fn pipeline(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script) -> Re
         crate::spills::fix(script, dir, &settings, None);
     }
 
+    // Ready once its preview is: the words were heard beside it.
+    if !preview.done() {
+        script.stage = "processing".into();
+        emit(app, script, "Finishing the preview.");
+    }
+    preview.wait()?;
+    // A joined preview made beside the words gives the overview after them.
+    if script.overview.is_empty() {
+        let peaks = crate::tidy::peaks(dir, Path::new(&script.original_path));
+        if !peaks.is_empty() {
+            script.overview = media::overview(&peaks, 800);
+        }
+    }
 
     script.status = "ready".into();
     script.stage = "ready".into();
@@ -713,25 +770,43 @@ fn watch_speakers(app: &AppHandle, dir: &Path, script: &mut Script, settings: &S
     }
 }
 
-/// Keeps a preview that matches the footage; otherwise makes it again.
-fn ensure_preview(app: &AppHandle, dir: &Path, script: &mut Script, source: &Path) -> Result<(), String> {
+/// Keeps a preview that matches the footage; otherwise what makes it again:
+/// copied from YouTube's own 480p picture when one came down beside the
+/// video, else encoded (`media::encode_proxy`).
+fn single_preview(dir: &Path, script: &Script, source: &Path) -> Option<Build> {
     let proxy = store::proxy_path(dir);
+    let picture = youtube_picture(dir);
     if preview_fits(&proxy, script.duration_ms) {
-        return Ok(());
+        let _ = fs::remove_file(&picture);
+        return None;
     }
-    let _ = fs::remove_file(&proxy);
-    script.progress = 20;
-    emit(app, script, "Cutting a 480p preview.");
-    let (id, title) = (script.id.clone(), script.title.clone());
-    let began = Instant::now();
-    media::encode_proxy(source, &proxy, script.duration_ms, &|percent| {
-        emit_parts(app, &id, &title, "processing", 20 + (u32::from(percent) * 38 / 100) as u8, "Cutting a 480p preview.");
-    })
-    .inspect(|_| crate::log::info("import", format!("{}: 480p preview made: {} of footage in {}", crate::log::named(&id, &title), clock(script.duration_ms), crate::log::since_start(began))))
-    .inspect_err(|error| {
-        crate::log::error("import", format!("{}: the preview couldn't be made: {error}", crate::log::named(&id, &title)));
+    let (source, duration, label) = (source.to_path_buf(), script.duration_ms, crate::log::named(&script.id, &script.title));
+    Some(Box::new(move || {
         let _ = fs::remove_file(&proxy);
-    })
+        let partial = making(&proxy);
+        let began = Instant::now();
+        let mut how = "";
+        if picture.is_file() {
+            match media::copy_preview(&picture, &source, duration, &partial).and_then(|_| if preview_fits(&partial, duration) { Ok(()) } else { Err("the copy came out the wrong length".into()) }) {
+                Ok(()) => how = ", copied from YouTube's 480p",
+                Err(error) => {
+                    let _ = fs::remove_file(&partial);
+                    crate::log::warn("import", format!("{label}: YouTube's 480p picture couldn't be copied into the preview, so it's encoded: {error}"));
+                }
+            }
+        }
+        let made = if how.is_empty() { media::encode_proxy(&source, &partial, duration, &|_| {}) } else { Ok(()) }
+            .and_then(|_| fs::rename(&partial, &proxy).map_err(|error| error.to_string()));
+        let _ = fs::remove_file(&picture);
+        match &made {
+            Ok(()) => crate::log::info("import", format!("{label}: 480p preview made: {} of footage in {}{how}", clock(duration), crate::log::since_start(began))),
+            Err(error) => {
+                let _ = fs::remove_file(&partial);
+                crate::log::error("import", format!("{label}: the preview couldn't be made: {error}"));
+            }
+        }
+        made
+    }))
 }
 
 fn preview_fits(proxy: &Path, duration_ms: u64) -> bool {
@@ -742,20 +817,21 @@ fn preview_fits(proxy: &Path, duration_ms: u64) -> bool {
 }
 
 /// An audio file's preview: its sound over black.
-fn build_preview_from(app: &AppHandle, dir: &Path, script: &mut Script, source: &Path, found: media::Streams) -> Result<(), String> {
+fn audio_preview(dir: &Path, script: &Script, source: &Path, found: media::Streams) -> Option<Build> {
     let proxy = store::proxy_path(dir);
     if preview_fits(&proxy, script.duration_ms) {
-        return Ok(());
+        return None;
     }
-    emit(app, script, "Making a preview for the audio.");
-    let (id, title) = (script.id.clone(), script.title.clone());
-    let parts = [media::JoinPart { path: source, streams: media::Streams { duration_ms: script.duration_ms, ..found } }];
-    media::join(&parts, &proxy, &|percent| {
-        emit_parts(app, &id, &title, "processing", 20 + (u32::from(percent) * 38 / 100) as u8, "Making a preview for the audio.");
-    })
-    .inspect_err(|_| {
-        let _ = fs::remove_file(&proxy);
-    })
+    let (source, streams) = (source.to_path_buf(), media::Streams { duration_ms: script.duration_ms, ..found });
+    Some(Box::new(move || {
+        let partial = making(&proxy);
+        let made = media::join(&[media::JoinPart { path: &source, streams }], &partial, &|_| {})
+            .and_then(|_| fs::rename(&partial, &proxy).map_err(|error| error.to_string()));
+        if made.is_err() {
+            let _ = fs::remove_file(&partial);
+        }
+        made
+    }))
 }
 
 /// YouTube, resuming a download already under way. It goes out on this Mac's
@@ -779,8 +855,29 @@ fn fetch_youtube(app: &AppHandle, data: &Path, dir: &Path, script: &mut Script, 
     }
     let (id, title) = (script.id.clone(), script.title.clone());
     let began = Instant::now();
-    youtube_to(data, &url, &dest, settings, &|percent, said| {
-        emit_parts(app, &id, &title, "downloading", 5 + (u32::from(percent) * 14 / 100) as u8, said.unwrap_or("Downloading from YouTube."));
+    let picture = youtube_picture(dir);
+    std::thread::scope(|scope| {
+        // YouTube's own 480p picture alongside, copied into the preview; without it the preview is encoded.
+        let flag = crate::jobs::cancellation_flag();
+        scope.spawn(|| {
+            let fetch = || {
+                let began = Instant::now();
+                match youtube_paced(data, &url, &picture, settings, Pace::Preview, &|_, _| {}) {
+                    Ok(()) => crate::log::info("import", format!("{}: YouTube's 480p picture downloaded: {} in {}", crate::log::named(&id, &title), crate::log::size(fs::metadata(&picture).map(|meta| meta.len()).unwrap_or(0)), crate::log::since_start(began))),
+                    Err(error) => {
+                        let _ = fs::remove_file(&picture);
+                        crate::log::info("import", format!("{}: no 480p picture from YouTube, so the preview is encoded: {error}", crate::log::named(&id, &title)));
+                    }
+                }
+            };
+            match flag {
+                Some(flag) => crate::jobs::with_cancellation(flag, fetch),
+                None => fetch(),
+            }
+        });
+        youtube_to(data, &url, &dest, settings, &|percent, said| {
+            emit_parts(app, &id, &title, "downloading", 5 + (u32::from(percent) * 14 / 100) as u8, said.unwrap_or("Downloading from YouTube."));
+        })
     })?;
     crate::log::info("import", format!("{}: YouTube video downloaded: {} in {}", crate::log::named(&id, &title), crate::log::size(fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0)), crate::log::since_start(began)));
     script.original_path = dest.to_string_lossy().into_owned();
@@ -809,16 +906,18 @@ fn youtube_to(data: &Path, url: &str, dest: &Path, settings: &Settings, on: &dyn
 
 /// How a download may go: an import's may use the proxy; the backfill's
 /// (older originals redone in Edit's format) only this Mac's own address,
-/// and it doesn't count toward a busy hour.
+/// and it doesn't count toward a busy hour. A preview's is YouTube's own
+/// 480p picture (`youtube::PREVIEW`), going as an import's does.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Pace {
     Import,
     Backfill,
+    Preview,
 }
 
 pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Settings, pace: Pace, on: &dyn Fn(u8, Option<&str>)) -> Result<(), String> {
     // In Edit's originals already (another Mac or Edit downloaded it): from the cloud, free, no YouTube at all.
-    if let Some(video) = crate::handoff::youtube_id(url) {
+    if let Some(video) = crate::handoff::youtube_id(url).filter(|_| pace != Pace::Preview) {
         if crate::archive::from_registry(data, "", &format!("youtube:{video}"), dest).is_ok() && readable(dest) {
             crate::log::info("import", format!("YouTube video {video}: taken from Edit's originals, not downloaded"));
             return Ok(());
@@ -840,7 +939,7 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
     if proxy.is_some() {
         ways.extend([Way::Proxy, Way::Proxy]);
     }
-    if pace == Pace::Import && jar.is_file() {
+    if pace != Pace::Backfill && jar.is_file() {
         ways.push(Way::Cookies);
     }
     ways.push(Way::Own);
@@ -858,7 +957,8 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
         }
         let file = if way == Way::Proxy { proxy_file(folder, proxy.as_deref())? } else { None };
         let guard = file.as_ref().map(|path| DeleteFile(path.as_path()));
-        let result = youtube::download(url, dest, guard.as_ref().map(|file| file.0), (way == Way::Cookies).then_some(jar.as_path()), &|percent| on(percent, None));
+        let format = (pace == Pace::Preview).then_some(youtube::PREVIEW);
+        let result = youtube::download(url, dest, format, guard.as_ref().map(|file| file.0), (way == Way::Cookies).then_some(jar.as_path()), &|percent| on(percent, None));
         drop(guard);
         match result {
             Ok(()) if readable(dest) => {
@@ -877,6 +977,10 @@ pub(crate) fn youtube_paced(data: &Path, url: &str, dest: &Path, settings: &Sett
             Err(error) => {
                 if let Trouble::Final(reason) = youtube::trouble(&error) {
                     return Err(reason);
+                }
+                // Many videos have no 480p H.264: the preview is encoded instead, no other route asked.
+                if pace == Pace::Preview && error.to_lowercase().contains("requested format is not available") {
+                    return Err("YouTube has no 480p H.264 picture of this video.".into());
                 }
                 crate::log::warn("import", format!("YouTube {url}: try {} ({}) failed: {}", attempt + 1, match way { Way::Proxy => "proxy", Way::Cookies => "sign-in cookies", Way::Own => "this Mac" }, error.lines().last().unwrap_or("").chars().take(160).collect::<String>()));
                 last = error;
@@ -1029,7 +1133,48 @@ fn over_limits(recordings: &[&Recording]) -> Option<String> {
 enum Fetched {
     Paused,
     One,
-    Joined,
+    /// Joined, with the preview still to make (None: it's made).
+    Joined(Option<Build>),
+}
+
+/// A preview still to make, made beside the words (`pipeline`).
+type Build = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// Where a preview is written until it's whole, so nothing reads half of it.
+fn making(proxy: &Path) -> PathBuf {
+    proxy.with_file_name(".proxy-making.mp4")
+}
+
+/// A single YouTube video's own 480p picture (`youtube::PREVIEW`), brought
+/// down beside it and copied into its preview.
+fn youtube_picture(dir: &Path) -> PathBuf {
+    dir.join(".youtube-480p.mp4")
+}
+
+/// A preview being made beside the words.
+#[derive(Default)]
+struct Pending(Mutex<Option<Result<(), String>>>);
+
+impl Pending {
+    fn finish(&self, made: Result<(), String>) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(made);
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.0.lock().map(|slot| slot.is_some()).unwrap_or(true)
+    }
+
+    /// Until the preview is made; its error if it couldn't be.
+    fn wait(&self) -> Result<(), String> {
+        loop {
+            if let Some(made) = self.0.lock().map_err(|_| "The preview's lock failed.".to_string())?.clone() {
+                return made;
+            }
+            crate::jobs::wait(Duration::from_millis(250))?;
+        }
+    }
 }
 
 struct Token {
@@ -1092,7 +1237,7 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
     let proxy = store::proxy_path(dir);
     if script.parts.len() > 1 && preview_fits(&proxy, script.parts.iter().map(|part| part.duration_ms).sum()) {
         script.original_path = proxy.to_string_lossy().into_owned();
-        return Ok(Fetched::Joined);
+        return Ok(Fetched::Joined(None));
     }
 
     if manifest.chosen.is_none() {
@@ -1243,11 +1388,11 @@ fn fetch_drive(app: &AppHandle, dir: &Path, script: &mut Script, settings: &Sett
         .zip(paths.iter().cloned())
         .map(|((_, recording), path)| (drive::stem(&recording.name), path, Some(drive_link(&recording.id))))
         .collect();
-    join_preview(app, dir, script, &items, "recordings")?;
+    let build = join_preview(dir, script, &items, "recordings")?;
     // The recordings stay: each is heard from its own file, and they are the
     // full-quality footage Edit cuts from. The joined footage is a preview.
     let _ = paths;
-    Ok(Fetched::Joined)
+    Ok(Fetched::Joined(build))
 }
 
 /// A recording's own 480p piece of the preview, encoded in its download's
@@ -1283,11 +1428,11 @@ fn encode_piece(dir: &Path, source: &Path, label: &str) {
     }
 }
 
-/// Joins recordings, or a compilation's videos, into one preview, each at the
-/// length it actually holds, and records where each one sits. Pieces encoded
-/// while the downloads ran are copied end to end; without them all, the
-/// preview is encoded whole.
-fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(String, PathBuf, Option<String>)], what: &str) -> Result<(), String> {
+/// Records where each recording, or compilation video, sits in the case, at
+/// the length it actually holds, and gives what joins them into one preview
+/// (None: it's joined). Pieces encoded while the downloads ran are copied end
+/// to end; without them all, the preview is encoded whole.
+fn join_preview(dir: &Path, script: &mut Script, items: &[(String, PathBuf, Option<String>)], what: &str) -> Result<Option<Build>, String> {
     let count = items.len();
     let mut parts = Vec::with_capacity(count);
     let mut join = Vec::with_capacity(count);
@@ -1305,35 +1450,44 @@ fn join_preview(app: &AppHandle, dir: &Path, script: &mut Script, items: &[(Stri
         let original_key = media_source.as_deref().map(|source| crate::handoff::original_key(source, &path.file_name().unwrap_or_default().to_string_lossy()));
         parts.push(Part { title: title.clone(), start_ms, duration_ms: held, audio: !found.video, claimed_ms: (held < claimed).then_some(claimed), url: url.clone(), media_source, original_key, ..Default::default() });
         start_ms += held;
-        join.push(media::JoinPart { path: path.as_path(), streams: media::Streams { duration_ms: held, ..found } });
+        join.push((path.clone(), media::Streams { duration_ms: held, ..found }));
     }
-    script.stage = "processing".into();
-    script.progress = 40;
-    let detail = format!("Joining {count} {what}.");
-    emit(app, script, &detail);
-    let (id, title) = (script.id.clone(), script.title.clone());
     let proxy = store::proxy_path(dir);
-    let began = Instant::now();
-    let on_percent = |percent: u8| emit_parts(app, &id, &title, "processing", 40 + (u32::from(percent) * 18 / 100) as u8, &detail);
-    let pieces: Vec<PathBuf> = items.iter().map(|(_, path, _)| piece_path(dir, path)).collect();
-    let copied = if count > 1 && pieces.iter().zip(&parts).all(|(piece, part)| preview_fits(piece, part.duration_ms)) {
-        let more: Vec<&Path> = pieces[1..].iter().map(PathBuf::as_path).collect();
-        media::append(&pieces[0], &more, &proxy, &on_percent)
-    } else {
-        media::join(&join, &proxy, &on_percent).map(|_| false)
-    };
-    copied
-        .inspect(|copied| {
-            let how = if *copied { ", copied from the pieces encoded as they came down" } else { "" };
-            crate::log::info("import", format!("{}: {count} {what} joined into the preview ({}) in {}{how}", crate::log::named(&id, &title), clock(start_ms), crate::log::since_start(began)))
-        })
-        .inspect_err(|_| {
-            let _ = fs::remove_file(&proxy);
-        })?;
-    let _ = fs::remove_dir_all(dir.join("pieces"));
+    let durations: Vec<u64> = parts.iter().map(|part| part.duration_ms).collect();
     script.parts = parts;
     script.original_path = proxy.to_string_lossy().into_owned();
-    store::write(dir, script)
+    store::write(dir, script)?;
+    if preview_fits(&proxy, start_ms) {
+        let _ = fs::remove_dir_all(dir.join("pieces"));
+        return Ok(None);
+    }
+    let pieces: Vec<PathBuf> = items.iter().map(|(_, path, _)| piece_path(dir, path)).collect();
+    let (dir, what, label) = (dir.to_path_buf(), what.to_string(), crate::log::named(&script.id, &script.title));
+    Ok(Some(Box::new(move || {
+        let count = join.len();
+        let partial = making(&proxy);
+        let began = Instant::now();
+        let copied = if count > 1 && pieces.iter().zip(&durations).all(|(piece, held)| preview_fits(piece, *held)) {
+            let more: Vec<&Path> = pieces[1..].iter().map(PathBuf::as_path).collect();
+            media::append(&pieces[0], &more, &partial, &|_| {})
+        } else {
+            let parts: Vec<media::JoinPart> = join.iter().map(|(path, streams)| media::JoinPart { path, streams: *streams }).collect();
+            media::join(&parts, &partial, &|_| {}).map(|_| false)
+        };
+        let made = copied.and_then(|copied| fs::rename(&partial, &proxy).map(|_| copied).map_err(|error| error.to_string()));
+        match &made {
+            Ok(copied) => {
+                let how = if *copied { ", copied from the pieces encoded as they came down" } else { "" };
+                crate::log::info("import", format!("{label}: {count} {what} joined into the preview ({}) in {}{how}", clock(start_ms), crate::log::since_start(began)));
+                let _ = fs::remove_dir_all(dir.join("pieces"));
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&partial);
+                crate::log::error("import", format!("{label}: the preview couldn't be joined: {error}"));
+            }
+        }
+        made.map(|_| ())
+    })))
 }
 
 /// A Drive recording's page, which plays it from a moment with `t`.
@@ -1528,7 +1682,7 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
     let proxy = store::proxy_path(dir);
     if script.parts.len() > 1 && preview_fits(&proxy, script.parts.iter().map(|part| part.duration_ms).sum()) {
         script.original_path = proxy.to_string_lossy().into_owned();
-        return Ok(Fetched::Joined);
+        return Ok(Fetched::Joined(None));
     }
     let wanted: Vec<(usize, &Video)> = videos
         .videos
@@ -1599,8 +1753,8 @@ fn fetch_compilation(app: &AppHandle, data: &Path, dir: &Path, script: &mut Scri
     }
     // The videos stay: each is heard from its own file, and they are the
     // full-quality footage Edit cuts from. The joined footage is a preview.
-    join_preview(app, dir, script, &items, "videos")?;
-    Ok(Fetched::Joined)
+    let build = join_preview(dir, script, &items, "videos")?;
+    Ok(Fetched::Joined(build))
 }
 
 

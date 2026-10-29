@@ -8,6 +8,7 @@ use crate::proc;
 pub const MAX_CASE_MS: u64 = 20 * 3_600_000;
 
 /// What a file holds: its length and whether it has picture and sound.
+#[derive(Clone, Copy)]
 pub struct Streams {
     pub duration_ms: u64,
     pub video: bool,
@@ -384,6 +385,25 @@ pub fn encode_proxy(
     )
 }
 
+/// A single video's preview from a picture already at 480p (YouTube's own,
+/// `youtube::PREVIEW`) and the sound of `sound`, both copied, nothing
+/// encoded but sound that isn't AAC: seconds, not minutes. Cut to
+/// `duration_ms`, as the footage plays.
+pub fn copy_preview(picture: &Path, sound: &Path, duration_ms: u64, dest: &Path) -> Result<(), String> {
+    let codec = proc::run("ffprobe", &["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", &sound.to_string_lossy()], Duration::from_secs(60))?;
+    let audio = match codec.trim() {
+        "" => return Err("the footage has no sound to copy".into()),
+        "aac" => vec!["-c:a", "copy"],
+        _ => vec!["-c:a", "aac", "-b:a", "96k"],
+    };
+    let (picture, sound, dest_text) = (picture.to_string_lossy().into_owned(), sound.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned());
+    let seconds = format!("{:.3}", duration_ms as f64 / 1000.0);
+    let mut args = vec!["-hide_banner", "-y", "-i", &picture, "-i", &sound, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy"];
+    args.extend(audio);
+    args.extend(["-t", &seconds, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", &dest_text]);
+    encode(&args, dest, duration_ms, &|_| {})
+}
+
 /// Loudest sample of each 20 ms, from 0 to 1. Used to cut long transcripts
 /// on a quiet moment, and to draw the overview.
 pub fn peaks(source: &Path) -> Result<Vec<f32>, String> {
@@ -591,6 +611,30 @@ mod join_tests {
         make(&["-f", "lavfi", "-i", "testsrc=s=720x480:d=2", "-vf", "setsar=32/27", "-pix_fmt", "yuv420p"], &anamorphic);
         super::encode_proxy(&anamorphic, &proxy, 2_000, &|_| {}).unwrap();
         assert_eq!(probe(&proxy, "stream=width,height,sample_aspect_ratio"), "852,480,1:1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg: cargo test -- --ignored copies_a_480p_picture
+    #[test]
+    #[ignore]
+    fn copies_a_480p_picture() {
+        let dir = std::env::temp_dir().join(format!("writer-copy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (picture, video, opus, out) = (dir.join("picture.mp4"), dir.join("video.mp4"), dir.join("opus.mkv"), dir.join("out.mp4"));
+        make(&["-f", "lavfi", "-i", "testsrc=s=854x480:d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &picture);
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=4", "-f", "lavfi", "-i", "sine=d=4", "-shortest", "-c:a", "aac"], &video);
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=4", "-f", "lavfi", "-i", "sine=d=4", "-shortest", "-c:a", "libopus"], &opus);
+        for sound in [&video, &opus] {
+            super::copy_preview(&picture, sound, 3_500, &out).unwrap();
+            let found = streams(&out).unwrap();
+            assert!(found.video && found.audio);
+            assert!((3_400..=3_700).contains(&found.duration_ms), "{}", found.duration_ms);
+            assert_eq!(probe(&out, "stream=width,height"), "854,480");
+            let audio = crate::proc::run("ffprobe", &["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", &out.to_string_lossy()], Duration::from_secs(30)).unwrap();
+            assert_eq!(audio.trim(), "aac");
+        }
+        // Footage with no sound has nothing to copy: the preview is encoded instead.
+        assert!(super::copy_preview(&picture, &picture, 3_500, &out).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,7 +35,8 @@ pub fn wait(duration: std::time::Duration) -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+/// Runs `run` on this thread under a job's stop flag: a thread a job starts
+/// (the preview made beside the words) stops when the job does.
 pub(crate) fn with_cancellation<T>(flag: Arc<AtomicBool>, run: impl FnOnce() -> T) -> T {
     CANCELLING.with(|slot| *slot.borrow_mut() = Some(flag));
     let result = run();
