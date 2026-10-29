@@ -70,7 +70,9 @@ pub fn start(app: AppHandle, data: PathBuf) {
         // Who it was last registered for, and when.
         let mut registered: Option<(String, Instant)> = None;
         loop {
-            if let Err(error) = round(&app, &data, &mut registered) {
+            // A panic ends the round, never the loop (the command it was on stays claimed and fails on the next start).
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| round(&app, &data, &mut registered))).unwrap_or_else(|_| Err("a remote command panicked".into()));
+            if let Err(error) = outcome {
                 // Offline or signed out is ordinary; anything else is worth a line, once a round.
                 if crate::account::can_call() && !error.starts_with("Can't reach") {
                     log::warn("remote", error);
@@ -287,7 +289,8 @@ pub fn diagnostics(data: &Path) -> Result<String, String> {
     .chain(log_tail(LOG_LINES))
     .collect::<Vec<_>>()
     .join("\n");
-    let mut body = log::redact(&report);
+    // A line at a time: older log lines may hold what today's redact cuts.
+    let mut body = report.lines().map(log::redact).collect::<Vec<_>>().join("\n");
     if body.len() > MAX_REPORT {
         let mut cut = body.len() - MAX_REPORT;
         while !body.is_char_boundary(cut) {

@@ -167,8 +167,12 @@ pub fn redact(text: &str) -> String {
             out.push(' ');
         }
         let lower = word.to_lowercase();
-        if (lower.starts_with("http://") || lower.starts_with("https://")) && word.contains('?') {
-            let (base, query) = word.split_once('?').unwrap_or((word, ""));
+        // A URL anywhere in the word: "(https://…" in an error's own words too.
+        let url_at = lower.find("https://").or_else(|| lower.find("http://")).filter(|at| word[*at..].contains('?'));
+        if let Some(at) = url_at {
+            let (lead, url) = word.split_at(at);
+            out.push_str(lead);
+            let (base, query) = url.split_once('?').unwrap_or((url, ""));
             let secret = ["x-amz-", "signature", "token", "key=", "sig="].iter().any(|mark| query.to_lowercase().contains(mark));
             out.push_str(base);
             if secret {
@@ -263,6 +267,7 @@ mod tests {
     fn keeps_secrets_out() {
         let line = redact("PUT https://acct.r2.cloudflarestorage.com/bucket/writer/x.json?X-Amz-Algorithm=AWS4&X-Amz-Signature=abc failed");
         assert_eq!(line, "PUT https://acct.r2.cloudflarestorage.com/bucket/writer/x.json?… failed");
+        assert_eq!(redact("didn't get through (https://a.r2.cloudflarestorage.com/b/x.json?X-Amz-Credential=k&X-Amz-Signature=abc Network"), "didn't get through (https://a.r2.cloudflarestorage.com/b/x.json?… Network");
         assert_eq!(redact("authorization: Bearer abc123def done"), "authorization: Bearer [secret] done");
         assert_eq!(redact("key sk-ant-12345 used"), "key [secret] used");
         assert_eq!(redact("token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJwIn0.c2ln sent"), "token [secret] sent");
