@@ -21,14 +21,14 @@ STAMP_CREATOR = "1"
 # in bytes of 32 kbps Opus (~14.4 MB per hour). Footage is heard as Edit hears it: in 40 s pieces for
 # its words and whole for its voices, so an hour of footage is ~2.2 hours of
 # audio here. A long interview is a few hours.
-DAILY_BYTES_PER_IP = "1440000000"  # per person: ~100 hours, the whole shared day, as Edit's (Oct 30: 20 hours stopped the team's imports mid-evening, "insane friction")
-DAILY_BYTES_TOTAL = "1440000000"   # ~100 hours, Edit's cap too (~83k credits a day at most)
+DAILY_BYTES_PER_IP = "2160000000"  # per person: ~150 hours, as Edit's (Oct 30: raised for five projects at once)
+DAILY_BYTES_TOTAL = "4320000000"  # ~300 hours, Edit's cap too (Oct 30: raised for five projects at once)
 MAX_UPLOAD_BYTES = "45000000"     # ~3 hours in one request
 
 # The watcher (Gemini through the AI Gateway): calls a day. An hour of
 # footage is a few dozen windows.
-WATCH_DAILY_PER_PERSON = "3000"
-WATCH_DAILY_TOTAL = "12000"
+WATCH_DAILY_PER_PERSON = "10000"  # Oct 30: raised for five projects at once
+WATCH_DAILY_TOTAL = "40000"  # Oct 30: raised for five projects at once
 
 # Bursts: requests a minute per IP. Writer hears four 48 s pieces at once, as
 # Edit does, and can run imports side by side: Edit's relay takes 60 a
