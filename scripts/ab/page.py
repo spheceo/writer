@@ -4,16 +4,20 @@ side by side as the Doc reads (cut-ins in full, each clip's words with its
 times), labelled A and B in a random order per pair, with the numbers under
 them and the key behind a "Reveal" button.
 
-  python3 scripts/ab/page.py <results dir> <page.html>
+  python3 scripts/ab/page.py <results dir> <page.html> [engine,engine]
+
+The two engines compared are run.py's: sdk,fast unless named.
 """
 import html, json, random, re, sys
 from pathlib import Path
 
 RESULTS = Path(sys.argv[1] if len(sys.argv) > 1 else "/tmp/writer-ab")
 PAGE = Path(sys.argv[2] if len(sys.argv) > 2 else RESULTS / "index.html")
+ENGINES = (sys.argv[3] if len(sys.argv) > 3 else "sdk,fast").split(",")
 SCRIPTS = Path.home() / "Library/Application Support/com.spheceo.writer/scripts"
-TELLS = {"Repairs", "Biggest single reply (output tokens, about)"}
-ENGINE = {"cli": "Old: one answer (claude -p)", "sdk": "New: Agent SDK, in steps"}
+# Rows that give the engine away, shown with the reveal (a fast build's time is its point, and its tell).
+TELLS = {"Repairs", "Biggest single reply (output tokens, about)", "Time", "Cost (API prices)"}
+ENGINE = {"cli": "One answer (claude -p)", "sdk": "Agent SDK, in steps", "fast": "Fast: an outline, sections at once, a finish"}
 
 
 def clock(ms):
@@ -65,7 +69,7 @@ def measure(result, script):
         "Repairs": stats.get("repairs", "—") if engine == "cli" else f"{stats.get('refused', 0)} refused tool calls in {stats.get('toolCalls', 0)}",
         "Biggest single reply (output tokens, about)": biggest if biggest else "—",
         "Cost (API prices)": f"${result.get('costUsd', 0):.2f}",
-        "Time": f"{round(result.get('seconds', 0) / 60, 1)} min",
+        "Time": f"{round(result.get('seconds', 0) / 60, 1)} min" + (f" (outline {stats['outlineSeconds']:.0f} s, {stats['sections']} sections {stats['sectionsSeconds']:.0f} s, finish {stats['finishSeconds']:.0f} s)" if engine == "fast" and "outlineSeconds" in stats else ""),
     }
 
 
@@ -93,10 +97,10 @@ for r in results:
 rng = random.Random(20261023)
 sections, key = [], []
 for (sid, run), pair in pairs.items():
-    if set(pair) != {"cli", "sdk"}:
+    if not set(ENGINES) <= set(pair):
         continue
     script = json.loads((SCRIPTS / sid / "script.json").read_text())
-    order = ["cli", "sdk"]
+    order = list(ENGINES)
     rng.shuffle(order)
     a, b = pair[order[0]], pair[order[1]]
     ma, mb = measure(a, script), measure(b, script)
@@ -116,7 +120,7 @@ for (sid, run), pair in pairs.items():
 </section>""")
 
 PAGE.write_text(f"""<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Writer builds: old and new, blind</title>
+<title>Writer builds, blind</title>
 <style>
 body{{margin:0;padding:32px;background:#0b0b0b;color:#ededed;font:14px/1.55 -apple-system,"Inter",system-ui,sans-serif}}
 h1{{font-size:22px;font-weight:600;margin:0 0 6px}} .sub{{color:#969696;max-width:860px;margin:0 0 20px}}
@@ -132,8 +136,8 @@ table{{width:100%;margin-top:12px;border-collapse:collapse;font-size:13px}} th,t
 .bad{{color:#c0392b}} #key{{display:none;color:#ababab}} .revealed #key{{display:block}}
 .tell{{display:none}} .revealed .tell{{display:table-row}}
 </style>
-<h1>Writer builds: the old and the new, blind</h1>
-<p class=sub>Each script was built twice from the same transcript, research and guides: once by today's build (one answer from Opus), once by the new one (the Agent SDK, writing the plan in steps with Writer's tools). Each pair is labelled A and B in a random order. Read them, decide which you'd rather hand to the editor, then reveal which is which. The numbers under each pair are measured from the builds; the two that give the engine away (repairs and reply sizes) appear with the reveal.</p>
+<h1>Writer builds, blind</h1>
+<p class=sub>Each script was built twice from the same transcript, research and guides: once as {ENGINE[ENGINES[0]]}, once as {ENGINE[ENGINES[1]]}. Each pair is labelled A and B in a random order. Read them, decide which you'd rather hand to the editor, then reveal which is which. The numbers under each pair are measured from the builds; the ones that give the engine away (repairs, reply sizes, time and cost) appear with the reveal.</p>
 <button onclick="document.body.classList.toggle('revealed')">Reveal which is which</button>
 <ol id=key>{''.join(key)}</ol>
 {''.join(sections)}

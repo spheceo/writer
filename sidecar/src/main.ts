@@ -35,6 +35,8 @@ type Request = {
   /** Writer's tools for this question: an MCP server over HTTP. */
   mcp?: { name: string; url: string };
   maxTurns?: number;
+  /** How hard Claude thinks: left out, the model's own default. */
+  effort?: "low" | "medium" | "high" | "xhigh" | "max";
 };
 
 const say = (event: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(event)}\n`);
@@ -83,6 +85,7 @@ export function optionsFor(request: Request, abortController: AbortController): 
     ...(request.schema ? { outputFormat: { type: "json_schema", schema: request.schema } } : {}),
     ...(request.resume ? { resume: request.resume } : {}),
     ...(request.maxTurns ? { maxTurns: request.maxTurns } : {}),
+    ...(request.effort ? { effort: request.effort } : {}),
     // And a check of every Read's path, whatever the rules allow.
     canUseTool: async (tool, input) => {
       if (tool === "Read") {

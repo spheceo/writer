@@ -625,7 +625,7 @@ fn mcp_answer(token: &str, request: &Value) -> Option<Value> {
             "serverInfo": { "name": "writer", "version": crate::release::VERSION },
         }),
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": crate::steps::tools() }),
+        "tools/list" => json!({ "tools": crate::steps::tools(token) }),
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
             let args = request["params"]["arguments"].clone();
