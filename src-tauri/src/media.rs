@@ -153,13 +153,14 @@ const HARDWARE_DECODE: [&str; 4] = ["-hwaccel", "videotoolbox", "-hwaccel_output
 const HARDWARE_ENCODE: [&str; 10] = ["-c:v", HARDWARE, "-profile:v", "high", "-q:v", "65", "-g", "30", "-pix_fmt", "yuv420p"];
 
 /// Fitted to `height` on the hardware (scale_vt), brought back to pad and
-/// set the rate. `width` None keeps the shape (an even width).
+/// set the rate. `width` None keeps the shape as it shows (an even width,
+/// non-square pixels widened, as `scale=-2` keeps them).
 fn hardware_picture(width: Option<u64>, height: u64) -> String {
     let fit = match width {
         Some(width) => format!(
             "scale_vt=w='trunc(min({width}/iw\\,{height}/ih)*iw/2)*2':h='trunc(min({width}/iw\\,{height}/ih)*ih/2)*2',hwdownload,format=nv12,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
         ),
-        None => format!("scale_vt=w='trunc(iw*{height}/ih/2)*2':h={height},hwdownload,format=nv12"),
+        None => format!("scale_vt=w='trunc(iw*sar*{height}/ih/2)*2':h={height},hwdownload,format=nv12"),
     };
     format!("{fit},setsar=1,fps=30,format=yuv420p")
 }
@@ -585,6 +586,11 @@ mod join_tests {
         super::encode_proxy(&square, &proxy, 2_000, &|_| {}).unwrap();
         assert!(probe(&proxy, "stream_tags=encoder").ends_with(super::HARDWARE));
         assert_eq!(probe(&proxy, "stream=width,height"), "640,480");
+        // Non-square pixels (720×480 shown at 16:9) keep the shape they show.
+        let anamorphic = dir.join("anamorphic.mp4");
+        make(&["-f", "lavfi", "-i", "testsrc=s=720x480:d=2", "-vf", "setsar=32/27", "-pix_fmt", "yuv420p"], &anamorphic);
+        super::encode_proxy(&anamorphic, &proxy, 2_000, &|_| {}).unwrap();
+        assert_eq!(probe(&proxy, "stream=width,height,sample_aspect_ratio"), "852,480,1:1");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
