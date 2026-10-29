@@ -353,8 +353,8 @@ fn run(app: &AppHandle, data: &Path, dir: &Path, id: &str, urls: &[String]) -> R
     let count = wanted.len();
     let which = |step: usize| if count > 1 { format!(" {} of {count}", step + 1) } else { String::new() };
 
-    // Each video, encoded alone as the compilation's footage is, so it joins
-    // onto it without encoding the rest again.
+    // Each video, encoded alone as the compilation's footage is (by the same
+    // encoder), so it joins onto it without encoding the rest again.
     let mut segments: Vec<(Reuse, PathBuf)> = Vec::new();
     for (step, reuse) in wanted.iter().enumerate() {
         let slot = script.reuses.iter().position(|known| known.url == reuse.url).unwrap_or(step);
@@ -370,7 +370,7 @@ fn run(app: &AppHandle, data: &Path, dir: &Path, id: &str, urls: &[String]) -> R
             let found = media::streams(&download).map_err(|_| format!("{} couldn't be read as video.", title_of(reuse)))?;
             let held = media::playable_ms(&download, found.duration_ms);
             let part = media::JoinPart { path: &download, streams: media::Streams { duration_ms: held, ..found } };
-            media::join(&[part], &segment, &|percent| jobs::stage(id, &format!("Preparing the reused case{label} · {percent}%")))?;
+            media::join_like(&[part], &segment, &base, &|percent| jobs::stage(id, &format!("Preparing the reused case{label} · {percent}%")))?;
             let _ = fs::remove_file(&download);
         }
         segments.push((reuse.clone(), segment));

@@ -8,6 +8,7 @@ use crate::proc;
 pub const MAX_CASE_MS: u64 = 20 * 3_600_000;
 
 /// What a file holds: its length and whether it has picture and sound.
+#[derive(Clone, Copy)]
 pub struct Streams {
     pub duration_ms: u64,
     pub video: bool,
@@ -109,7 +110,113 @@ pub struct JoinPart<'a> {
 /// fitted to 854×480; an audio recording plays over black, and a silent video
 /// gets silence, so picture and sound stay in step at every join.
 pub fn join(parts: &[JoinPart], dest: &Path, on_percent: &dyn Fn(u8)) -> Result<(), String> {
-    join_sized(parts, dest, on_percent, 854, 480, "27")
+    match parts {
+        [part] if part.streams.video => join_one(part, dest, on_percent, true),
+        _ => join_sized(parts, dest, on_percent, 854, 480, "27"),
+    }
+}
+
+/// As `join`, encoded as `like` was (by the Mac's video hardware or by
+/// libx264), so it copies onto `like` end to end (`append`).
+pub fn join_like(parts: &[JoinPart], dest: &Path, like: &Path, on_percent: &dyn Fn(u8)) -> Result<(), String> {
+    match parts {
+        [part] if part.streams.video => join_one(part, dest, on_percent, encoder_of(like).is_some_and(|name| name.contains(HARDWARE))),
+        _ => join_sized(parts, dest, on_percent, 854, 480, "27"),
+    }
+}
+
+/// One video's 480p piece. On the Mac's video hardware the picture is decoded,
+/// fitted and encoded there, leaving the processor free for the other
+/// downloads' pieces (three together: a third quicker, a fifth of the
+/// processor); footage it can't decode, or a Mac without it, is encoded by
+/// libx264 as before.
+fn join_one(part: &JoinPart, dest: &Path, on_percent: &dyn Fn(u8), hardware: bool) -> Result<(), String> {
+    if hardware {
+        match join_hardware(part, dest, on_percent) {
+            Ok(()) => return Ok(()),
+            // Stopped by its person: not encoded again.
+            Err(error) if crate::jobs::cancelled() => return Err(error),
+            Err(error) => crate::log::warn("media", format!("the video hardware couldn't encode {}, so libx264 does: {error}", part.path.display())),
+        }
+    }
+    join_sized(std::slice::from_ref(part), dest, on_percent, 854, 480, "27")
+}
+
+/// The encoder that makes previews on the Mac's video hardware.
+const HARDWARE: &str = "h264_videotoolbox";
+
+/// Arguments that decode on the video hardware and keep the frames there.
+const HARDWARE_DECODE: [&str; 4] = ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"];
+
+/// The hardware encoder at a quality close to libx264's CRF 27 (SSIM 0.980
+/// against 0.987 on a case's footage, at about the same size), a key frame a
+/// second and libx264's High profile.
+const HARDWARE_ENCODE: [&str; 10] = ["-c:v", HARDWARE, "-profile:v", "high", "-q:v", "65", "-g", "30", "-pix_fmt", "yuv420p"];
+
+/// Fitted to `height` on the hardware (scale_vt), brought back to pad and
+/// set the rate. `width` None keeps the shape as it shows (an even width,
+/// non-square pixels widened, as `scale=-2` keeps them).
+fn hardware_picture(width: Option<u64>, height: u64) -> String {
+    let fit = match width {
+        Some(width) => format!(
+            "scale_vt=w='trunc(min({width}/iw\\,{height}/ih)*iw/2)*2':h='trunc(min({width}/iw\\,{height}/ih)*ih/2)*2',hwdownload,format=nv12,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+        ),
+        None => format!("scale_vt=w='trunc(iw*sar*{height}/ih/2)*2':h={height},hwdownload,format=nv12"),
+    };
+    format!("{fit},setsar=1,fps=30,format=yuv420p")
+}
+
+fn join_hardware(part: &JoinPart, dest: &Path, on_percent: &dyn Fn(u8)) -> Result<(), String> {
+    let total = part.streams.duration_ms;
+    if total == 0 || total > MAX_CASE_MS {
+        return Err("Use footage between a second and twenty hours in all.".into());
+    }
+    let seconds = format!("{:.3}", total as f64 / 1000.0);
+    let picture = format!("[0:v]{},trim=duration={seconds},setpts=PTS-STARTPTS[v]", hardware_picture(Some(854), 480));
+    let sound = if part.streams.audio {
+        format!("[0:a]aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={seconds},asetpts=PTS-STARTPTS[a]")
+    } else {
+        format!("anullsrc=r=48000:cl=stereo,atrim=duration={seconds}[a]")
+    };
+    let (source, dest_text) = (part.path.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned());
+    let filters = format!("{picture};{sound}");
+    let mut args = vec!["-hide_banner", "-y"];
+    args.extend(HARDWARE_DECODE);
+    args.extend(["-i", &source, "-filter_complex", &filters, "-map", "[v]", "-map", "[a]"]);
+    args.extend(HARDWARE_ENCODE);
+    args.extend(["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", &dest_text]);
+    encode(&args, dest, total, on_percent)
+}
+
+/// Runs an ffmpeg encode, reporting 0–100 of `total` from its progress clock
+/// (microseconds), and checks the file was written. A failed one leaves none.
+fn encode(args: &[&str], dest: &Path, total: u64, on_percent: &dyn Fn(u8)) -> Result<(), String> {
+    let ran = proc::run_lines("ffmpeg", args, tool_time(total), None, |line| {
+        let micros = line
+            .strip_prefix("out_time_us=")
+            .or_else(|| line.strip_prefix("out_time_ms="));
+        if let Some(micros) = micros.and_then(|value| value.trim().parse::<u64>().ok()) {
+            if total > 0 {
+                on_percent(((micros / 1000) * 100 / total).min(100) as u8);
+            }
+        }
+    });
+    if let Err(error) = ran {
+        let _ = std::fs::remove_file(dest);
+        return Err(error);
+    }
+    if !dest.is_file() {
+        return Err("The footage was not written.".into());
+    }
+    Ok(())
+}
+
+/// The video encoder a file was made with, as ffmpeg tags it.
+fn encoder_of(path: &Path) -> Option<String> {
+    proc::run("ffprobe", &["-v", "error", "-select_streams", "v:0", "-show_entries", "stream_tags=encoder", "-of", "csv=p=0", &path.to_string_lossy()], Duration::from_secs(60))
+        .ok()
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// One compilation case may be a folder. Keep a full-size case master for
@@ -220,14 +327,16 @@ pub fn append(base: &Path, more: &[&Path], dest: &Path, on_percent: &dyn Fn(u8))
     join(&parts, dest, on_percent).map(|_| false)
 }
 
-/// A file's streams as a copy must match them: codecs, picture size, frame
-/// rate and pixel format, sound rate and channels. None when unreadable.
+/// A file's streams as a copy must match them: codecs and the encoder that
+/// made them (libx264's and the hardware's settings differ, and a copy keeps
+/// only the first file's), picture size, frame rate and pixel format, sound
+/// rate and channels. None when unreadable.
 fn format_of(path: &Path) -> Option<String> {
     proc::run(
         "ffprobe",
         &[
             "-v", "error",
-            "-show_entries", "stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels",
+            "-show_entries", "stream=codec_type,codec_name,profile,width,height,pix_fmt,r_frame_rate,sample_rate,channels:stream_tags=encoder",
             "-of", "csv=p=0",
             &path.to_string_lossy(),
         ],
@@ -237,8 +346,9 @@ fn format_of(path: &Path) -> Option<String> {
     .filter(|text| !text.trim().is_empty())
 }
 
-/// 480p preview with sound, so the window can play the cut.
-/// `on_percent` is 0–100 of the encode. ffmpeg's progress clock is microseconds.
+/// 480p preview with sound, so the window can play the cut: on the Mac's
+/// video hardware, else by libx264 (`join_one`).
+/// `on_percent` is 0–100 of the encode.
 pub fn encode_proxy(
     source: &Path,
     dest: &Path,
@@ -250,53 +360,48 @@ pub fn encode_proxy(
     }
     let dest_text = dest.to_string_lossy().to_string();
     let source_text = source.to_string_lossy().to_string();
-    proc::run_lines(
-        "ffmpeg",
-        &[
-            "-hide_banner",
-            "-y",
-            "-i",
-            &source_text,
-            "-vf",
-            "scale=-2:480,fps=30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "27",
-            "-pix_fmt",
-            "yuv420p",
-            "-g",
-            "30",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-movflags",
-            "+faststart",
-            "-progress",
-            "pipe:1",
-            "-nostats",
-            &dest_text,
-        ],
-        tool_time(duration_ms),
-        None,
-        |line| {
-            let micros = line
-                .strip_prefix("out_time_us=")
-                .or_else(|| line.strip_prefix("out_time_ms="));
-            if let Some(micros) = micros.and_then(|value| value.trim().parse::<u64>().ok()) {
-                if duration_ms > 0 {
-                    on_percent(((micros / 1000) * 100 / duration_ms).min(100) as u8);
-                }
-            }
-        },
-    )?;
-    if !dest.is_file() {
-        return Err("The preview was not written.".into());
+    let picture = hardware_picture(None, 480);
+    let mut args = vec!["-hide_banner", "-y"];
+    args.extend(HARDWARE_DECODE);
+    args.extend(["-i", &source_text, "-vf", &picture]);
+    args.extend(HARDWARE_ENCODE);
+    args.extend(["-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", &dest_text]);
+    match encode(&args, dest, duration_ms, on_percent) {
+        Ok(()) => return Ok(()),
+        Err(error) if crate::jobs::cancelled() => return Err(error),
+        Err(error) => crate::log::warn("media", format!("the video hardware couldn't encode {}, so libx264 does: {error}", source.display())),
     }
-    Ok(())
+    encode(
+        &[
+            "-hide_banner", "-y", "-i", &source_text,
+            "-vf", "scale=-2:480,fps=30",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p", "-g", "30",
+            "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
+            "-progress", "pipe:1", "-nostats", &dest_text,
+        ],
+        dest,
+        duration_ms,
+        on_percent,
+    )
+}
+
+/// A single video's preview from a picture already at 480p (YouTube's own,
+/// `youtube::PREVIEW`) and the sound of `sound`, both copied, nothing
+/// encoded but sound that isn't AAC: seconds, not minutes. Cut to
+/// `duration_ms`, as the footage plays.
+pub fn copy_preview(picture: &Path, sound: &Path, duration_ms: u64, dest: &Path) -> Result<(), String> {
+    let codec = proc::run("ffprobe", &["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", &sound.to_string_lossy()], Duration::from_secs(60))?;
+    let audio = match codec.trim() {
+        "" => return Err("the footage has no sound to copy".into()),
+        "aac" => vec!["-c:a", "copy"],
+        _ => vec!["-c:a", "aac", "-b:a", "96k"],
+    };
+    let (picture, sound, dest_text) = (picture.to_string_lossy().into_owned(), sound.to_string_lossy().into_owned(), dest.to_string_lossy().into_owned());
+    let seconds = format!("{:.3}", duration_ms as f64 / 1000.0);
+    let mut args = vec!["-hide_banner", "-y", "-i", &picture, "-i", &sound, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy"];
+    args.extend(audio);
+    args.extend(["-t", &seconds, "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", &dest_text]);
+    encode(&args, dest, duration_ms, &|_| {})
 }
 
 /// Loudest sample of each 20 ms, from 0 to 1. Used to cut long transcripts
@@ -455,6 +560,81 @@ mod join_tests {
         // A piece that doesn't match is joined afresh, never copied.
         assert!(!append(&a, &[more.as_path()], &b, &|_| {}).unwrap());
         assert!((6_800..=7_300).contains(&streams(&b).unwrap().duration_ms));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn probe(path: &Path, entries: &str) -> String {
+        crate::proc::run("ffprobe", &["-v", "error", "-select_streams", "v:0", "-show_entries", entries, "-of", "csv=p=0", &path.to_string_lossy()], Duration::from_secs(30)).unwrap().trim().to_string()
+    }
+
+    /// Needs ffmpeg and a Mac's video hardware: cargo test -- --ignored pieces_on_the_video_hardware
+    #[test]
+    #[ignore]
+    fn pieces_on_the_video_hardware() {
+        let dir = std::env::temp_dir().join(format!("writer-hardware-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (wide, square) = (dir.join("wide.mp4"), dir.join("square.mp4"));
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=3", "-f", "lavfi", "-i", "sine=d=3", "-shortest", "-pix_fmt", "yuv420p"], &wide);
+        make(&["-f", "lavfi", "-i", "testsrc=s=640x480:d=2", "-pix_fmt", "yuv420p"], &square);
+        fn part(path: &Path) -> JoinPart<'_> {
+            JoinPart { path, streams: streams(path).unwrap() }
+        }
+        let (a, b) = (dir.join("a.mp4"), dir.join("b.mp4"));
+        join(&[part(&wide)], &a, &|_| {}).unwrap();
+        join(&[part(&square)], &b, &|_| {}).unwrap();
+        for piece in [&a, &b] {
+            assert!(probe(piece, "stream_tags=encoder").ends_with(super::HARDWARE));
+            // Fitted and padded to 854×480 as libx264's pieces are.
+            assert_eq!(probe(piece, "stream=width,height,pix_fmt,r_frame_rate"), "854,480,yuv420p,30/1");
+        }
+        let (copied, out) = (dir.join("copied.mp4"), dir.join("out.mp4"));
+        assert!(append(&a, &[b.as_path()], &copied, &|_| {}).unwrap(), "hardware pieces copy together");
+        assert!((4_900..=5_200).contains(&streams(&copied).unwrap().duration_ms));
+
+        // A libx264 piece is never copied onto a hardware one; one made like it is.
+        let software = dir.join("software.mp4");
+        super::join_sized(&[part(&square)], &software, &|_| {}, 854, 480, "27").unwrap();
+        assert!(probe(&software, "stream_tags=encoder").ends_with("libx264"));
+        assert!(!append(&a, &[software.as_path()], &out, &|_| {}).unwrap());
+        let like = dir.join("like.mp4");
+        super::join_like(&[part(&wide)], &like, &software, &|_| {}).unwrap();
+        assert!(probe(&like, "stream_tags=encoder").ends_with("libx264"));
+        assert!(append(&software, &[like.as_path()], &out, &|_| {}).unwrap());
+
+        // A single video's preview keeps its shape at 480 high.
+        let proxy = dir.join("proxy.mp4");
+        super::encode_proxy(&square, &proxy, 2_000, &|_| {}).unwrap();
+        assert!(probe(&proxy, "stream_tags=encoder").ends_with(super::HARDWARE));
+        assert_eq!(probe(&proxy, "stream=width,height"), "640,480");
+        // Non-square pixels (720×480 shown at 16:9) keep the shape they show.
+        let anamorphic = dir.join("anamorphic.mp4");
+        make(&["-f", "lavfi", "-i", "testsrc=s=720x480:d=2", "-vf", "setsar=32/27", "-pix_fmt", "yuv420p"], &anamorphic);
+        super::encode_proxy(&anamorphic, &proxy, 2_000, &|_| {}).unwrap();
+        assert_eq!(probe(&proxy, "stream=width,height,sample_aspect_ratio"), "852,480,1:1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Needs ffmpeg: cargo test -- --ignored copies_a_480p_picture
+    #[test]
+    #[ignore]
+    fn copies_a_480p_picture() {
+        let dir = std::env::temp_dir().join(format!("writer-copy-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (picture, video, opus, out) = (dir.join("picture.mp4"), dir.join("video.mp4"), dir.join("opus.mkv"), dir.join("out.mp4"));
+        make(&["-f", "lavfi", "-i", "testsrc=s=854x480:d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p"], &picture);
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=4", "-f", "lavfi", "-i", "sine=d=4", "-shortest", "-c:a", "aac"], &video);
+        make(&["-f", "lavfi", "-i", "testsrc=s=1280x720:d=4", "-f", "lavfi", "-i", "sine=d=4", "-shortest", "-c:a", "libopus"], &opus);
+        for sound in [&video, &opus] {
+            super::copy_preview(&picture, sound, 3_500, &out).unwrap();
+            let found = streams(&out).unwrap();
+            assert!(found.video && found.audio);
+            assert!((3_400..=3_700).contains(&found.duration_ms), "{}", found.duration_ms);
+            assert_eq!(probe(&out, "stream=width,height"), "854,480");
+            let audio = crate::proc::run("ffprobe", &["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", &out.to_string_lossy()], Duration::from_secs(30)).unwrap();
+            assert_eq!(audio.trim(), "aac");
+        }
+        // Footage with no sound has nothing to copy: the preview is encoded instead.
+        assert!(super::copy_preview(&picture, &picture, 3_500, &out).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
