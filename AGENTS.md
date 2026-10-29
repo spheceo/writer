@@ -1,6 +1,6 @@
 # Writer: notes for agents
 
-Writer is a Tauri app: Rust in `src-tauri/` does the work, React in `src/` is the UI. README.md describes every part; read it first.
+Writer is a Tauri app: Rust in `src-tauri/` does the work, React in `src/` is the UI. `docs/how-it-works.md` describes every part; read it first.
 
 - `just check`: typecheck, JS tests and Rust tests. Run it before committing.
 - `just dev`: the app with hot reload. Editing anything under `src-tauri/` (guides included) rebuilds and restarts it, killing imports and builds under way: never edit there while a job runs.
