@@ -478,7 +478,7 @@ fn ask_sdk(model: &str, system: &str, schema: &str, prompt: &str, resume: Option
     let schema: Value = serde_json::from_str(schema).map_err(|_| Trouble::Stop("Writer asked Claude in a shape it can't describe. Nothing was changed.".into()))?;
     let label = format!("Claude {model}{}{}", if resume.is_some() { " (repair turn)" } else { "" }, if read.is_some() { " reading files" } else { "" });
     let answer = crate::agent::ask(
-        crate::agent::Question { model, system, prompt, schema: Some(&schema), resume, read, tools: None, max_turns: None, timeout: Duration::from_secs(40 * 60), label },
+        crate::agent::Question { model, system, prompt, schema: Some(&schema), resume, read, tools: None, max_turns: None, effort: None, timeout: Duration::from_secs(40 * 60), label },
         &crate::agent::workspace(),
     )?;
     let plan = answer.structured.clone().or_else(|| answer.text.as_deref().and_then(extract_json).filter(Value::is_object));

@@ -607,8 +607,12 @@ pub fn build_once(app: &AppHandle, id: &str, note: &str, kind: Option<formats::K
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     jobs::stage(id, "Writing the script");
     chat::add(&dir, "producer", &if note.trim().is_empty() { "Build the script.".to_string() } else { format!("Build the script. {}", note.trim()) }, None, false);
-    // Setup's engine: the Agent SDK builds in steps; the CLI in one answer.
-    let built = if claude::engine() == settings::Engine::Sdk { steps::build(&script, note, Some(&research), &peaks) } else { claude::build(&script, note, Some(&research), &peaks) };
+    // Setup's engine: the Agent SDK builds fast (or in steps, asked for); the CLI in one answer.
+    let built = match claude::engine() {
+        settings::Engine::Sdk if steps::fast_chosen() => steps::build_fast(&script, note, Some(&research), &peaks),
+        settings::Engine::Sdk => steps::build(&script, note, Some(&research), &peaks),
+        settings::Engine::Cli => claude::build(&script, note, Some(&research), &peaks),
+    };
     let mut built = match built {
         Ok(built) => built,
         Err(error) => {
@@ -1519,7 +1523,11 @@ pub fn ab_build_now(data: &Path, id: &str, engine: &str, kind: Option<formats::K
     let research = casefiles::with_documents(&dir, research);
     let peaks = tidy::peaks(&dir, &footage_path(&dir, &script));
     let began = std::time::Instant::now();
-    let built = if engine == "sdk" { steps::build(&script, "", Some(&research), &peaks) } else { claude::with_engine(settings::Engine::Cli, || claude::build(&script, "", Some(&research), &peaks)) };
+    let built = match engine {
+        "sdk" => steps::build(&script, "", Some(&research), &peaks),
+        "fast" => steps::build_fast(&script, "", Some(&research), &peaks),
+        _ => claude::with_engine(settings::Engine::Cli, || claude::build(&script, "", Some(&research), &peaks)),
+    };
     let seconds = began.elapsed().as_secs_f64();
     Ok(match built {
         Ok(built) => serde_json::json!({ "ok": true, "engine": engine, "kind": script.kind, "clips": built.clips, "report": built.report, "costUsd": built.cost_usd, "seconds": seconds, "stats": built.stats, "pages": pages::count(&script, &built.clips) }),

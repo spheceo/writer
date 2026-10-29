@@ -9,6 +9,12 @@
 //! checks it (`claude::item_clip`); `review_plan` and `finish` check the whole
 //! plan as it will be saved (`claude::compile_with`, the format's targets).
 //! Repairs are targeted calls on items by ID, never the whole plan again.
+//!
+//! A fast build (`build_fast`) goes in three phases on the same tools: Opus
+//! outlines the script, writes its sections at once (one call each), then
+//! reviews and finishes the joined plan. Every phase reads the same system
+//! prompt, tools and evidence, so the sections and the finish read the
+//! outline's from the prompt cache.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -25,8 +31,36 @@ use crate::research::Research;
 const MAX_ITEMS_PER_CALL: usize = 40;
 /// Turns before the build stops (each tool call is one).
 const MAX_TURNS: u32 = 90;
+/// Sections a fast build's outline may have: as many calls at once.
+const MAX_SECTIONS: usize = 8;
+
+/// Which part of a build a draft is for: the whole build in steps, or a fast
+/// build's outline, one of its sections, or its finish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Steps,
+    Outline,
+    Section,
+    Finish,
+}
+
+/// A fast build's outline: its sections in timeline order.
+#[derive(Debug, Clone)]
+struct Outline {
+    sections: Vec<Section>,
+    opening: Option<String>,
+    report: String,
+}
+
+#[derive(Debug, Clone)]
+struct Section {
+    title: String,
+    plan: String,
+    seconds: u64,
+}
 
 struct Draft {
+    phase: Phase,
     script: Script,
     format: Format,
     peaks: Vec<f32>,
@@ -44,6 +78,17 @@ struct Draft {
     best: Option<(Compiled, String, String)>,
     /// `finish` called on an off-target plan: a second one keeps it.
     off_target_finishes: u32,
+    /// A fast build's section that a cut-in comes before (every one but the first).
+    after_cut_in: bool,
+    outline: Option<Outline>,
+    /// A section's note for the finish, once `finish_section` is called.
+    section_note: Option<String>,
+}
+
+impl Draft {
+    fn new(phase: Phase, script: &Script, format: Format, peaks: &[f32]) -> Self {
+        Draft { phase, script: script.clone(), format, peaks: peaks.to_vec(), items: Vec::new(), opening: None, next: 0, calls: 0, refused: 0, biggest_call: 0, done: None, best: None, off_target_finishes: 0, after_cut_in: false, outline: None, section_note: None }
+    }
 }
 
 static DRAFTS: Mutex<Option<HashMap<String, Draft>>> = Mutex::new(None);
@@ -74,8 +119,42 @@ fn system(script: &Script, format: &Format) -> String {
     )
 }
 
-/// The tools, as MCP lists them.
-pub fn tools() -> Value {
+/// The tools, as MCP lists them: a fast build's every phase lists the same
+/// ones, so they stay in the prompt cache from one phase to the next.
+pub fn tools(token: &str) -> Value {
+    let mut tools = steps_tools();
+    if with_draft(token, |draft| draft.phase != Phase::Steps).unwrap_or(false) {
+        let tools = tools.as_array_mut().expect("the tools are a list");
+        let section = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "title": { "type": "string" },
+                "plan": { "type": "string", "description": "Enough to write it from without guessing: the moments it uses ([m:ss] and the word IDs where each clip starts and ends), what each cut-in tells and what the viewer already knows by then, what it must not repeat." },
+                "footageSeconds": { "type": "integer", "minimum": 0 }
+            },
+            "required": ["title", "plan", "footageSeconds"]
+        });
+        tools.push(json!({
+            "name": "set_outline",
+            "description": "The outline phase only: the whole script's sections in timeline order, each for a writer working at the same time as the others.",
+            "inputSchema": { "type": "object", "additionalProperties": false, "properties": {
+                "sections": { "type": "array", "minItems": 1, "maxItems": MAX_SECTIONS, "items": section },
+                "opening": { "type": "string", "enum": ["one-run", "two-split"], "description": "FOIA only: how the script opens (as set_opening)." },
+                "report": { "type": "string", "description": "For the producer, as finish's report: one to three short sentences, under 80 words. Moments as [m:ss], never word IDs." }
+            }, "required": ["sections", "report"] }
+        }));
+        tools.push(json!({
+            "name": "finish_section",
+            "description": "A section phase only: your section is in. Give a note for the finish if the joining needs to know something.",
+            "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "note": { "type": "string" } } }
+        }));
+    }
+    tools
+}
+
+/// The tools of a build in steps.
+fn steps_tools() -> Value {
     let item = json!({
         "type": "object",
         "additionalProperties": false,
@@ -133,7 +212,9 @@ pub fn call(token: &str, name: &str, args: &Value) -> Option<(String, bool)> {
     with_draft(token, |draft| {
         draft.calls += 1;
         draft.biggest_call = draft.biggest_call.max(args.to_string().len());
-        let answer = match name {
+        let answer = match out_of_phase(draft.phase, name) {
+            Some(refusal) => Err(refusal),
+            None => match name {
             "add_section" => add(draft, args),
             "replace_items" => replace(draft, args),
             "remove_items" => remove(draft, args),
@@ -147,7 +228,10 @@ pub fn call(token: &str, name: &str, args: &Value) -> Option<(String, bool)> {
             "read_plan" => Ok(read(draft)),
             "review_plan" => Ok(review(draft).0),
             "finish" => finish(draft, args["report"].as_str().unwrap_or("")),
+            "set_outline" => set_outline(draft, args),
+            "finish_section" => finish_section(draft, args),
             other => Err(format!("Writer has no tool called {other}.")),
+            },
         };
         match answer {
             Ok(text) => (text, false),
@@ -159,6 +243,61 @@ pub fn call(token: &str, name: &str, args: &Value) -> Option<(String, bool)> {
     })
 }
 
+/// Why a tool isn't this phase's, if it isn't.
+fn out_of_phase(phase: Phase, name: &str) -> Option<String> {
+    let allowed = match name {
+        "set_outline" => phase == Phase::Outline,
+        "finish_section" => phase == Phase::Section,
+        "review_plan" | "finish" | "set_opening" => matches!(phase, Phase::Steps | Phase::Finish),
+        _ => phase != Phase::Outline,
+    };
+    let what = match phase {
+        Phase::Steps | Phase::Finish => "review_plan, fix it, then finish",
+        Phase::Outline => "set the outline with set_outline, adding no items",
+        Phase::Section => "write your section with add_section, then call finish_section",
+    };
+    (!allowed).then(|| format!("{name} isn't part of this phase: {what}."))
+}
+
+fn set_outline(draft: &mut Draft, args: &Value) -> Result<String, String> {
+    let given = args["sections"].as_array().filter(|sections| !sections.is_empty()).ok_or("Give at least one section.")?;
+    if given.len() > MAX_SECTIONS {
+        return Err(format!("At most {MAX_SECTIONS} sections: join some."));
+    }
+    let mut sections = Vec::new();
+    for (index, section) in given.iter().enumerate() {
+        let text = |key: &str| section[key].as_str().map(str::trim).unwrap_or("").to_string();
+        let (title, plan) = (text("title"), text("plan"));
+        if title.is_empty() || plan.is_empty() {
+            return Err(format!("Section {} needs a title and a plan.", index + 1));
+        }
+        sections.push(Section { title, plan, seconds: section["footageSeconds"].as_u64().unwrap_or(0) });
+    }
+    let opening = match args["opening"].as_str() {
+        None | Some("") => None,
+        Some(opening @ ("one-run" | "two-split")) => Some(opening.to_string()),
+        Some(_) => return Err("Give opening as one-run or two-split.".into()),
+    };
+    if draft.format.foia() && opening.is_none() {
+        return Err("Give the FOIA script's opening: one-run or two-split.".into());
+    }
+    let report = args["report"].as_str().map(str::trim).unwrap_or("").to_string();
+    if report.is_empty() {
+        return Err("Give your report for the producer.".into());
+    }
+    let count = sections.len();
+    draft.outline = Some(Outline { sections, opening, report });
+    Ok(format!("Outline set: {count} sections. End your turn now."))
+}
+
+fn finish_section(draft: &mut Draft, args: &Value) -> Result<String, String> {
+    if draft.items.is_empty() {
+        return Err("Your section has no items yet: add them with add_section first.".into());
+    }
+    draft.section_note = Some(args["note"].as_str().map(str::trim).unwrap_or("").to_string());
+    Ok("Section saved. End your turn now.".into())
+}
+
 /// The items a call brings, each checked where it will sit.
 fn checked(draft: &Draft, at: usize, items: &Value) -> Result<Vec<Value>, String> {
     let items = items.as_array().filter(|items| !items.is_empty()).ok_or("Give at least one item.")?;
@@ -168,7 +307,7 @@ fn checked(draft: &Draft, at: usize, items: &Value) -> Result<Vec<Value>, String
     if draft.items.len() + items.len() > 500 {
         return Err("A plan holds at most 500 items.".into());
     }
-    let mut opened = draft.items[..at].iter().any(|(_, item)| item["kind"] == "cut-in");
+    let mut opened = draft.after_cut_in || draft.items[..at].iter().any(|(_, item)| item["kind"] == "cut-in");
     for (index, item) in items.iter().enumerate() {
         let clip = claude::item_clip(&draft.script, &draft.format, item, opened).map_err(|refusal| format!("Item {} of this call was refused, so nothing was added: {refusal}", index + 1))?;
         opened |= clip.is_cut_in();
@@ -316,8 +455,8 @@ fn finish(draft: &mut Draft, report: &str) -> Result<String, String> {
     }
 }
 
-/// Builds the script in steps. Nothing is saved to it unless a plan passes.
-pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[f32]) -> Result<Built, String> {
+/// The request after the evidence, once the note is checked.
+fn request(script: &Script, note: &str) -> Result<String, String> {
     if script.words.is_empty() {
         return Err("Transcribe the footage before building the script.".into());
     }
@@ -325,39 +464,75 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
     if note.chars().count() > 2_000 {
         return Err("Keep the note under 2,000 characters.".into());
     }
-    let format = Format::new(script.kind, script.compilation, &script.title);
-    let system = system(script, &format);
-    let request = if note.is_empty() { "Start the scripts workflow.".to_string() } else { format!("Start the scripts workflow. {note}") };
-    let prompt = format!("{}\n\n{request}", claude::evidence(script, research));
+    Ok(if note.is_empty() { "Start the scripts workflow.".to_string() } else { format!("Start the scripts workflow. {note}") })
+}
+
+/// A draft served under a new random token.
+fn open(draft: Draft) -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes).map_err(|error| error.to_string())?;
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-    {
-        let mut drafts = DRAFTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        drafts.get_or_insert_with(HashMap::new).insert(
-            token.clone(),
-            Draft { script: script.clone(), format, peaks: peaks.to_vec(), items: Vec::new(), opening: None, next: 0, calls: 0, refused: 0, biggest_call: 0, done: None, best: None, off_target_finishes: 0 },
-        );
-    }
+    DRAFTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_or_insert_with(HashMap::new).insert(token.clone(), draft);
+    Ok(token)
+}
+
+fn close(token: &str) -> Option<Draft> {
+    DRAFTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_or_insert_with(HashMap::new).remove(token)
+}
+
+/// One Opus turn on a draft's tools, asked again once if it failed before any tool call.
+fn ask(system: &str, prompt: &str, token: &str, effort: Option<&str>, max_turns: u32, label: &str) -> Result<crate::agent::Answer, claude::Trouble> {
     let url = format!("http://127.0.0.1:{}/mcp/{token}", crate::http::PORT);
     let asked = || {
         crate::agent::ask(
-            crate::agent::Question { model: crate::claude::OPUS, system: &system, prompt: &prompt, schema: None, resume: None, read: None, tools: Some(&url), max_turns: Some(MAX_TURNS), timeout: Duration::from_secs(40 * 60), label: "Claude opus building in steps".into() },
+            crate::agent::Question { model: crate::claude::OPUS, system, prompt, schema: None, resume: None, read: None, tools: Some(&url), max_turns: Some(max_turns), effort, timeout: Duration::from_secs(40 * 60), label: label.into() },
             &crate::agent::workspace(),
         )
     };
-    let answer = match asked() {
-        Err(claude::Trouble::Again(_)) if with_draft(&token, |draft| draft.calls == 0).unwrap_or(false) => {
+    match asked() {
+        Err(claude::Trouble::Again(_)) if with_draft(token, |draft| draft.calls == 0).unwrap_or(false) => {
             std::thread::sleep(Duration::from_secs(60));
             asked()
         }
         other => other,
-    };
-    let draft = DRAFTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_or_insert_with(HashMap::new).remove(&token);
-    let Some(draft) = draft else { return Err("Writer lost track of the build. Build again; nothing was changed.".into()) };
-    crate::log::info("agent", format!("steps build: {} tool calls, {} refused, the biggest {}, {} items in the draft, {}", draft.calls, draft.refused, crate::log::size(draft.biggest_call as u64), draft.items.len(), if draft.done.is_some() { "finished" } else if draft.best.is_some() { "kept off target" } else { "not finished" }));
+    }
+}
+
+fn output_tokens(answer: &Result<crate::agent::Answer, claude::Trouble>) -> u64 {
+    answer.as_ref().ok().and_then(|answer| answer.result["usage"]["output_tokens"].as_u64()).unwrap_or(0)
+}
+
+fn turns(answer: &Result<crate::agent::Answer, claude::Trouble>) -> u64 {
+    answer.as_ref().ok().and_then(|answer| answer.result["num_turns"].as_u64()).unwrap_or(0)
+}
+
+/// Builds the script in steps. Nothing is saved to it unless a plan passes.
+pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[f32]) -> Result<Built, String> {
+    let request = request(script, note)?;
+    let format = Format::new(script.kind, script.compilation, &script.title);
+    let system = system(script, &format);
+    let prompt = format!("{}\n\n{request}", claude::evidence(script, research));
+    let token = open(Draft::new(Phase::Steps, script, format, peaks))?;
+    let answer = ask(&system, &prompt, &token, None, MAX_TURNS, "Claude opus building in steps");
+    let Some(draft) = close(&token) else { return Err("Writer lost track of the build. Build again; nothing was changed.".into()) };
+    crate::log::info("agent", format!("steps build: {} tool calls, {} refused, the biggest {}, {} items in the draft, {}", draft.calls, draft.refused, crate::log::size(draft.biggest_call as u64), draft.items.len(), outcome_of(&draft)));
     let cost = answer.as_ref().map(|answer| answer.cost_usd).unwrap_or(0.0);
-    let stats = json!({ "engine": "sdk", "toolCalls": draft.calls, "refused": draft.refused, "biggestCallBytes": draft.biggest_call, "outputTokens": answer.as_ref().ok().and_then(|answer| answer.result["usage"]["output_tokens"].as_u64()).unwrap_or(0), "turns": answer.as_ref().ok().and_then(|answer| answer.result["num_turns"].as_u64()).unwrap_or(0) });
+    let stats = json!({ "engine": "sdk", "toolCalls": draft.calls, "refused": draft.refused, "biggestCallBytes": draft.biggest_call, "outputTokens": output_tokens(&answer), "turns": turns(&answer) });
+    built(draft, answer, cost, stats)
+}
+
+fn outcome_of(draft: &Draft) -> &'static str {
+    if draft.done.is_some() {
+        "finished"
+    } else if draft.best.is_some() {
+        "kept off target"
+    } else {
+        "not finished"
+    }
+}
+
+/// What a finished draft built: the plan that passed, else the one kept off target, else why not.
+fn built(draft: Draft, answer: Result<crate::agent::Answer, claude::Trouble>, cost: f64, stats: Value) -> Result<Built, String> {
     let planned = plan(&draft, "");
     if let Some((done, report)) = draft.done {
         return Ok(Built { report: format!("{report}\n\n{}", claude::cleanup_line(&done)), clips: done.clips, cost_usd: cost, plan: planned, stats: stats.clone() });
@@ -371,6 +546,160 @@ pub fn build(script: &Script, note: &str, research: Option<&Research>, peaks: &[
             claude::Trouble::Again(reason) | claude::Trouble::Stop(reason) => reason,
         }).unwrap_or_else(|| "Claude stopped before the plan was finished. Build again; nothing was changed.".into())),
     }
+}
+
+/// The fast build, everyone's; `WRITER_SCRIPT_BUILD=steps` asks for the
+/// build in steps instead (for comparisons).
+pub fn fast_chosen() -> bool {
+    !std::env::var("WRITER_SCRIPT_BUILD").is_ok_and(|value| value == "steps")
+}
+
+/// How hard a fast build's Opus thinks, the same in every phase so the cache
+/// holds: `WRITER_FAST_EFFORT`, or medium.
+fn fast_effort() -> &'static str {
+    match std::env::var("WRITER_FAST_EFFORT").as_deref() {
+        Ok("low") => "low",
+        Ok("high") => "high",
+        Ok("xhigh") => "xhigh",
+        Ok("max") => "max",
+        _ => "medium",
+    }
+}
+
+/// The build in steps' system prompt and how a fast build's phases go.
+fn fast_system(script: &Script, format: &Format) -> String {
+    format!(
+        "{}\n\nA FAST BUILD\nThis build goes in three phases, each its own turn with these same tools, and the end of the message says which is yours. The outline: plan the whole script and set it with set_outline, adding no items. A section: write only your section's items with add_section (fixing them with replace_items or remove_items), then call finish_section. The finish: the sections are joined into the plan; review it, fix it and finish it as above.",
+        system(script, format)
+    )
+}
+
+fn outline_list(outline: &Outline) -> String {
+    outline.sections.iter().enumerate().map(|(index, section)| format!("{}. {} (about {} s of footage): {}", index + 1, section.title, section.seconds, section.plan)).collect::<Vec<_>>().join("\n")
+}
+
+fn outline_phase() -> String {
+    format!(
+        "YOUR PHASE: THE OUTLINE\nPlan the whole script as you would write it: which moments, in what order, the intro, what each cut-in tells, the format's length targets. Then split it, in timeline order, into 2 to {MAX_SECTIONS} sections of about equal work for writers working at the same time, each seeing only this evidence and your outline: the first holds the opening (the intro clips and the intro cut-in), the last the ending (the outro); a compilation's case is one section, or two when it's long. For each give a title; its plan, specific enough to write from without guessing (the moments it uses as [m:ss] and the word IDs where each clip starts and ends, what each cut-in tells and what the viewer already knows by then, what it must not repeat); and its footage in seconds, so the sections add up to the format's target. Call set_outline once, then end your turn."
+    )
+}
+
+fn section_phase(outline: &Outline, index: usize) -> String {
+    let count = outline.sections.len();
+    let place = match (index, index + 1 == count) {
+        (0, true) => "It is the whole script: it opens with the intro clips and ends with the outro.".to_string(),
+        (0, false) => "It opens the script, with the intro clips; section 2's items come after yours.".to_string(),
+        (_, true) => format!("It ends the script, with the outro; it comes after section {index}'s items, so a cut-in has already come before it."),
+        _ => format!("It comes after section {index}'s items and before section {}'s, so a cut-in has already come before it.", index + 2),
+    };
+    format!(
+        "YOUR PHASE: SECTION {} OF {count}\nThe outline, written from this evidence:\n{}\n\nYou write section {} only: {}. {place} The other sections are written at the same time by writers who don't see yours: keep to your plan's moments and length, and don't tell what another section tells. Write your items in timeline order with add_section. When they're in, call finish_section, with a note if the joining needs to know something, then end your turn.",
+        index + 1,
+        outline_list(outline),
+        index + 1,
+        outline.sections[index].title
+    )
+}
+
+fn finish_phase(outline: &Outline, notes: &[String], missing: &[usize]) -> String {
+    let notes: Vec<String> = notes.iter().enumerate().filter(|(_, note)| !note.is_empty()).map(|(index, note)| format!("- Section {}: {note}", index + 1)).collect();
+    let notes = if notes.is_empty() { String::new() } else { format!("\n\nThe sections' notes:\n{}", notes.join("\n")) };
+    let missing = if missing.is_empty() {
+        String::new()
+    } else {
+        let names = missing.iter().map(|index| (index + 1).to_string()).collect::<Vec<_>>().join(", ");
+        format!("\n\nSection {names} came back empty: write it first, with add_section after the item before it.")
+    };
+    format!(
+        "YOUR PHASE: THE FINISH\nThe sections were written at once from this outline and joined in order; the whole plan is in (read_plan lists it).\n{}{notes}{missing}\n\nCall review_plan and fix what it reports by ID. Read the cut-ins where the sections meet: their writers didn't see each other's words, so cut a fact told twice and make each one follow on from what came before. Then call finish with the outline's report, corrected if the plan changed: {}",
+        outline_list(outline),
+        outline.report
+    )
+}
+
+/// Builds the script fast: an outline, its sections written at once, then a
+/// finish on the joined plan. Without an outline, it builds in steps instead.
+/// Nothing is saved to the script unless a plan passes.
+pub fn build_fast(script: &Script, note: &str, research: Option<&Research>, peaks: &[f32]) -> Result<Built, String> {
+    let request = request(script, note)?;
+    let format = Format::new(script.kind, script.compilation, &script.title);
+    let system = fast_system(script, &format);
+    let base = format!("{}\n\n{request}", claude::evidence(script, research));
+    let effort = fast_effort();
+    let began = std::time::Instant::now();
+    let (mut cost, mut tokens, mut turned, mut calls, mut refused, mut biggest) = (0.0, 0, 0, 0, 0, 0);
+    let mut count = |answer: &Result<crate::agent::Answer, claude::Trouble>, draft: Option<&Draft>| {
+        cost += answer.as_ref().map(|answer| answer.cost_usd).unwrap_or(0.0);
+        tokens += output_tokens(answer);
+        turned += turns(answer);
+        if let Some(draft) = draft {
+            calls += draft.calls;
+            refused += draft.refused;
+            biggest = biggest.max(draft.biggest_call);
+        }
+    };
+
+    let token = open(Draft::new(Phase::Outline, script, format, peaks))?;
+    let answer = ask(&system, &format!("{base}\n\n{}", outline_phase()), &token, Some(effort), 12, "Claude opus outlining");
+    let drafted = close(&token);
+    count(&answer, drafted.as_ref());
+    let Some(outline) = drafted.and_then(|draft| draft.outline) else {
+        crate::log::info("agent", "fast build: no outline came back; building in steps instead");
+        return build(script, note, research, peaks);
+    };
+    let outlined = began.elapsed();
+
+    // The sections at once, each on its own draft.
+    let sections: Vec<(Option<Draft>, Result<crate::agent::Answer, claude::Trouble>)> = std::thread::scope(|scope| {
+        let running: Vec<_> = (0..outline.sections.len())
+            .map(|index| {
+                let (system, base, outline) = (&system, &base, &outline);
+                scope.spawn(move || {
+                    let mut draft = Draft::new(Phase::Section, script, format, peaks);
+                    draft.after_cut_in = index > 0;
+                    let token = match open(draft) {
+                        Ok(token) => token,
+                        Err(error) => return (None, Err(claude::Trouble::Stop(error))),
+                    };
+                    let answer = ask(system, &format!("{base}\n\n{}", section_phase(outline, index)), &token, Some(effort), 40, &format!("Claude opus writing section {} of {}", index + 1, outline.sections.len()));
+                    (close(&token), answer)
+                })
+            })
+            .collect();
+        running.into_iter().map(|section| section.join().unwrap_or_else(|_| (None, Err(claude::Trouble::Stop("A section's writer stopped.".into()))))).collect()
+    });
+    let written = began.elapsed();
+
+    // Joined in the outline's order, with new IDs.
+    let mut joined = Draft::new(Phase::Finish, script, format, peaks);
+    joined.opening = outline.opening.clone();
+    let (mut notes, mut missing) = (Vec::new(), Vec::new());
+    for (index, (draft, answer)) in sections.into_iter().enumerate() {
+        count(&answer, draft.as_ref());
+        let draft = draft.filter(|draft| !draft.items.is_empty());
+        if draft.is_none() {
+            missing.push(index);
+        }
+        notes.push(draft.as_ref().and_then(|draft| draft.section_note.clone()).unwrap_or_default());
+        for (_, item) in draft.map(|draft| draft.items).unwrap_or_default() {
+            joined.next += 1;
+            joined.items.push((format!("i{}", joined.next), item));
+        }
+    }
+    crate::log::info("agent", format!("fast build: outline in {}, {} sections in {} ({} empty), {} items joined", crate::log::took(outlined), outline.sections.len(), crate::log::took(written - outlined), missing.len(), joined.items.len()));
+
+    let token = open(joined)?;
+    let answer = ask(&system, &format!("{base}\n\n{}", finish_phase(&outline, &notes, &missing)), &token, Some(effort), MAX_TURNS, "Claude opus finishing");
+    let Some(draft) = close(&token) else { return Err("Writer lost track of the build. Build again; nothing was changed.".into()) };
+    count(&answer, Some(&draft));
+    let finished = began.elapsed();
+    crate::log::info("agent", format!("fast build: finished in {}, {} tool calls in all, {} refused, the biggest {}, {} items in the draft, {}", crate::log::took(finished - written), calls, refused, crate::log::size(biggest as u64), draft.items.len(), outcome_of(&draft)));
+    let stats = json!({
+        "engine": "fast", "effort": effort, "sections": outline.sections.len(), "emptySections": missing.len(),
+        "toolCalls": calls, "refused": refused, "biggestCallBytes": biggest, "outputTokens": tokens, "turns": turned,
+        "outlineSeconds": outlined.as_secs_f64(), "sectionsSeconds": (written - outlined).as_secs_f64(), "finishSeconds": (finished - written).as_secs_f64(),
+    });
+    built(draft, answer, cost, stats)
 }
 
 #[cfg(test)]
@@ -393,7 +722,7 @@ mod tests {
     fn start(token: &str) {
         let script = script();
         let format = Format::new(script.kind, script.compilation, &script.title);
-        DRAFTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(token.into(), Draft { script, format, peaks: Vec::new(), items: Vec::new(), opening: None, next: 0, calls: 0, refused: 0, biggest_call: 0, done: None, best: None, off_target_finishes: 0 });
+        DRAFTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(token.into(), Draft::new(Phase::Steps, &script, format, &[]));
     }
 
     #[test]
@@ -434,6 +763,45 @@ mod tests {
         assert!(refused);
         let (said, _) = call("t3", "read_plan", &json!({})).unwrap();
         assert!(said.contains("i1 clip") && said.contains("i2 cut-in"), "{said}");
+    }
+
+    fn start_in(token: &str, phase: Phase) {
+        let script = script();
+        let format = Format::new(script.kind, script.compilation, &script.title);
+        DRAFTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(token.into(), Draft::new(phase, &script, format, &[]));
+    }
+
+    #[test]
+    fn a_fast_builds_phases_each_take_only_their_own_tools() {
+        start_in("f1", Phase::Outline);
+        let (said, refused) = call("f1", "add_section", &json!({ "items": [{ "kind": "clip", "firstWordId": "w0", "lastWordId": "w4" }] })).unwrap();
+        assert!(refused && said.contains("set_outline"), "{said}");
+        let (said, refused) = call("f1", "set_outline", &json!({ "sections": [{ "title": "Opening", "plan": "w0 to w4, then the intro.", "footageSeconds": 5 }, { "title": "Ending", "plan": "w5 to w9, then the outro.", "footageSeconds": 5 }], "report": "Short." })).unwrap();
+        assert!(!refused && said.contains("2 sections"), "{said}");
+        assert_eq!(with_draft("f1", |draft| draft.outline.as_ref().map(|outline| outline.sections.len())).unwrap(), Some(2));
+
+        start_in("f2", Phase::Section);
+        let (said, refused) = call("f2", "finish_section", &json!({})).unwrap();
+        assert!(refused && said.contains("no items"), "{said}");
+        let (_, refused) = call("f2", "finish", &json!({ "report": "Done." })).unwrap();
+        assert!(refused);
+        call("f2", "add_section", &json!({ "items": [{ "kind": "clip", "firstWordId": "w0", "lastWordId": "w4" }, { "kind": "cut-in", "narration": "An intro." }] })).unwrap();
+        let (said, refused) = call("f2", "finish_section", &json!({ "note": "Ends on the arrest." })).unwrap();
+        assert!(!refused && said.starts_with("Section saved"), "{said}");
+
+        // Only a fast build lists the fast tools, and every phase the same ones.
+        let names = |token: &str| tools(token).as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert!(names("f1").contains(&"set_outline".to_string()) && names("f1") == names("f2"));
+        start("f3");
+        assert!(!names("f3").contains(&"set_outline".to_string()));
+    }
+
+    #[test]
+    fn a_section_after_the_first_writes_as_if_a_cut_in_came_before() {
+        let outline = Outline { sections: vec![Section { title: "Opening".into(), plan: "The intro.".into(), seconds: 60 }, Section { title: "Ending".into(), plan: "The outro.".into(), seconds: 60 }], opening: None, report: "Short.".into() };
+        assert!(section_phase(&outline, 0).contains("opens the script"));
+        assert!(section_phase(&outline, 1).contains("ends the script") && section_phase(&outline, 1).contains("a cut-in has already come before it"));
+        assert!(finish_phase(&outline, &["".into(), "".into()], &[1]).contains("Section 2 came back empty"));
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub struct Question<'a> {
     /// Writer's tools, served at this address (steps.rs).
     pub tools: Option<&'a str>,
     pub max_turns: Option<u32>,
+    /// How hard Claude thinks ("medium"): left out, the model's own default.
+    pub effort: Option<&'a str>,
     pub timeout: Duration,
     /// For the log: "Claude opus", "Claude opus (repair turn)".
     pub label: String,
@@ -74,6 +76,7 @@ pub fn ask(question: Question, data: &Path) -> Result<Answer, Trouble> {
         "readDir": question.read,
         "mcp": question.tools.map(|url| json!({ "name": "writer", "url": url })),
         "maxTurns": question.max_turns,
+        "effort": question.effort,
     });
     let label = question.label.clone();
     let began = std::time::Instant::now();
