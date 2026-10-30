@@ -30,6 +30,10 @@ remote *args:
 relay-secrets *args:
     bun scripts/push-relay-secrets.ts {{args}}
 
+# Retire the relay (Writer is discontinued): checks that nothing calls it and no key lives only in /writer-relay, then --yes deletes the Worker and that folder
+relay-retire *args:
+    bun scripts/retire-relay.ts {{args}}
+
 # The app to hand out: ffmpeg and ffprobe inside it, and the relay's address
 # built in, so users install only Claude Code, sign in, and never see the relay.
 bundle:
