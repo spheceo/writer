@@ -1,6 +1,6 @@
 # Writer's relay: the shared keys (ElevenLabs, Drive, Docs, Trello, the proxy,
 # the watcher, R2 and Convex) live here and never ship in the app. Every one
-# comes from Infisical (Repack's project, dev, /writer-relay), put on the
+# comes from Infisical (the platform's project "Platform", dev, /writer-relay), put on the
 # Worker with `just relay-secrets --yes` (scripts/push-relay-secrets.ts).
 # Deploy with `bunx wrangler deploy` from relay/.
 name = "writer-relay"

@@ -19,7 +19,7 @@ check:
 # repo. The app itself holds no keys (it signs in and asks the relay), so
 # `just dev` needs none.
 relay *args:
-    cd relay && infisical run --projectId=cdf4a0c5-eca4-4415-af3a-40871af285f3 --env=dev --path=/writer-relay --silent -- env CLOUDFLARE_INCLUDE_PROCESS_ENV=true npx wrangler dev {{args}}
+    cd relay && infisical run --projectId=979fe56c-c4d0-4809-b64f-5ebc75eeaf05 --env=dev --path=/writer-relay --silent -- env CLOUDFLARE_INCLUDE_PROCESS_ENV=true npx wrangler dev {{args}}
 
 # Remote support as an admin, through this Mac's Writer (just dev, signed in):
 # devices | diagnostics <device> | resume <device> <script-id> | history <device> | report <key>

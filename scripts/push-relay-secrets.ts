@@ -1,8 +1,9 @@
 /**
- * Puts writer-relay's secrets on the Worker from Infisical: Repack's project,
- * `dev`, folder `/writer-relay` (references to the canonical values: the root's,
- * and ElevenLabs to /edit-relay's ELEVENLABS_MAIN_KEY, the key Edit's relay
- * uses too). Each value goes from Infisical to `wrangler secret put` on its
+ * Puts writer-relay's secrets on the Worker from Infisical: the platform's
+ * project ("Platform", copied from Repack's on 2026-10-30), `dev`, folder
+ * `/writer-relay`: CONVEX_URL and CONVEX_SERVICE_TOKEN reference prod's
+ * `/mamagi`, ElevenLabs /edit-relay's ELEVENLABS_MAIN_KEY (the key Edit's relay
+ * uses too), and the rest are values copied from Repack's root. Each value goes from Infisical to `wrangler secret put` on its
  * stdin, in memory: nothing is printed, written to disk or passed as an
  * argument. It prints names only.
  *
@@ -18,7 +19,8 @@
  */
 import { resolve } from "node:path";
 
-const PROJECT = "cdf4a0c5-eca4-4415-af3a-40871af285f3";
+// The platform's own Infisical project ("Platform"), not Repack's: /writer-relay moved there on 2026-10-30.
+const PROJECT = "979fe56c-c4d0-4809-b64f-5ebc75eeaf05";
 const FOLDER = "/writer-relay";
 /** What the relay reads (relay/src/index.ts, cloud.ts, auth.ts); nothing else is put. */
 const EXPECTED = [
