@@ -6,14 +6,21 @@
  * reference of one kept at the root or in `/edit-relay`, and those sources are
  * never touched: only the folder goes.
  *
+ * Writer's data stays: it's Edit's Script mode's now, and moves to the new
+ * Convex deployment with everything else. Nothing here touches Convex
+ * (`writer:*`, `writerSupport:*`, the reviews) or R2 (`writer/`).
+ *
  *   bun scripts/retire-relay.ts          checks and the plan; nothing changed
  *   bun scripts/retire-relay.ts --yes    does it, if every check passes
  *
  * Checks, all read-only:
- *   - no caller left: `origin/main` of Edit (Trello routes), feedback (Docs
- *     routes), accounts (Writer's manifest) and Repack name the relay's address
- *     nowhere outside Markdown. Each is fetched first. Whether what's deployed
- *     matches main is for whoever runs this to know.
+ *   - no caller left: `origin/main` of Edit (Trello routes), accounts
+ *     (Writer's manifest) and Repack name the relay's address nowhere outside
+ *     Markdown and tests; feedback's (Docs routes) sets DOCS_RELAY to Edit's
+ *     relay in wrangler.jsonc, or else names it nowhere either. Each is
+ *     fetched first. Whether what's deployed matches main, and whether
+ *     installed Edit builds are past the ones that still call this relay, is
+ *     for whoever runs this to know: `--yes` is their word that it is.
  *   - every value in /writer-relay is also at the root or in /edit-relay, so
  *     deleting the folder loses no key. Folders sharing a value are listed: in
  *     Infisical's UI they should reference the root, never /writer-relay.
@@ -28,6 +35,14 @@ const PROJECT = "cdf4a0c5-eca4-4415-af3a-40871af285f3";
 const FOLDER = "writer-relay";
 const WORKER = "writer-relay";
 const ADDRESS = "writer-relay.sphe-g-personal.workers.dev";
+/** feedback's Docs routes, moved: its DOCS_RELAY var on Edit's relay (Writer's is only the fallback when unset). */
+const MOVED_DOCS = /"DOCS_RELAY"\s*:\s*"https:\/\/edit-relay\./;
+/** What no script can check: said when it's ready, and taken as said by `--yes`. */
+const BY_HAND = [
+  "installed Edit builds are on the nightly that reads Trello through Edit's relay (older ones still call this one)",
+  "feedback's deployed Worker has DOCS_RELAY on Edit's relay, and accounts' deployed APP_MANIFESTS has no writer",
+  "Workers Logs (dashboard) show no /v1/trello/* or /v1/docs/* calls on writer-relay for the last few days",
+];
 /** Repos that called the relay, next to this one: who called what. */
 const CALLERS: Record<string, string> = {
   edit: "/v1/trello/card and /v1/trello/cards (Script mode, aud edit)",
@@ -61,7 +76,11 @@ for (const [repo, calls] of Object.entries(CALLERS)) {
     problems.push(`couldn't fetch ${repo}'s main (${dir}): its calls (${calls}) aren't checked`);
     continue;
   }
-  const found = await run(["git", "-C", dir, "grep", "-l", "-F", ADDRESS, "origin/main", "--", ".", ":!*.md"]);
+  if (repo === "feedback" && MOVED_DOCS.test((await run(["git", "-C", dir, "show", "origin/main:wrangler.jsonc"])).out)) {
+    console.log(`${repo.padEnd(9)} DOCS_RELAY is Edit's relay  [${calls}]`);
+    continue;
+  }
+  const found = await run(["git", "-C", dir, "grep", "-l", "-F", ADDRESS, "origin/main", "--", ".", ":!*.md", ":!test/**", ":!**/test/**", ":!**/*.test.ts"]);
   const files = found.out.split("\n").filter(Boolean).map((line) => line.replace(/^origin\/main:/, ""));
   console.log(`${repo.padEnd(9)} ${files.length ? `still calls it: ${files.join(", ")}` : "no call left"}  [${calls}]`);
   if (files.length) problems.push(`${repo} still names ${ADDRESS}`);
@@ -88,11 +107,13 @@ console.log(`wrangler delete ${WORKER} --dry-run: ${dry.code === 0 ? "ok" : `exi
 if (dry.code !== 0) problems.push("wrangler delete --dry-run failed: `npx wrangler login`?");
 
 if (problems.length) {
+  console.log(`\nby hand, once these pass:\n${BY_HAND.map((gate) => `  - ${gate}`).join("\n")}`);
   console.log(`\nnot ready:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`);
   process.exit(1);
 }
 if (!yes) {
-  console.log(`\nready. --yes deletes the Worker ${WORKER} (its secrets, Durable Object and logs with it), then Infisical's /${FOLDER} (${own.length} entries).`);
+  console.log(`\nready, as far as a script can tell. Also true before --yes, by hand:\n${BY_HAND.map((gate) => `  - ${gate}`).join("\n")}`);
+  console.log(`--yes deletes the Worker ${WORKER} (its secrets, Durable Object and logs with it), then Infisical's /${FOLDER} (${own.length} entries). Writer's data in Convex and R2 stays.`);
   process.exit(0);
 }
 
