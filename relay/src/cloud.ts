@@ -1,7 +1,7 @@
 /**
  * Writer's cloud, as Edit's: every script's body and files on Cloudflare R2
- * under `writer/`, and its index in Convex (Repack's deployment, the `writer`
- * module). The relay holds the R2 keys and Convex's service token; Writer only
+ * under `writer/`, and its index in Convex (mamagi since Oct 30 2026, Repack's
+ * deployment before; the `writer` module). The relay holds the R2 keys and Convex's service token; Writer only
  * ever gets short-lived presigned URLs and the answers of `writer:` functions.
  *
  * Every route is POST JSON, from someone who may use Writer (index.ts checks
@@ -23,13 +23,13 @@
  *
  * Beyond `writer/` and `writer:`, two shared things, for sharing and the
  * handoff to Edit:
- *   - Repack's reviews (`reviews:*`), always as Writer: `app` is forced to
+ *   - the reviews (`reviews:*`), always as Writer: `app` is forced to
  *     "writer" whatever the caller sends.
  *   - Edit's footage registry: `edit:getMedia` and `edit:putMedia` only, and
  *     the keys under `edit/originals/` and `edit/analysis/` (presigned URLs,
  *     multipart and head; never delete or list, which stay Writer's own).
  *
- * Remote support (Writer's `writerSupport:` module in Repack, as Edit's
+ * Remote support (Writer's `writerSupport:` module, as Edit's
  * `editSupport:`): every Writer registers its Mac and carries out an admin's
  * commands; the relay names who's asking (`actor`: their id and whether
  * they're an admin, from the verified sign-in, never the caller's). Problem
@@ -44,7 +44,7 @@ export interface CloudEnv {
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
   R2_BUCKET?: string;
-  /** The Convex deployment (https://….convex.cloud), shared with Repack. */
+  /** The Convex deployment (https://….convex.cloud): mamagi's, shared with Edit (Infisical prod /mamagi). */
   CONVEX_URL?: string;
   /** Passed as `args.token` to every `writer:` function, which checks it. */
   CONVEX_SERVICE_TOKEN?: string;

@@ -39,7 +39,7 @@ declare const FixedLengthStream: {
  *                           them (its key and token stay here)
  *   POST /v1/cloud/*      scripts and their files, synced between Macs:
  *                         presigned R2 URLs and Writer's Convex functions;
- *                         also Repack's reviews (as Writer) and Edit's footage
+ *                         also the reviews (as Writer) and Edit's footage
  *                         registry and shared keys, for the handoff (cloud.ts)
  *   GET  /.well-known/spheceo-app.json → what Writer can do, for accounts'
  *                           admin pages (manifest.ts), public
