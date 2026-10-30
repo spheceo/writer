@@ -92,3 +92,17 @@ test("problem reports: anyone puts one, only an admin reads, lists or deletes th
   expect((await cloud(r2("r2/delete", { keys: [key] }), at("r2/delete"), store, actor, only("scripts.foia"))).status).toBe(403);
   expect((await cloud(r2("r2/url", { key }), at("r2/url"), store, actor, { admin: true, perms: new Set() })).status).toBe(200);
 });
+
+test("paused, nothing reaches Convex: every function answers 503, the delete's own lookup included", async () => {
+  sent = null;
+  const where = new URL("https://relay/v1/cloud/convex");
+  const paused = { ...env("1"), CONVEX_PAUSED: "1" };
+  for (const [path, kind] of [["writer:listScripts", "query"], ["writer:commitScript", "mutation"], ["writer:deleteScript", "mutation"], ["reviews:changes", "query"], ["writerSupport:register", "mutation"]]) {
+    const answer = await cloud(call(path, { scriptId: "s1" }, kind), where, paused, actor, only("scripts.foia"));
+    expect(answer.status).toBe(503);
+    expect(((await answer.json()) as { error: string }).error).toContain("moving");
+  }
+  expect(sent).toBeNull();
+  // Off ("0" or unset), it goes through.
+  expect((await cloud(call("writer:listScripts", {}, "query"), where, { ...paused, CONVEX_PAUSED: "0" }, actor, only())).status).toBe(200);
+});

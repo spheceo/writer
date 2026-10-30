@@ -108,6 +108,7 @@ export default {
         watch: Boolean(env.AI_GATEWAY_API_KEY),
         trello: Boolean(env.TRELLO_API_KEY && env.TRELLO_TOKEN),
         cloud: Boolean(env.R2_BUCKET && env.CONVEX_URL && env.CONVEX_SERVICE_TOKEN),
+        paused: env.CONVEX_PAUSED === "1",
       });
     }
     // What Writer can do, for accounts.spheceo.com's admin pages: public.

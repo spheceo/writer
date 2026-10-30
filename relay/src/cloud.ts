@@ -48,6 +48,8 @@ export interface CloudEnv {
   CONVEX_URL?: string;
   /** Passed as `args.token` to every `writer:` function, which checks it. */
   CONVEX_SERVICE_TOKEN?: string;
+  /** "1" while the database moves to its new home: every Convex call is refused (503), as Edit's relay does. */
+  CONVEX_PAUSED?: string;
 }
 
 const HOUR = 3600;
@@ -408,8 +410,22 @@ export const unescapeXml = (text: string) => text
 
 // --- Convex ---------------------------------------------------------------------
 
+/** What Writer is told while the database moves: its scripts stay on the Mac and are pushed again after. */
+export const PAUSED_MESSAGE = "Writer's cloud is moving to its new home: a few minutes. Your scripts are kept on this Mac and saved when it's back.";
+
+/**
+ * While the database moves to its new home (`CONVEX_PAUSED` "1", Oct 30: off
+ * Repack's deployment, onto mamagi): nothing reaches Convex, so nothing is
+ * written to the old one after its data was copied. R2 is left alone.
+ */
+export function convexPaused(env: CloudEnv): Response | null {
+  return env.CONVEX_PAUSED === "1" ? json(503, { error: PAUSED_MESSAGE }) : null;
+}
+
 /** Calls a `writer:` function (or a `reviews:` one, as Writer, or Edit's footage registry) with the service token added to its args. */
 async function convex(body: Record<string, unknown>, env: CloudEnv, actor?: Actor, grants: Grants = ALL): Promise<Response> {
+  const paused = convexPaused(env);
+  if (paused) return paused;
   const kind = body.kind;
   if (typeof kind !== "string" || !CONVEX_KINDS.has(kind)) return json(400, { error: "kind must be query, mutation or action." });
   if (typeof body.path !== "string" || !callable(body.path)) {

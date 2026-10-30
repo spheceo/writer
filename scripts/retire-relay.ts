@@ -3,7 +3,7 @@
  * (its secrets, its Durable Object `TranscriptionBudget` and the day counts in
  * it, its workers.dev address, its logs), then the Infisical folder
  * `/writer-relay` in Repack's project. Every value in that folder is a copy or
- * reference of one kept at the root or in `/edit-relay`, and those sources are
+ * reference of one kept at the root, in `/edit-relay` or prod's `/mamagi`, and those sources are
  * never touched: only the folder goes.
  *
  * Writer's data stays: it's Edit's Script mode's now, and moves to the new
@@ -21,7 +21,7 @@
  *     fetched first. Whether what's deployed matches main, and whether
  *     installed Edit builds are past the ones that still call this relay, is
  *     for whoever runs this to know: `--yes` is their word that it is.
- *   - every value in /writer-relay is also at the root or in /edit-relay, so
+ *   - every value in /writer-relay is also at the root, in /edit-relay or prod's /mamagi, so
  *     deleting the folder loses no key. Folders sharing a value are listed: in
  *     Infisical's UI they should reference the root, never /writer-relay.
  *   - `wrangler delete --dry-run` passes.
@@ -61,8 +61,8 @@ async function run(command: string[], cwd?: string): Promise<{ code: number; out
   return { code: await child.exited, out };
 }
 
-async function folder(path: string): Promise<{ key: string; value: string }[]> {
-  const exported = await run(["infisical", "export", `--projectId=${PROJECT}`, "--env=dev", `--path=${path}`, "--format=json", "--silent"]);
+async function folder(path: string, env = "dev"): Promise<{ key: string; value: string }[]> {
+  const exported = await run(["infisical", "export", `--projectId=${PROJECT}`, `--env=${env}`, `--path=${path}`, "--format=json", "--silent"]);
   if (exported.code !== 0) throw new Error(`Infisical refused ${path} (exit ${exported.code}). Sign in with \`infisical login\`.`);
   return JSON.parse(exported.out);
 }
@@ -88,7 +88,8 @@ for (const [repo, calls] of Object.entries(CALLERS)) {
 
 // 2. Deleting the folder loses no key.
 const own = await folder(`/${FOLDER}`);
-const sources = { "/": await folder("/"), "/edit-relay": await folder("/edit-relay") };
+// The new Convex deployment's folder too, once CONVEX_URL points there (prod, as its keys are).
+const sources = { "/": await folder("/"), "/edit-relay": await folder("/edit-relay"), "prod:/mamagi": await folder("/mamagi", "prod") };
 for (const { key, value } of own) {
   const kept = Object.entries(sources).flatMap(([path, items]) => items.filter((item) => item.value === value).map((item) => `${path === "/" ? "" : `${path}.`}${item.key}`));
   console.log(`/${FOLDER}.${key.padEnd(27)} ${kept.length ? `kept at ${kept.join(", ")}` : "ONLY HERE"}`);

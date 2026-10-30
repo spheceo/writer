@@ -30,6 +30,10 @@ remote *args:
 relay-secrets *args:
     bun scripts/push-relay-secrets.ts {{args}}
 
+# Pause the relay's Convex calls while the database moves (on: every one answers 503, nothing reaches Convex), or let them through (off)
+relay-pause state:
+    cd relay && printf '%s' '{{ if state == "on" { "1" } else if state == "off" { "0" } else { error("relay-pause takes on or off") } }}' | npx wrangler secret put CONVEX_PAUSED
+
 # Retire the relay (Writer is discontinued): checks that nothing calls it and no key lives only in /writer-relay, then --yes deletes the Worker and that folder
 relay-retire *args:
     bun scripts/retire-relay.ts {{args}}

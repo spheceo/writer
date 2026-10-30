@@ -13,6 +13,9 @@ preview_urls = false
 # Where people sign in: the access tokens' issuer, and the home of its JWKS.
 ACCOUNTS_URL = "https://accounts.spheceo.com"
 
+# CONVEX_PAUSED isn't here: it's a Worker secret, so a deploy never flips it.
+# `just relay-pause on|off` sets it ("1": every Convex call answers 503).
+
 # "1": Repack's writer:commitScript takes `actor` (Repack 4ee1d39), so a script's first
 # commit records who started it, from their verified sign-in.
 STAMP_CREATOR = "1"
